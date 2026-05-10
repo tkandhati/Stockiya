@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.venv/
+venv/
+ENV/
+env/
+.env
+.env.local
+*.pyc
+
+# Node
+node_modules/
+dist/
+.vite/
+*.log
+npm-debug.log*
+
+# Runtime data artifacts (regenerated daily)
+data/*
+!data/.gitkeep
+
+# Claude Code project-local settings
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Secrets / keys (safety net)
+*.pem
+*.key
+*.p12
+*.pfx
+secrets/
+*secrets*.json
