@@ -1,0 +1,12 @@
+import { Routes, Route } from 'react-router-dom'
+import { PicksPage } from './pages/PicksPage'
+import { StockDetailPage } from './pages/StockDetailPage'
+
+export default function App() {
+  return (
+    <Routes>
+      <Route path="/" element={<PicksPage />} />
+      <Route path="/stock/:symbol" element={<StockDetailPage />} />
+    </Routes>
+  )
+}
