@@ -55,19 +55,184 @@ class DealAggregate:
 
 
 # --------------------------------------------------------------------------- #
-# Live fetch (TODO — not yet implemented)
+# Live fetch — NSE block/bulk deal CSVs into the local cache.
 # --------------------------------------------------------------------------- #
 
-def fetch_and_cache_nse_deals() -> tuple[Path, Path]:
-    """Download today's NSE block + bulk deal CSVs and cache them locally.
+NSE_BULK_URL = "https://archives.nseindia.com/content/equities/bulk.csv"
+NSE_BLOCK_URL = "https://archives.nseindia.com/content/equities/block.csv"
+_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+)
 
-    Skipped if DEMO_MODE=1. Returns (block_path, bulk_path).
-    Not yet implemented — wire when running on a network with NSE access.
+
+def fetch_and_cache_nse_deals() -> tuple[Path, Path]:
+    """Download the rolling NSE block + bulk deal CSVs and merge into all.csv.
+
+    Skipped if DEMO_MODE=1. Returns (block_path, bulk_path) raw cache files.
+    NSE serves a single CSV per file covering the last ~3 months — we download
+    daily, parse, normalize, and merge unique (date, symbol, client, side, qty)
+    rows into `data/deals/all.csv` (the file `aggregate_30d` reads).
     """
-    raise NotImplementedError(
-        "NSE block deal download not yet wired. "
-        "URL pattern: https://archives.nseindia.com/content/equities/{block|bulk}.csv"
+    if os.environ.get("DEMO_MODE", "0") == "1":
+        log.info("DEMO_MODE=1 — skipping NSE download")
+        return _DEALS_DIR / "block.csv", _DEALS_DIR / "bulk.csv"
+
+    import urllib.request
+
+    block_path = _DEALS_DIR / "block.csv"
+    bulk_path = _DEALS_DIR / "bulk.csv"
+
+    for url, dest in [(NSE_BLOCK_URL, block_path), (NSE_BULK_URL, bulk_path)]:
+        req = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                data = resp.read()
+            dest.write_bytes(data)
+            log.info("downloaded %s -> %s (%d bytes)", url, dest.name, len(data))
+        except Exception as e:
+            log.warning("NSE download failed for %s: %s", url, e)
+
+    _merge_into_all_csv(block_path, bulk_path)
+    return block_path, bulk_path
+
+
+def _merge_into_all_csv(block_path: Path, bulk_path: Path) -> int:
+    """Parse raw NSE CSVs and append unique rows to all.csv.
+
+    NSE CSV columns (both files):
+        Date,Symbol,Security Name,Client Name,Buy/Sell,Quantity Traded,Trade Price / Wght. Avg. Price
+    Our normalized schema (the only one aggregate_30d reads):
+        date,symbol,side,qty,client,price,source
+    """
+    all_csv = _DEALS_DIR / "all.csv"
+    existing_keys: set[tuple] = set()
+    existing_rows: list[dict] = []
+    if all_csv.exists():
+        with all_csv.open("r", encoding="utf-8", newline="") as f:
+            for row in csv.DictReader(f):
+                existing_rows.append(row)
+                existing_keys.add(_dedupe_key(row))
+
+    new_rows: list[dict] = []
+    for src_path, src_label in [(block_path, "block"), (bulk_path, "bulk")]:
+        if not src_path.exists() or src_path.stat().st_size == 0:
+            continue
+        for raw in _read_nse_csv(src_path):
+            norm = _normalize_nse_row(raw, src_label)
+            if norm is None:
+                continue
+            key = _dedupe_key(norm)
+            if key in existing_keys:
+                continue
+            existing_keys.add(key)
+            new_rows.append(norm)
+
+    if not new_rows and not existing_rows:
+        # Touch an empty file so aggregate_30d can read without erroring.
+        with all_csv.open("w", encoding="utf-8", newline="") as f:
+            csv.DictWriter(f, fieldnames=_ALL_FIELDS).writeheader()
+        return 0
+
+    out_rows = existing_rows + new_rows
+    with all_csv.open("w", encoding="utf-8", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=_ALL_FIELDS)
+        w.writeheader()
+        for r in out_rows:
+            w.writerow({k: r.get(k, "") for k in _ALL_FIELDS})
+    log.info("all.csv: %d existing + %d new rows", len(existing_rows), len(new_rows))
+    return len(new_rows)
+
+
+_ALL_FIELDS = ["date", "symbol", "side", "qty", "client", "price", "source"]
+
+
+def _dedupe_key(row: dict) -> tuple:
+    return (
+        row.get("date", ""),
+        row.get("symbol", ""),
+        row.get("side", ""),
+        row.get("qty", ""),
+        (row.get("client") or "")[:80],
     )
+
+
+def _read_nse_csv(path: Path) -> list[dict]:
+    """NSE CSVs sometimes have a 1-line preamble before the header. Skip blanks."""
+    rows: list[dict] = []
+    with path.open("r", encoding="utf-8", errors="ignore", newline="") as f:
+        lines = [ln for ln in f if ln.strip()]
+    if not lines:
+        return rows
+    # Find the header line — it always contains "Symbol" and "Buy/Sell"
+    start = 0
+    for i, ln in enumerate(lines[:5]):
+        if "Symbol" in ln and "Buy/Sell" in ln:
+            start = i
+            break
+    body = lines[start:]
+    reader = csv.DictReader(body)
+    for r in reader:
+        rows.append({(k or "").strip(): (v or "").strip() for k, v in r.items()})
+    return rows
+
+
+def _normalize_nse_row(raw: dict, source: str) -> Optional[dict]:
+    """Map NSE columns to our schema. Returns None on parse failure."""
+    sym = raw.get("Symbol") or raw.get("SYMBOL")
+    if not sym:
+        return None
+
+    # Date format on NSE: typically DD-MMM-YYYY (e.g. 09-May-2026)
+    date_raw = raw.get("Date") or raw.get("DATE") or ""
+    try:
+        d = datetime.strptime(date_raw, "%d-%b-%Y").date()
+    except ValueError:
+        try:
+            d = datetime.strptime(date_raw, "%d/%m/%Y").date()
+        except ValueError:
+            return None
+
+    side = (raw.get("Buy/Sell") or raw.get("BUY/SELL") or "").upper().strip()
+    if side.startswith("B"):
+        side = "BUY"
+    elif side.startswith("S"):
+        side = "SELL"
+    else:
+        return None
+
+    qty_raw = raw.get("Quantity Traded") or raw.get("QUANTITY TRADED") or "0"
+    try:
+        qty = int(qty_raw.replace(",", "").replace(" ", ""))
+    except ValueError:
+        return None
+
+    client = raw.get("Client Name") or raw.get("CLIENT NAME") or ""
+    price_raw = (
+        raw.get("Trade Price / Wght. Avg. Price")
+        or raw.get("TRADE PRICE / WGHT. AVG. PRICE")
+        or raw.get("Price")
+        or "0"
+    )
+    try:
+        price = float(price_raw.replace(",", ""))
+    except ValueError:
+        price = 0.0
+
+    # NSE symbols are bare (e.g. "RELIANCE"). Our internal universe is
+    # Yahoo-style ("RELIANCE.NS"). Append the suffix so aggregate_30d matches.
+    if not sym.endswith(".NS"):
+        sym = sym + ".NS"
+
+    return {
+        "date": d.isoformat(),
+        "symbol": sym,
+        "side": side,
+        "qty": str(qty),
+        "client": client,
+        "price": f"{price:.2f}",
+        "source": source,
+    }
 
 
 # --------------------------------------------------------------------------- #

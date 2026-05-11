@@ -35,7 +35,7 @@ export function PicksPage() {
             <span className="font-mono">{data?.date ?? '—'}</span>
             {data && (
               <span className="ml-2 rounded bg-slate-100 px-2 py-0.5 text-xs uppercase tracking-wide text-slate-600">
-                {data.source === 'llm' ? 'AI-picked' : 'rule-based fallback'}
+                volume pipeline
               </span>
             )}
             {data?.demo_mode && (
@@ -74,8 +74,7 @@ export function PicksPage() {
             <div className="font-semibold">Could not load picks.</div>
             <div className="mt-1 font-mono text-xs">{(error as Error).message}</div>
             <div className="mt-2 text-xs text-rose-700">
-              Check that the backend is running on http://localhost:8000 and that
-              ANTHROPIC_API_KEY is set in <code>backend/.env</code>.
+              Check that the backend is running on http://localhost:8000.
             </div>
           </div>
         )}
@@ -104,7 +103,7 @@ export function PicksPage() {
               Nothing actionable today
             </h2>
             <p className="mx-auto mt-2 max-w-xl text-sm text-slate-600">
-              No Nifty 50 stock currently shows a clean long-term institutional-accumulation
+              No Nifty 100 stock currently shows a clean long-term institutional-accumulation
               footprint that meets the gate. The right move is to{' '}
               <span className="font-semibold">do nothing</span> and check back tomorrow.
             </p>

@@ -1,12 +1,10 @@
-"""Stockiya middleware (intelligence + API layer).
+"""Stockiya middleware (HTTP API layer).
 
 Responsibilities:
-- Read prepared signals from the backend's disk artifacts
-- Optionally call Claude (LLM) to enhance pick rationale text
-- Expose HTTP endpoints (/api/picks, /api/stock/{symbol}, /api/health)
-- Cache daily picks output
+- Serve the day's precomputed picks (from `data/picks_<date>.json`)
+- Serve the volume-strategy detail panel for any Nifty 100 ticker
+- Cache stock-detail responses in-process for 15 minutes
 
-This is where the HTTP world meets the data world. The UI hits this layer.
-The backend layer must already have produced the prepared artifacts — this
-layer never fetches market data itself.
+This is where the HTTP world meets the data world. The pipeline itself
+(scoring, ranking, hypothesis, render) lives in `backend/`. No LLM calls.
 """

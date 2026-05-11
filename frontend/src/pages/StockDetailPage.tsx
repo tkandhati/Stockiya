@@ -8,10 +8,8 @@ import {
   AlertTriangle,
   CalendarClock,
 } from 'lucide-react'
-import { fetchStockDetail, fmtCr, fmtINR, fmtPct } from '../api'
+import { fetchStockDetail, fmtINR, fmtPct } from '../api'
 import { AccumulationCard } from '../components/AccumulationCard'
-import { PeerTable } from '../components/PeerTable'
-import { ValuationCard } from '../components/ValuationCard'
 import { PriceSparkline } from '../components/PriceSparkline'
 import { ExitScenarios } from '../components/ExitScenarios'
 import { ReasoningChecklist } from '../components/ReasoningChecklist'
@@ -85,14 +83,27 @@ export function StockDetailPage() {
             </div>
 
             <dl className="mt-5 grid grid-cols-2 gap-x-6 gap-y-2 border-t border-slate-100 pt-4 text-sm md:grid-cols-4">
-              <Mini label="Market cap" value={fmtCr(data.market_cap_cr)} />
               <Mini label="52w high" value={fmtINR(data.fifty_two_w_high)} />
               <Mini label="52w low" value={fmtINR(data.fifty_two_w_low)} />
               <Mini label="200-day MA" value={fmtINR(data.ma200)} />
+              <Mini
+                label="vs 200d MA"
+                value={
+                  data.current != null && data.ma200
+                    ? fmtPct((data.current / data.ma200 - 1) * 100)
+                    : '—'
+                }
+              />
               <Mini label="3m return" value={fmtPct(data.return_3m_pct)} />
               <Mini label="1y return" value={fmtPct(data.return_1y_pct)} />
-              <Mini label="ROE" value={fmtPct(data.roe_pct)} />
-              <Mini label="P/E" value={data.pe?.toFixed(2) ?? '—'} />
+              <Mini
+                label="Weinstein"
+                value={data.accumulation?.weinstein_stage ?? 'undefined'}
+              />
+              <Mini
+                label="Wyckoff"
+                value={data.accumulation?.wyckoff_phase ?? 'indeterminate'}
+              />
             </dl>
           </header>
 
@@ -167,35 +178,11 @@ export function StockDetailPage() {
             <AccumulationCard accum={data.accumulation} />
           </section>
 
-          {data.headwind && (
-            <section className="mt-6 rounded-2xl border border-rose-200 bg-white p-6">
-              <h3 className="flex items-center gap-2 font-semibold text-rose-900">
-                <AlertTriangle className="h-4 w-4" />
-                Known sector / structural headwinds
-              </h3>
-              <p className="mt-1 text-xs text-slate-500">
-                Secondary context. If volume says accumulation but the sector is
-                structurally challenged, the case must be name-specific.
-              </p>
-              <p className="mt-3 whitespace-pre-line text-sm leading-relaxed text-slate-800">
-                {data.headwind}
-              </p>
-            </section>
-          )}
-
           {data.pick_today && (
             <section className="mt-6">
               <ExitScenarios pick={data.pick_today} />
             </section>
           )}
-
-          <section className="mt-6">
-            <ValuationCard detail={data} />
-          </section>
-
-          <section className="mt-6">
-            <PeerTable peers={data.peers} />
-          </section>
 
           <section className="mt-6">
             <PriceSparkline data={data.history_6m} />

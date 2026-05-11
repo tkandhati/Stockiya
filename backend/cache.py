@@ -1,9 +1,4 @@
-"""In-memory TTL caches used by the data layer.
-
-These are short-lived process caches to avoid hammering yfinance during a
-single request burst. The middleware-side daily-picks cache lives separately
-in `middleware/picks_cache.py`.
-"""
+"""In-memory TTL cache used by the middleware detail endpoint."""
 
 from __future__ import annotations
 
@@ -37,4 +32,3 @@ class TTLCache:
 
 
 detail_cache = TTLCache(maxsize=128, ttl_seconds=900)
-snapshot_cache = TTLCache(maxsize=128, ttl_seconds=900)

@@ -24,39 +24,16 @@ export interface Pick {
   weinstein_stage: WeinsteinStage
   target_window: TargetWindow
   reasoning: ReasoningPoint[]
+  composite_score: number
+  rank: number | null
 }
 
 export interface PicksResponse {
   date: string
   generated_at: string
-  source: 'llm' | 'fallback'
+  source: 'pipeline'
   demo_mode: boolean
   picks: Pick[]
-}
-
-export interface Peer {
-  symbol: string
-  company: string
-  current: number | null
-  pe: number | null
-  pb: number | null
-  market_cap_cr: number | null
-  return_1y_pct: number | null
-  is_target: boolean
-}
-
-export interface ValuationSignals {
-  pe_vs_sector: 'cheap' | 'fair' | 'expensive' | null
-  sector_pe_median: number | null
-  price_vs_200dma_pct: number | null
-  price_in_52w_band_pct: number | null
-}
-
-export interface VolumeSignals {
-  today: number | null
-  avg_30d: number | null
-  ratio: number | null
-  label: 'surge' | 'normal' | 'weak' | 'unknown'
 }
 
 export type AccumVerdict = 'accumulating' | 'neutral' | 'distributing' | 'unknown'
@@ -161,23 +138,13 @@ export interface StockDetail {
   industry: string | null
   current: number | null
   day_change_pct: number | null
-  pe: number | null
-  pb: number | null
-  market_cap_cr: number | null
-  dividend_yield_pct: number | null
-  roe_pct: number | null
-  debt_to_equity: number | null
   fifty_two_w_high: number | null
   fifty_two_w_low: number | null
   ma200: number | null
   return_3m_pct: number | null
   return_1y_pct: number | null
-  valuation: ValuationSignals
-  volume: VolumeSignals
   accumulation: Accumulation
-  peers: Peer[]
   history_6m: { date: string; close: number }[]
   pick_today: Pick | null
-  headwind: string | null
   demo_mode: boolean
 }

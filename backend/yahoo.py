@@ -1,7 +1,7 @@
 """Thin wrappers over yfinance with safe `None` handling.
 
-yfinance frequently returns missing fields for Indian tickers, so every getter
-returns Optional and never throws on a single ticker failure.
+Returns only what the volume-only pipeline needs: price + OHLCV history +
+labels (sector/industry are kept for display, no numeric fundamentals).
 
 Set DEMO_MODE=1 to bypass yfinance entirely and serve bundled fixtures —
 useful when running behind a network that blocks Yahoo Finance.
@@ -36,31 +36,23 @@ def _to_float(x: Any) -> Optional[float]:
     return f
 
 
-def _market_cap_cr(market_cap: Any) -> Optional[float]:
-    """Yahoo gives market cap in INR for .NS tickers. Convert to crores."""
-    f = _to_float(market_cap)
-    if f is None:
-        return None
-    return round(f / 1e7, 2)
-
-
 @lru_cache(maxsize=128)
 def _ticker(symbol: str) -> yf.Ticker:
     return yf.Ticker(symbol)
 
 
 def snapshot(symbol: str) -> dict:
-    """Compact fundamentals + price snapshot for one ticker."""
+    """Price + display snapshot for one ticker. No numeric fundamentals."""
     if _demo_enabled():
         demo = DEMO_SNAPSHOTS.get(symbol)
         if demo:
             return dict(demo)
         return {
             "symbol": symbol, "company": symbol, "sector": None, "industry": None,
-            "current": None, "day_change_pct": None, "pe": None, "forward_pe": None,
-            "pb": None, "market_cap_cr": None, "dividend_yield_pct": None, "roe_pct": None,
-            "debt_to_equity": None, "fifty_two_w_high": None, "fifty_two_w_low": None,
-            "ma50": None, "ma200": None, "return_3m_pct": None, "return_1y_pct": None,
+            "current": None, "day_change_pct": None,
+            "fifty_two_w_high": None, "fifty_two_w_low": None,
+            "ma50": None, "ma200": None,
+            "return_3m_pct": None, "return_1y_pct": None,
             "vol_today": None, "vol_avg30": None,
         }
     t = _ticker(symbol)
@@ -118,21 +110,6 @@ def snapshot(symbol: str) -> dict:
         "industry": info.get("industry"),
         "current": current,
         "day_change_pct": day_change_pct,
-        "pe": _to_float(info.get("trailingPE")),
-        "forward_pe": _to_float(info.get("forwardPE")),
-        "pb": _to_float(info.get("priceToBook")),
-        "market_cap_cr": _market_cap_cr(info.get("marketCap")),
-        "dividend_yield_pct": (
-            round(_to_float(info.get("dividendYield")) * 100, 2)
-            if _to_float(info.get("dividendYield")) is not None
-            else None
-        ),
-        "roe_pct": (
-            round(_to_float(info.get("returnOnEquity")) * 100, 2)
-            if _to_float(info.get("returnOnEquity")) is not None
-            else None
-        ),
-        "debt_to_equity": _to_float(info.get("debtToEquity")),
         "fifty_two_w_high": _to_float(info.get("fiftyTwoWeekHigh")) or fifty_two_high,
         "fifty_two_w_low": _to_float(info.get("fiftyTwoWeekLow")) or fifty_two_low,
         "ma50": ma50,
@@ -169,7 +146,6 @@ def history_ohlcv(symbol: str) -> pd.DataFrame:
     return h[cols].dropna(subset=["Close"]).copy()
 
 
-# Backward-compat alias used by older callers — same data, longer window.
 def history_ohlcv_6m(symbol: str) -> pd.DataFrame:
     return history_ohlcv(symbol)
 

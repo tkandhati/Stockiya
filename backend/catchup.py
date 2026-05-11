@@ -1,19 +1,10 @@
-"""Startup self-healing — detect and fix missing data files.
+"""Startup self-healing — detect missing artifacts and trigger backfill.
 
-When the middleware boots (or the user runs `python -m backend.catchup`), this
-module checks what data is current and what's stale, then triggers the right
-backfill:
+When the middleware boots (or you run `python -m backend.catchup` manually),
+this module checks:
 
-  1. `data/prepared/<TODAY>/` missing  → run the nightly orchestrator.
+  1. `data/picks_<TODAY>.json` missing  → run the nightly orchestrator.
   2. Open picks have no weekly close for the most recent Friday → run weekly.
-  3. Block-deal cache stale (TODO when live downloader is wired) → refresh.
-
-What it does NOT do (deliberately):
-  - Backfill historical `data/prepared/<DATE>/` for past days. Yahoo gives us
-    "data ending today", so we can't reconstruct yesterday's snapshot. Only
-    today's view is meaningful.
-  - Block on app startup. Catchup runs in a background thread; the API serves
-    immediately and self-heals as data lands.
 
 Run manually:
     python -m backend.catchup
@@ -22,7 +13,6 @@ Run manually:
 from __future__ import annotations
 
 import logging
-import os
 import sys
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -46,62 +36,32 @@ logging.basicConfig(
 log = logging.getLogger("catchup")
 
 _DATA_DIR = _PROJECT_ROOT / "data"
-_PREPARED_DIR = _DATA_DIR / "prepared"
 _PORTFOLIO_CSV = _DATA_DIR / "portfolio.csv"
 _WEEKLY_CSV = _DATA_DIR / "portfolio_weekly.csv"
 
-
-# --------------------------------------------------------------------------- #
-# Date helpers
-# --------------------------------------------------------------------------- #
 
 def _ist_today() -> date:
     return datetime.now(IST).date()
 
 
 def is_trading_day(d: date) -> bool:
-    """Mon-Fri only. Indian market holidays are NOT in this calendar — they'll
-    appear as 'failed nightly' which is fine for catchup purposes (we just
-    won't try to backfill them).
-    """
     return d.weekday() < 5
 
 
 def most_recent_friday(today: Optional[date] = None) -> date:
     today = today or _ist_today()
-    while today.weekday() != 4:  # 4 = Friday
+    while today.weekday() != 4:
         today -= timedelta(days=1)
     return today
 
 
-# --------------------------------------------------------------------------- #
-# State checks
-# --------------------------------------------------------------------------- #
-
-def latest_prepared_date() -> Optional[date]:
-    """Most recent `data/prepared/<DATE>/` directory that has a manifest."""
-    if not _PREPARED_DIR.exists():
-        return None
-    candidates: list[date] = []
-    for child in _PREPARED_DIR.iterdir():
-        if not child.is_dir():
-            continue
-        try:
-            d = date.fromisoformat(child.name)
-        except ValueError:
-            continue
-        if (child / "_manifest.json").exists():
-            candidates.append(d)
-    return max(candidates) if candidates else None
-
-
 def needs_nightly() -> bool:
-    """True if today's prepared/ directory is missing or has no manifest."""
+    """True if today's picks file is missing on a trading day."""
     today = _ist_today()
     if not is_trading_day(today):
-        return False  # don't backfill weekends
-    today_dir = _PREPARED_DIR / today.isoformat()
-    return not (today_dir / "_manifest.json").exists()
+        return False
+    today_file = _DATA_DIR / f"picks_{today.isoformat()}.json"
+    return not today_file.exists()
 
 
 def needs_weekly_update() -> bool:
@@ -119,8 +79,6 @@ def needs_weekly_update() -> bool:
         return False
 
     last_friday = most_recent_friday()
-    # If today is Friday past market close (after 16:00 IST) treat that as
-    # the relevant Friday; otherwise the previous Friday.
     today = _ist_today()
     if today == last_friday and datetime.now(IST).hour < 16:
         last_friday -= timedelta(days=7)
@@ -134,13 +92,8 @@ def needs_weekly_update() -> bool:
         for row in csv.DictReader(f):
             if row.get("week_ending") == last_friday_iso:
                 seen.add(row["pick_id"])
-    # Need an update if any open pick is missing a row for the last Friday.
     return bool(open_pick_ids - seen)
 
-
-# --------------------------------------------------------------------------- #
-# Actions
-# --------------------------------------------------------------------------- #
 
 def _run_nightly() -> dict:
     log.info("Running nightly orchestrator...")
@@ -158,20 +111,17 @@ def run_catchup() -> dict:
     """Top-level self-healing. Returns a summary dict of what was done."""
     summary: dict = {"started_at": datetime.now(IST).isoformat(timespec="seconds")}
 
-    # 1. Check / run nightly
     if needs_nightly():
-        log.info("Today's prepared/ missing — triggering nightly")
+        log.info("Today's picks file missing — triggering nightly")
         try:
             summary["nightly"] = _run_nightly()
         except Exception as e:
             log.exception("nightly catchup failed")
             summary["nightly_error"] = str(e)
     else:
-        latest = latest_prepared_date()
-        log.info("Prepared data current (latest = %s)", latest)
+        log.info("Picks file is current")
         summary["nightly"] = "skipped (current)"
 
-    # 2. Check / run weekly
     if needs_weekly_update():
         log.info("Weekly closes for open picks are stale — triggering weekly")
         try:

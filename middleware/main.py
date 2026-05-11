@@ -1,38 +1,32 @@
-"""Stockiya middleware — HTTP API + LLM picker.
+"""Stockiya middleware — HTTP API.
 
 Run from the project root:
     uvicorn middleware.main:app --reload --port 8000
 
-This service reads prepared data from the backend layer (peers, accumulation
-signals, fundamentals) and serves it to the UI. The LLM is called here via
-`picks.py`. The backend handles all market-data download and signal compute.
+This service serves the day's precomputed picks (from `data/picks_<date>.json`)
+and the volume-strategy detail panel for any Nifty 100 ticker. The pipeline
+itself lives in `backend/orchestrator.py` and `backend/stages/*`.
 """
 
 from __future__ import annotations
 
 import logging
 import os
-
 from pathlib import Path
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
-# Look for the .env file at backend/.env regardless of where uvicorn is launched.
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(_PROJECT_ROOT / "backend" / ".env")
 
-# Backend (data) layer — all market-data fetching + signal compute
-from backend.analysis import build_peers, valuation_signals, volume_signals  # noqa: E402
 from backend.cache import detail_cache  # noqa: E402
-from backend.headwinds import headwind_for  # noqa: E402
+from backend.signals import compute as compute_accumulation  # noqa: E402
 from backend.universe import UNIVERSE  # noqa: E402
-from backend.volume_signals import compute as compute_accumulation  # noqa: E402
 from backend.yahoo import history_6m, history_ohlcv, snapshot  # noqa: E402
 
-# Middleware (this package) — LLM picker, daily picks cache, API DTOs
-from .picks import generate_picks  # noqa: E402
+from .picks import generate_picks, get_or_generate_picks  # noqa: E402
 from .picks_cache import ist_today_iso, read_picks  # noqa: E402
 from .schemas import (  # noqa: E402
     AccumulationDTO,
@@ -47,7 +41,7 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 
-app = FastAPI(title="Stockiya", version="0.1.0")
+app = FastAPI(title="Stockiya", version="0.2.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -62,8 +56,7 @@ app.add_middleware(
 def _startup_self_heal() -> None:
     """On boot, check what data is current and trigger backfill in background.
 
-    Skipped if SKIP_CATCHUP=1 (handy in tests / dev) or if DEMO_MODE=1
-    (demo data is regenerated on every request anyway).
+    Skipped if SKIP_CATCHUP=1 (handy in tests / dev) or if DEMO_MODE=1.
     """
     if os.environ.get("SKIP_CATCHUP", "0") == "1":
         logging.getLogger("startup").info("SKIP_CATCHUP=1 — catchup disabled")
@@ -87,7 +80,6 @@ def _startup_self_heal() -> None:
 
 @app.get("/api/health")
 def health() -> dict:
-    import os
     return {
         "status": "ok",
         "date_ist": ist_today_iso(),
@@ -97,11 +89,7 @@ def health() -> dict:
 
 @app.get("/api/picks", response_model=PicksResponse)
 def get_picks() -> PicksResponse:
-    today = ist_today_iso()
-    cached = read_picks(today)
-    if cached:
-        return PicksResponse(**cached)
-    return generate_picks()
+    return get_or_generate_picks()
 
 
 @app.post("/api/picks/refresh", response_model=PicksResponse)
@@ -134,14 +122,10 @@ def stock_detail(symbol: str) -> StockDetail:
     if snap.get("current") is None:
         raise HTTPException(status_code=502, detail=f"Could not fetch data for {symbol}")
 
-    peers = build_peers(symbol, snap)
-    val = valuation_signals(snap, peers)
-    vol = volume_signals(snap)
     history = history_6m(symbol)
-
-    # Volume-strategy panel — the primary lens.
     ohlcv = history_ohlcv(symbol)
     accum = compute_accumulation(ohlcv, symbol=symbol)
+
     accumulation = AccumulationDTO(
         days_used=accum.days_used,
         verdict=accum.verdict,
@@ -163,7 +147,6 @@ def stock_detail(symbol: str) -> StockDetail:
         price_change_30d_pct=accum.price_change_30d_pct,
         vwap_60d=accum.vwap_60d,
         price_vs_vwap_pct=accum.price_vs_vwap_pct,
-        # Long-term
         weinstein_stage=accum.weinstein_stage,
         weinstein_note=accum.weinstein_note,
         ma_30w=accum.ma_30w,
@@ -179,11 +162,9 @@ def stock_detail(symbol: str) -> StockDetail:
         base_length_days=accum.base_length_days,
         vol_qoq_growth_pct=accum.vol_qoq_growth_pct,
         price_change_180d_pct=accum.price_change_180d_pct,
-        # Patterns
         pocket_pivot_count_30d=accum.pocket_pivot_count_30d,
         volume_dry_up=accum.volume_dry_up,
         canslim_breakout=accum.canslim_breakout,
-        # Block + bulk deals
         block_deal_buy_count_30d=accum.block_deal_buy_count_30d,
         block_deal_sell_count_30d=accum.block_deal_sell_count_30d,
         block_deal_net_qty_ratio=accum.block_deal_net_qty_ratio,
@@ -203,25 +184,15 @@ def stock_detail(symbol: str) -> StockDetail:
         industry=snap.get("industry"),
         current=snap.get("current"),
         day_change_pct=snap.get("day_change_pct"),
-        pe=snap.get("pe"),
-        pb=snap.get("pb"),
-        market_cap_cr=snap.get("market_cap_cr"),
-        dividend_yield_pct=snap.get("dividend_yield_pct"),
-        roe_pct=snap.get("roe_pct"),
-        debt_to_equity=snap.get("debt_to_equity"),
         fifty_two_w_high=snap.get("fifty_two_w_high"),
         fifty_two_w_low=snap.get("fifty_two_w_low"),
         ma200=snap.get("ma200"),
         return_3m_pct=snap.get("return_3m_pct"),
         return_1y_pct=snap.get("return_1y_pct"),
-        valuation=val,
-        volume=vol,
         accumulation=accumulation,
-        peers=peers,
         history_6m=history,
         pick_today=_todays_pick_for(symbol),
-        headwind=headwind_for(symbol),
-        demo_mode=__import__("os").environ.get("DEMO_MODE", "0") == "1",
+        demo_mode=os.environ.get("DEMO_MODE", "0") == "1",
     )
     detail_cache.set(symbol, detail)
     return detail

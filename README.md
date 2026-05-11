@@ -2,568 +2,170 @@
 
 > **Don't invent. Follow the institutions. Pick one.**
 
-Local web app that surfaces up to **3 Indian (Nifty 100) stock picks per day** for a 3–6 month long-term hold. Volume is the primary signal — picks are stocks where **institutions are visibly accumulating over multiple months**. Fundamentals, valuation, and sector view are secondary filters, not the driver.
+Local web app that surfaces up to **3 Indian (Nifty 100) stock picks per day** for a 3–6 month hold. Pure volume strategy — picks are stocks where **institutions are visibly accumulating over months**. Deterministic, no LLM, RL-ready.
 
 > Educational use only. **Not financial advice.**
 
 ---
 
-## What the app does
+## What it does
 
-1. **Screens the Nifty 100** (Nifty 50 + Nifty Next 50) every day for stocks showing a clean **multi-month institutional-accumulation footprint** — the spot *before* price moves.
-2. **Picks 0–3 setups** that clear the long-term volume gate. Quality over quantity: if only 1 stock qualifies, you see 1; if none qualify, you see *"nothing actionable today"*. No padding with weak picks. No sector caps — if the 3 strongest signals are all in banks, you hold 3 banks.
-3. **Tags every pick** with:
-   - **Stan Weinstein Stage** (`stage_1_to_2`, `stage_2_advance`) — only stages we buy
-   - **Entry timing** (`🎯 early`, `🚀 mid`, `⏱️ late`, `🛑 missed`)
-   - **Target window** (`3 months ± 1 month` for breakout-pending; `6 months ± 2 months` for slow compounders)
-4. **Ships every pick with all four exit scenarios** planned at entry — target, **volume-distribution stop (PRIMARY)**, hard price stop, time stop, and hypothesis-broken — each with a concrete trigger and action.
-5. **Generates an auditable point-by-point reasoning checklist** under every pick. ~12 lines you can independently verify on TradingView / Yahoo / Screener.in in 30 seconds each.
-6. **Caches results once per IST day.** Investing tool, not trading tool.
+1. **Screens Nifty 100** every day for multi-month institutional-accumulation footprints — the spot *before* price moves.
+2. **Picks 0–3 setups** that clear the volume gate. Quality over quantity — if nothing qualifies, you see *"nothing actionable today"*.
+3. **Every pick ships with** Weinstein stage, entry timing, target window, all 4 exit scenarios, and an auditable point-by-point reasoning checklist.
+4. **Every decision is traced** to `data/traces/run_<date>_<ticker>.jsonl` — the RL training dataset for tomorrow.
 
-Read [PRINCIPLES.md](./PRINCIPLES.md) for the full investing rule-set the engine and the LLM both operate under.
+Read [PRINCIPLES.md](./PRINCIPLES.md) for the investing rule-set.
 
 ---
 
-## Architecture — three layers
+## Architecture — pipeline of swappable stages
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│  Layer 1 — backend/   DATA + COMPUTE  (offline, runs nightly)   │
-│  • download OHLCV (Yahoo / NSE bhavcopy / demo fixtures)        │
-│  • compute 16 volume strategies per ticker                      │
-│  • write data/prepared/YYYY-MM-DD/<SYMBOL>.json artifacts       │
-│  • no HTTP, no LLM                                              │
-└────────────────────────────┬────────────────────────────────────┘
-                             │ JSON files on disk
-                             ▼
-┌─────────────────────────────────────────────────────────────────┐
-│  Layer 2 — middleware/   API + LLM  (online, on every request)  │
-│  • read prepared artifacts                                      │
-│  • rank candidates, apply gate, optionally call Claude          │
-│  • cache daily picks (data/picks_YYYY-MM-DD.json)               │
-│  • serve /api/health, /api/picks, /api/stock/{symbol}           │
-└────────────────────────────┬────────────────────────────────────┘
-                             │ HTTP (port 8000)
-                             ▼
-┌─────────────────────────────────────────────────────────────────┐
-│  Layer 3 — frontend/   UI  (browser, on user open)              │
-│  • Vite + React + TypeScript + Tailwind                         │
-│  • renders cards, AccumulationCard, ExitScenarios, checklist    │
-│  • proxies /api/* to middleware                                 │
-└─────────────────────────────────────────────────────────────────┘
+                       ┌─ rejected ─► trace log ─► RL replay buffer
+                       │
+[U] Universe ─► [I] Ingest ─► [HR] Hard Rejects ─► [LT] LongTerm Volume (50%) ─►
+[TT] Trend Template (15%) ─► [MT] MidTerm Volume (20%) ─► [DD] Direct Deals (10%) ─►
+[BR] Breakouts (5%) ─► [S] Score & Rank ─► [H] Hypothesis+Exit ─► [R] Render ─► UI
+                                                                                  │
+                                                                                  └─► [O] Outcome
+                                                                                        T+90/T+180
+                                                                                        feeds RL
 ```
 
-**Why split:** the backend can run on a machine with Yahoo access (home Wi-Fi, VPS) while the middleware runs anywhere. Artifacts on disk are auditable. The API path never touches the network for market data.
+Every stage = one file in `backend/stages/` with the same `run(ctx) -> StageResult` signature. **Replace any file to swap that stage's logic; nothing else changes.**
 
----
+Weights live in `backend/pipeline.py:STAGE_WEIGHTS`. Defensible against PRINCIPLES.md line-by-line:
 
-## The volume strategies (16, the canonical playbook)
-
-### Long-term lens (PRIMARY — 55% of composite score)
-
-| # | Strategy | Detects | Source |
-|---|---|---|---|
-| 1 | **Stan Weinstein Stage** | Stage 1 base / 1→2 turning / 2 advance / 3 top / 4 decline | Weinstein |
-| 2 | **30-week MA + slope** | Long-term trend anchor | Weinstein |
-| 3 | **OBV (90d, 180d) slope** | Cumulative buying for 3–6 months | Granville |
-| 4 | **Chaikin Money Flow (60d)** | Durable money flow over a quarter | Chaikin |
-| 5 | **Up/Down volume ratio (90d)** | Sustained net buying | classic |
-| 6 | **Minervini Trend Template** | 50d > 150d > 200d, all rising | Minervini |
-| 7 | **Base length** | Sessions in tight ±10% band — multi-month accumulation | Wyckoff/Minervini |
-| 8 | **QoQ volume growth** | Last 63d avg vs prior 63d avg | classic |
-
-### Medium-term confirmation (35%)
-
-| # | Strategy | Detects | Source |
-|---|---|---|---|
-| 9 | **Wyckoff phase** | Accumulation / Markup / Distribution / Markdown | Wyckoff |
-| 10 | **OBV (30d)** | Recent cumulative flow | Granville |
-| 11 | **Chaikin A/D Line slope** | Closes near highs vs lows on volume | Chaikin |
-| 12 | **CMF (21d)** | Bounded [-1, +1] flow oscillator | Chaikin |
-| 13 | **MFI (14d)** | Volume-weighted RSI; 50–80 healthy, >80 late | Quong & Soudack |
-| 14 | **Up/Down volume ratio (30d)** | Recent net buying | classic |
-
-### Pattern triggers (10% bonuses)
-
-| # | Strategy | Detects | Source |
-|---|---|---|---|
-| 15 | **Pocket Pivot** | Up-day volume > max prior 10 down-day vols on tight range | Morales / Kacher |
-| 16 | **Volume Dry-Up + CAN SLIM** | Pre-breakout (5d < 50% of 50d) / 20d high on 1.4× 50d avg | Minervini / O'Neil |
-
-Plus **VWAP posture (60d)** and **price tightness (20d)** as supporting signals.
-
-The composite **`accum_score` ∈ [-1, +1]** plus the Weinstein Stage tag and the entry-timing classification drive ranking. Every strategy that fires is shown to the user with its label and explanation — no black box.
-
----
-
-## Hard rejects (no matter how cheap or quality)
-
-- **Wyckoff Distribution or Markdown** phase
-- **Stan Weinstein Stage 4 decline**
-- **30-week MA sloping down**
-- **OBV (90d) negative AND CMF (60d) < 0** simultaneously — institutions have been leaving for months
-- **Parabolic 30d move > +25%** — late retail is buying from institutions
-- **Composite score ≤ 0** after all penalties
-
-If 0 stocks pass these gates, the API returns an empty list and the UI says *"Nothing actionable today"*.
-
----
-
-## Entry timing — the spot before price moves
-
-| Tag | Meaning | Score adjustment |
+| Stage | Weight | Why |
 |---|---|---|
-| `early` 🎯 | Volume signals firing, price still flat (30d <8%, 180d <12%, base ≥60d) — **the prize** | +0.25 |
-| `mid` 🚀 | Early Stage 2 advance (180d <25%) — breakout in progress | +0.05 to +0.10 |
-| `late` ⏱️ | Price already up >18% — buying from institutions, not with them | −0.10 |
-| `missed` 🛑 | Distribution / Markdown — exit zone, hard reject | −0.20 + reject |
+| LT Long-Term Volume | **50%** | PRINCIPLES §0 — the primary signal |
+| MT Mid-Term Volume  | **20%** | "Confirmation, not the decision" |
+| TT Trend Template   | **15%** | Minervini structure check |
+| DD Direct Deals     | **10%** | NSE block + bulk deals — named institutional trades |
+| BR Breakouts        | **5%**  | Pocket pivot / VDU / CAN SLIM timing |
+| | **100%** | |
 
 ---
 
-## Target window — when to expect resolution
+## The volume indicators
 
-Every pick ships with a suggested holding window derived from the long-term setup:
+All math lives in `backend/volume_signals.py` (kept as one engine) and is exposed via `backend/signals/`. Stages read the same `AccumulationSignals` object — no recomputation, no duplication.
 
-| Setup | Window | When |
-|---|---|---|
-| Stage 1→2 fresh transition + VDU + tight base | **3 months ± 1 month** | Breakout pending; usually resolves in ~3 months |
-| Stage 1 long base or early Stage 2 with sustained accumulation, no urgent trigger | **6 months ± 2 months** | Slow compounder; full multi-month advance |
-| Default | **4–6 months** | Re-evaluate at 4, exit by 6 unless thesis strengthened |
+### Long-term lens
+- Stan Weinstein Stage (1 base / 1→2 / 2 advance / 3 top / 4 decline)
+- 30-week MA + slope
+- OBV-90d / OBV-180d slopes (Granville)
+- Chaikin Money Flow (60d)
+- Up/Down volume ratio (90d)
+- Minervini Trend Template (50 > 150 > 200, rising)
+- Base length (days within ±10% band)
+- QoQ volume growth
 
-Surfaced as a calendar pill on PickCard and as a 4th stat (alongside buy/target/stop) on the detail page, with a "why this window" explanation.
+### Mid-term confirmation
+- Wyckoff phase (accumulation / markup / distribution / markdown)
+- OBV-30d, CMF-21d, MFI-14
+- Up/Down (30d), 60d VWAP posture
+- Vol-trend (10d vs 30d avg)
 
----
+### Breakout triggers
+- Pocket Pivot (Morales/Kacher)
+- Volume Dry-Up (Minervini)
+- CAN SLIM breakout (O'Neil)
 
-## Reasoning checklist (auditable per pick)
-
-Every pick comes with **~12 reasoning points** the user can independently verify. Each point has:
-
-- `label` — e.g. "OBV (90-day) — Granville"
-- `value` — e.g. "+78% over 90 sessions"
-- `state` — `bullish` / `neutral` / `bearish`
-- `why` — plain-English meaning
-- `verify` — exact instructions to check on TradingView / Yahoo / Screener.in
-
-Example:
-
-```
-=== HDFCBANK.NS — Stage 1→2 · early entry ===
-
-[+] Stan Weinstein Stage           Stage 1→2 — Turning
-[+] Entry timing                   early
-[+] OBV (90-day) Granville         +72% over 90 sessions
-[+] OBV (180-day)                  +1396% over 180 sessions
-[+] Chaikin Money Flow (60d)       +0.08
-[+] Up/Down volume ratio (90d)     1.91× (up vol / down vol)
-[+] Base length                    180 sessions in tight band
-[+] Wyckoff phase                  accumulation
-[+] Pattern triggers               Pocket Pivot ×3 last 30d
-[+] Composite accum score          +0.86
-[+] Quality (secondary)            P/E 21.6, ROE 16.9%
-[.] Sector headwind acknowledged   Private banks face NIM compression…
-```
-
-Rendered as an expandable checklist on the picks cards (compact) and fully expanded with verify instructions on the stock detail page.
+### Direct institutional flow
+- NSE block + bulk deal aggregates (30d net buy ratio)
 
 ---
 
-## Stack
+## Layout
 
-- **Backend (data layer):** Python 3.11+, pandas, numpy, yfinance
-- **Middleware (API + LLM):** FastAPI, uvicorn, anthropic SDK, python-dotenv, pydantic
-- **Frontend:** Vite + React 18 + TypeScript + Tailwind + TanStack Query + Recharts + lucide-react
-- **Storage:** flat JSON in `data/` keyed by IST date (no DB)
-- **LLM:** `claude-haiku-4-5` by default — sufficient for this task and ~₹0.50/day. Configurable via `MODEL` env var.
-
----
-
-## Setup
-
-### Prerequisites
-
-- Python 3.11 or 3.12 (3.13 also works)
-- Node.js 18+ (for Vite)
-- A network that can reach `query1.finance.yahoo.com` (or set `DEMO_MODE=1`)
-- *Optional:* an Anthropic API key — without it, the deterministic rule-based picker runs and picks are still good
-
-### 1. Install (one-time)
-
-```bash
-# from the project root
-cd backend
-python -m venv .venv
-
-# Windows
-.venv\Scripts\activate
-
-# macOS/Linux
-source .venv/bin/activate
-
-pip install --upgrade pip
-pip install -r requirements.txt
-cp .env.example .env       # then edit to taste; see Configuration below
-cd ..
-
-cd frontend
-npm install
-cd ..
 ```
+backend/
+├── pipeline.py             ← StageResult contract + run_pipeline()
+├── orchestrator.py         ← run_universe() — entry point
+├── stages/                 ← one file per stage (the swap points)
+│   ├── universe.py    [U]      gate
+│   ├── ingest.py      [I]      gate (fetch OHLCV + compute signals)
+│   ├── hard_rejects.py [HR]    gate (Wyckoff distribution, parabolic, etc.)
+│   ├── lt_volume.py   [LT]     50% — long-term institutional
+│   ├── trend_template.py [TT]  15% — Minervini structure
+│   ├── mt_volume.py   [MT]     20% — this-month confirmation
+│   ├── direct_deals.py [DD]    10% — NSE block + bulk deals
+│   ├── breakouts.py   [BR]     5%  — pocket pivot / VDU / CAN SLIM
+│   ├── score.py       [S]      rank + select top 3
+│   ├── hypothesis.py  [H]      template-built rationale + 4-exit plan
+│   ├── render.py      [R]      writes data/picks_<date>.json
+│   └── outcome.py     [O]      T+90 / T+180 realized return — RL reward
+├── signals/                ← facade over volume_signals.py
+├── volume_signals.py       ← all indicator math (1100 lines, one engine)
+├── block_deals.py          ← NSE block/bulk CSV downloader + 30d aggregator
+├── universe.py             ← Nifty 100 list
+├── yahoo.py, fetch.py      ← data source adapters
+├── demo_data.py            ← DEMO_MODE=1 synthetic OHLCV
+├── nightly.py, weekly.py   ← cron entry points
+├── catchup.py              ← self-heal on middleware boot
+└── portfolio.py            ← pick ledger + weekly close ledger
 
-If `pip install` fails on TLS (corporate-network MITM):
-```bash
-pip install pip-system-certs
-```
+middleware/
+├── main.py                 ← FastAPI app (/api/health, /api/picks, /api/stock/{symbol})
+├── picks.py                ← thin: read picks_<date>.json or call run_universe()
+├── schemas.py              ← Pydantic DTOs
+└── picks_cache.py          ← file-based daily cache
 
-### 2. Run the middleware (HTTP API)
+frontend/
+└── src/                    ← Vite + React + TypeScript + Tailwind
 
-From the **project root** (so Python can import both `backend.*` and `middleware.*` packages):
-
-```bash
-# Windows
-backend\.venv\Scripts\python.exe -m uvicorn middleware.main:app --reload --port 8000
-
-# macOS/Linux
-backend/.venv/bin/python -m uvicorn middleware.main:app --reload --port 8000
-```
-
-### 3. Run the frontend (in a second terminal)
-
-```bash
-cd frontend
-npm run dev
-```
-
-Open the URL Vite prints (default `http://localhost:5173`). The dev server proxies `/api/*` to the middleware on port 8000.
-
-### 4. (Optional) Schedule the nightly data prep
-
-The middleware computes signals on-demand by default. For production use, the **nightly orchestrator** pre-computes every Nifty 100 ticker once a day so picks are instant in the morning:
-
-```bash
-backend\.venv\Scripts\python.exe -m backend.nightly
-```
-
-Outputs `data/prepared/YYYY-MM-DD/<SYMBOL>.json` per ticker plus `_manifest.json`.
-
-**Wire it into Windows Task Scheduler** to run after IST market close (~19:30 IST):
-- Action → Start a program
-- Program: `<full-path>\backend\.venv\Scripts\python.exe`
-- Arguments: `-m backend.nightly`
-- Start in: `<full-path>`
-
-**macOS/Linux cron equivalent:**
-```cron
-30 19 * * 1-5 cd /path/to/Stockiya && backend/.venv/bin/python -m backend.nightly >> data/nightly.log 2>&1
+data/
+├── picks_<YYYY-MM-DD>.json ← today's picks (served to UI)
+├── traces/                 ← per-ticker JSONL stage trace — the RL dataset
+│   ├── run_<date>_<ticker>.jsonl
+│   └── outcomes.jsonl      ← T+90 / T+180 realized returns
+├── deals/                  ← cached NSE block + bulk deal CSVs
+├── portfolio.csv           ← every pick the engine ever surfaced
+└── portfolio_weekly.csv    ← Friday closes for open picks
 ```
 
 ---
 
-## Configuration (`backend/.env`)
+## HTTP API
 
-```env
-# Optional. Without this, the rule-based fallback runs (still produces good picks).
-ANTHROPIC_API_KEY=
+| Endpoint | Returns |
+|---|---|
+| `GET /api/health` | `{status, date_ist, demo_mode}` |
+| `GET /api/picks` | Today's picks (served from disk; runs pipeline if file missing) |
+| `POST /api/picks/refresh` | Force re-run the pipeline |
+| `GET /api/stock/{symbol}` | Detail panel (volume signals, sparkline, today's pick if any) |
 
-# Default model. Haiku is plenty — see notes below.
-MODEL=claude-haiku-4-5
-
-# 0 = real Yahoo Finance data (default)
-# 1 = bundled demo fixtures (UI development; do NOT trade on these prices)
-DEMO_MODE=0
-
-# yahoo (default) | bhavcopy (TODO — see backend/fetch.py)
-DATA_SOURCE=yahoo
-```
-
-### About the LLM
-
-For this task — read a 100-row CSV, apply explicit rules, output via tool-use — **Haiku is plenty**. The volume engine, picker logic, and reasoning checklist all run *without* the LLM. The LLM's only contribution is more natural rationale text.
-
-If `ANTHROPIC_API_KEY` is blank, the rule-based fallback runs and `source: "fallback"` shows in the response. Picks are essentially identical.
-
-### Demo mode
-
-> **⚠️ DEMO MODE PRICES ARE SYNTHETIC FIXTURES, NOT LIVE MARKET DATA.**
-> They are hand-coded approximations of plausible 2025-era values, used only
-> to exercise the UI and the volume engine when Yahoo Finance is unreachable
-> (e.g. corporate networks). **Do not act on them as if they were real prices.**
-> The frontend shows a loud red banner whenever `demo_mode` is on.
-
-The fixture set covers ~25 of the 100 tickers, each with a deterministic OHLCV pattern that exercises the full volume engine — some accumulating, some breaking out, some distributing, some neutral, some parabolic. The strategies produce **real** signals from this synthetic data — but the underlying prices/volumes themselves are fake.
+Interactive docs at <http://localhost:8000/docs> when middleware is running.
 
 ---
 
-## API endpoints
+## Setup & run
 
-| Method | Path | Purpose |
-|---|---|---|
-| `GET` | `/api/health` | Liveness check + `demo_mode` flag |
-| `GET` | `/api/picks` | Today's picks (0–3, cached daily, IST-keyed) |
-| `POST` | `/api/picks/refresh` | Force-regenerate today's picks |
-| `GET` | `/api/stock/{symbol}` | Full detail: volume strategies, peers, valuation, sector headwinds, history |
+See [INSTALL.md](./INSTALL.md) — `setup.bat` then `start.bat`. ~5 minutes.
 
-FastAPI also publishes interactive API docs at:
-- `http://localhost:8000/docs` — Swagger UI
-- `http://localhost:8000/redoc` — ReDoc
+## Operating cadence
 
-### Pick payload (`/api/picks`)
-
-```jsonc
-{
-  "date": "2026-05-07",
-  "generated_at": "2026-05-07T12:34:56+05:30",
-  "source": "fallback",                  // or "llm"
-  "demo_mode": false,
-  "picks": [
-    {
-      "symbol": "HDFCBANK.NS",
-      "company": "HDFC Bank Limited",
-      "current": 1990.0,
-      "best_buy_at": 1950.2,
-      "sell_target": 2388.0,
-      "stop_loss": 1755.18,
-      "rationale": "...volume signature lead, then quality...",
-      "risks": "...sector headwind + volume-distribution exit trigger...",
-      "confidence": "medium",
-      "upside_pct": 22.45,
-      "downside_pct": -10.0,
-      "entry_timing": "early",
-      "wyckoff_phase": "accumulation",
-      "weinstein_stage": "stage_1_to_2",
-      "target_window": {
-        "center_months": 3.0,
-        "tolerance_months": 1.0,
-        "label": "3 months ± 1 month",
-        "rationale": "Breakout setup..."
-      },
-      "reasoning": [
-        {
-          "label": "Stan Weinstein Stage",
-          "value": "Stage 1→2 — Turning",
-          "state": "bullish",
-          "why": "Stage 1→2 / Stage 2 advance is the only zone we buy.",
-          "verify": "On TradingView, plot the 30-week MA on the weekly chart..."
-        }
-        // ... ~12 points total
-      ]
-    }
-    // ... 0 to 3 picks total
-  ]
-}
-```
-
-### Stock detail (`/api/stock/{symbol}`)
-
-Returns:
-- **Basics** (name, sector, current, day change)
-- **Fundamentals** (P/E, P/B, ROE, D/E, market cap, dividend yield, 52w high/low, 200DMA)
-- **`accumulation`** — the full volume-strategy panel: `accum_score`, `verdict`, `wyckoff_phase`, `weinstein_stage`, `entry_timing`, every metric (OBV-30/90/180, CMF-21/60, MFI, A/D, VWAP, tightness, base length, QoQ vol growth, Minervini Trend Template flag), pattern flags (pocket pivots, VDU, CAN SLIM), and the `signals[]` list with each strategy's state, label, and description
-- `valuation` — P/E vs sector median verdict, 52w-band position, vs 200DMA
-- `peers` — same-sector peers
-- `history_6m` — 6 months of closes for the sparkline
-- `headwind` — sector-level structural risk text (if applicable)
-- `pick_today` — the Pick object if this stock is in today's picks (otherwise `null`)
-- `demo_mode` — flag for UI banner
+See [WEEKLY_TRACKING.md](./WEEKLY_TRACKING.md) — what to monitor weekly, bi-weekly, and at T+90/T+180 to keep the system honest.
 
 ---
 
-## How picks are generated
+## Roadmap
 
-```
-                            ┌─────────────────────┐
-                            │  Nifty 100 universe │   100 tickers
-                            └──────────┬──────────┘
-                                       │
-                          parallel fetch (100 threads)
-                                       │
-                                       ▼
-            ┌─────────────────────────────────────────────────────┐
-            │  For each ticker:                                   │
-            │  • yfinance fundamentals + 1y daily OHLCV           │
-            │  • volume_signals.compute() — all 16 strategies     │
-            │  • produces AccumulationSignals + entry_timing      │
-            └─────────────────────────────┬───────────────────────┘
-                                          │
-                                          ▼
-                  ┌────────────────────────────────────┐
-                  │  Hard rejects:                     │
-                  │  ✗ Stage 4 / Distribution / Markdown│
-                  │  ✗ entry_timing in {late, missed}  │
-                  │  ✗ Parabolic 30d move (>+25%)      │
-                  │  ✗ accum_score <= 0                │
-                  └────────────────┬───────────────────┘
-                                   │
-                ┌──────────────────┴──────────────────┐
-                │ ANTHROPIC_API_KEY present?          │
-                └────────────────┬────────────────────┘
-                  Yes            │           No (or LLM fails twice)
-                   ▼                                  ▼
-          Claude w/ tool-use                Rule-based ranker:
-          + structured schema             • 55% long-term composite
-          + headwinds context             • 35% medium-term composite
-          + 100-row CSV table             • +bonuses (PP / VDU / CAN SLIM)
-          + retry on validation           • +entry_timing boost (early)
-                   │                              • -headwind penalty
-                   ▼                                  ▼
-          Validate against gate            Top 3 by score (no sector cap)
-                   │                                  │
-                   └──────────────────┬───────────────┘
-                                      ▼
-                       Up to 3 picks, 0 if none qualify
-                                      │
-                                      ▼
-                       Cache to data/picks_<IST-DATE>.json
-```
-
-Every pick must include:
-- `best_buy_at <= current * 1.02` (entry near support / breakout start)
-- `sell_target > best_buy_at`, capped at +35% on a Nifty 100 large-cap
-- `stop_loss = best_buy_at × 0.90` (hard −10% backstop)
-- `weinstein_stage` in `{stage_1_to_2, stage_2_advance}`
-- `entry_timing` in `{early, mid}`
-- A bull-case `rationale` that **leads with the volume signature**
-- A bear-case `risks` that **names the sector headwind** and the **volume-distribution exit trigger**
-- A `target_window` (3m±1m / 6m±2m / 4-6m)
-- A `reasoning[]` checklist (~12 auditable points)
-
-If validation fails twice, the rule-based fallback fires.
-
----
-
-## Project structure
-
-```
-Stockiya/
-├── README.md                      ← you are here
-├── PRINCIPLES.md                  ← investing rules; LLM and engine both follow this
-├── .gitignore
-│
-├── backend/                       ← Layer 1: DATA + COMPUTE (offline)
-│   ├── __init__.py
-│   ├── universe.py                ← Nifty 100 ticker list + sector peer map
-│   ├── headwinds.py               ← sector-level structural risk knowledge
-│   ├── volume_signals.py          ← 16 strategies + Wyckoff phase + Weinstein stage + entry timing + target window
-│   ├── analysis.py                ← peer comparison, valuation verdict, basic volume tag
-│   ├── yahoo.py                   ← yfinance wrappers (snapshot, 1y OHLCV, sparkline)
-│   ├── demo_data.py               ← DEMO_MODE fixtures with regime-shaped OHLCV
-│   ├── cache.py                   ← in-memory TTL caches (snapshots, details)
-│   ├── schemas.py                 ← slim data-layer types (Peer, ValuationSignals, VolumeSignals)
-│   ├── fetch.py                   ← pluggable data source (yahoo / bhavcopy / demo)
-│   ├── nightly.py                 ← orchestrator: python -m backend.nightly
-│   ├── requirements.txt
-│   └── .env                       ← gitignored — your secrets
-│
-├── middleware/                    ← Layer 2: API + LLM (online)
-│   ├── __init__.py
-│   ├── main.py                    ← FastAPI app + endpoints + CORS
-│   ├── picks.py                   ← LLM picker + tool-use schema + rule-based fallback + reasoning builder
-│   ├── picks_cache.py             ← daily picks JSON file cache (IST-keyed)
-│   └── schemas.py                 ← API DTOs (Pick, PicksResponse, AccumulationDTO, StockDetail)
-│
-├── frontend/                      ← Layer 3: UI
-│   ├── package.json
-│   ├── vite.config.ts             ← /api proxy to :8000
-│   ├── tailwind.config.js
-│   ├── postcss.config.js
-│   ├── index.html
-│   └── src/
-│       ├── main.tsx               ← Router + QueryClientProvider
-│       ├── App.tsx                ← routes
-│       ├── api.ts                 ← typed fetch wrappers + INR/Cr/% formatters
-│       ├── types.ts               ← all DTOs mirroring middleware schemas
-│       ├── pages/
-│       │   ├── PicksPage.tsx          ← motto header + cards + refresh + disclaimer
-│       │   └── StockDetailPage.tsx    ← AccumulationCard hero, recommendation, exit scenarios, peers, valuation, sparkline
-│       └── components/
-│           ├── PickCard.tsx           ← entry-timing pill, Weinstein stage badge, target window, bull/bear panels, checklist
-│           ├── AccumulationCard.tsx   ← THE hero — Weinstein Stage + Wyckoff phase + score meter + long-term metrics block + every strategy
-│           ├── ReasoningChecklist.tsx ← auditable point-by-point checklist with verify instructions
-│           ├── ExitScenarios.tsx      ← four forward simulations: A/B1/B2/C/D, each with trigger·action·monitor
-│           ├── PeerTable.tsx          ← same-sector peers
-│           ├── ValuationCard.tsx      ← P/E vs sector verdict, 52w band, 200DMA
-│           ├── VolumeBlock.tsx        ← simple today-vs-avg
-│           ├── PriceSparkline.tsx     ← 6-month closing line (Recharts)
-│           ├── DemoBanner.tsx         ← loud warning when demo_mode is on
-│           └── Disclaimer.tsx
-│
-└── data/                          ← gitignored runtime artifacts
-    ├── picks_YYYY-MM-DD.json      ← middleware writes here
-    └── prepared/YYYY-MM-DD/       ← backend nightly writes here
-        ├── _manifest.json
-        ├── HDFCBANK.NS.json
-        └── ... (one per ticker)
-```
-
----
-
-## Daily-cadence philosophy
-
-This is an **investing** tool with a 3–6 month horizon, not a trading tool. The architecture assumes daily review:
-
-- Picks cache on a daily IST key — they only regenerate once per day on first hit.
-- All volume strategies run on **daily bars** — no intraday charts or live feeds.
-- Stock-detail responses cache for 15 minutes (more than enough for a multi-month hold).
-- The exit framework's PRIMARY trigger (volume distribution: OBV roll-over, CMF < 0, down-day volume dominating) is itself a **slow signal** that takes days to develop.
-
-If you find yourself reaching for refresh more than once a day, you've switched from investing to trading. **Stop. Log out. Come back tomorrow.**
-
----
-
-## Verification (60-second smoke test)
-
-```bash
-# Terminal 1: middleware (from project root)
-backend\.venv\Scripts\python.exe -m uvicorn middleware.main:app --port 8000
-
-# Terminal 2: frontend
-cd frontend && npm run dev
-
-# Terminal 3: hit the API
-curl http://localhost:8000/api/health
-# → {"status":"ok","date_ist":"...","demo_mode":...}
-
-curl http://localhost:8000/api/picks
-# → up to 3 picks with stage/timing/target_window/reasoning
-
-curl http://localhost:8000/api/stock/HDFCBANK.NS
-# → full accumulation panel + peers + history
-```
-
-Open the Vite URL and you should see:
-- Header with the motto and an `⚠ Demo data` pill (if `DEMO_MODE=1`)
-- 0–3 picks cards with entry-timing + Weinstein stage pills, target-window pill, expandable reasoning checklist
-- Click a card → detail page with AccumulationCard hero, recommendation panel, exit scenarios with **B1 (volume distribution) flagged PRIMARY**, peer table, valuation, 6-month chart
-
----
-
-## Common gotchas
-
-| Symptom | Cause | Fix |
-|---|---|---|
-| `pip install` fails with SSL error | Corporate network MITM proxy | `pip install pip-system-certs` then re-run |
-| `ModuleNotFoundError: backend` when running uvicorn | Started uvicorn from wrong directory | Always run from project root, not from `backend/` or `middleware/` |
-| Frontend at `:5173` shows blank page | Middleware not running | Start uvicorn first; check `http://localhost:8000/api/health` |
-| `/api/picks` returns 0 picks every day | Working as designed — universe doesn't have a clean setup today, OR `DEMO_MODE=1` with stale fixtures | Check `data/prepared/<today>/_manifest.json` for what passed/failed the gate |
-| Yahoo returns `429 Too Many Requests` | Rate-limit | Normal during a nightly burst; retry in 30 minutes. For permanent fix: switch to NSE bhavcopy (TODO in `backend/fetch.py`) |
-| Demo prices look wrong | They are wrong — they're hand-coded fixtures | Set `DEMO_MODE=0` and run on a network with Yahoo access |
-| `claude-haiku-4-5` not found | `anthropic` SDK too old | `pip install --upgrade anthropic` inside the venv |
-
----
-
-## What's NOT done yet (deliberately deferred)
-
-- **Middleware reading from `data/prepared/`** — the nightly orchestrator writes artifacts but the API still computes on-demand. ~30-line change to flip the API path to file reads. Big speed win when wired.
-- **NSE bhavcopy data source** — `backend/fetch.py` has the stub. Implementing it removes Yahoo dependency entirely.
-- **Outcome tracking SQLite** — log every pick + whether it hit target / stop / time-out. Feedback loop for measuring whether principles actually work over months.
-- **News enrichment** — pulling last-7-day headlines for the 3 picks and asking Claude to flag risks. Sidecar to volume engine, not replacement.
+| Status | Item |
+|---|---|
+| ✅ done | Pipeline of swappable stages |
+| ✅ done | Per-ticker JSONL traces (RL dataset, no schema change needed) |
+| ✅ done | NSE block + bulk deals downloader |
+| ✅ done | Outcome tracker (T+90 / T+180 writes to `outcomes.jsonl`) |
+| ⏳ next | `scripts/weekly_report.py` — auto-generate the Friday report |
+| ⏳ next | Contextual-bandit weight tuner (once ~3 months of outcomes accumulated) |
+| ⏳ next | NSE bhavcopy adapter (replaces yfinance for India-native data) |
+| ⏳ later | Offline RL (CQL/IQL) for per-stage threshold tuning |
 
 ---
 
 ## Disclaimer
 
-This project is for **learning purposes**. Picks are algorithmic and **not financial advice**. Markets are risky; past patterns don't guarantee future returns. Always do your own research and consult a SEBI-registered advisor before investing real money.
-#   S t o k i y a  
- #   S t o k i y a  
- #   S t o k i y a  
- #   S t o k i y a  
- 
+Educational. Picks are algorithmic and **not financial advice**. The pipeline has **not been backtested** on multi-year Indian data — paper-trade the first 10–15 picks before deploying real capital.
