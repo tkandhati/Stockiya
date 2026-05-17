@@ -35,17 +35,48 @@ log = logging.getLogger("nightly")
 
 
 def run_nightly() -> dict:
-    """Refresh NSE deals, then run the volume-only pipeline over Nifty 100."""
+    """Refresh NSE deals, then run the volume-only pipeline over Nifty 100.
+
+    Persists outcome to `data/.last_run.json` so the /api/health/data probe
+    can surface failures in the UI (replaces silent-log-only behavior).
+    """
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    IST = ZoneInfo("Asia/Kolkata")
+    started = datetime.now(IST).isoformat(timespec="seconds")
+    errors: list[str] = []
+
     log.info("Refreshing NSE block + bulk deals...")
     try:
         fetch_and_cache_nse_deals()
-    except Exception:
+    except Exception as e:
         log.exception("NSE deal refresh failed (continuing with cached data)")
+        errors.append(f"nse_deals: {e}")
 
     log.info("Running pipeline...")
-    response = run_universe()
+    try:
+        response = run_universe()
+    except Exception as e:
+        log.exception("pipeline run failed")
+        errors.append(f"pipeline: {e}")
+        response = {"picks": [], "date": None, "error": str(e)}
     log.info("Done. Wrote %d picks to data/picks_%s.json",
              len(response.get("picks", [])), response.get("date"))
+
+    finished = datetime.now(IST).isoformat(timespec="seconds")
+    try:
+        from backend.data_health import record_run
+        record_run(
+            kind="nightly",
+            ok=not errors,
+            error="; ".join(errors),
+            started_at=started,
+            finished_at=finished,
+            extras={"picks": len(response.get("picks", []))},
+        )
+    except Exception:
+        log.exception("data_health.record_run failed (non-fatal)")
+
     return response
 
 

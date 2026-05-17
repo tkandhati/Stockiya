@@ -87,6 +87,14 @@ def health() -> dict:
     }
 
 
+@app.get("/api/health/data")
+def health_data() -> dict:
+    """Per-file data-health probe. See backend/data_health.py for what is
+    checked. Returned shape is consumed by frontend/src/pages/DataHealthPage."""
+    from backend.data_health import probe
+    return probe().to_dict()
+
+
 @app.get("/api/picks", response_model=PicksResponse)
 def get_picks() -> PicksResponse:
     return get_or_generate_picks()

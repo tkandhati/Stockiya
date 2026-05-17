@@ -9,6 +9,7 @@ useful when running behind a network that blocks Yahoo Finance.
 
 from __future__ import annotations
 
+import logging
 import math
 import os
 from functools import lru_cache
@@ -18,6 +19,8 @@ import pandas as pd
 import yfinance as yf
 
 from .demo_data import DEMO_SNAPSHOTS, demo_history_6m
+
+log = logging.getLogger("yahoo")
 
 
 def _demo_enabled() -> bool:
@@ -58,12 +61,14 @@ def snapshot(symbol: str) -> dict:
     t = _ticker(symbol)
     try:
         info: dict = t.info or {}
-    except Exception:
+    except Exception as e:
+        log.warning("yfinance .info failed for %s: %s", symbol, e)
         info = {}
 
     try:
         hist: pd.DataFrame = t.history(period="1y", auto_adjust=False)
-    except Exception:
+    except Exception as e:
+        log.warning("yfinance .history(1y) failed for %s: %s", symbol, e)
         hist = pd.DataFrame()
 
     current = _to_float(info.get("currentPrice")) or _to_float(info.get("regularMarketPrice"))
@@ -138,9 +143,11 @@ def history_ohlcv(symbol: str) -> pd.DataFrame:
     t = _ticker(symbol)
     try:
         h = t.history(period="1y", auto_adjust=False)
-    except Exception:
+    except Exception as e:
+        log.warning("history_ohlcv failed for %s: %s", symbol, e)
         return pd.DataFrame()
     if h is None or h.empty:
+        log.warning("history_ohlcv: yfinance returned empty for %s", symbol)
         return pd.DataFrame()
     cols = [c for c in ["Open", "High", "Low", "Close", "Volume"] if c in h.columns]
     return h[cols].dropna(subset=["Close"]).copy()
@@ -157,9 +164,11 @@ def history_6m(symbol: str) -> list[dict]:
     t = _ticker(symbol)
     try:
         hist = t.history(period="6mo", auto_adjust=False)
-    except Exception:
+    except Exception as e:
+        log.warning("history_6m failed for %s: %s", symbol, e)
         return []
     if hist.empty:
+        log.warning("history_6m: yfinance returned empty for %s", symbol)
         return []
     out: list[dict] = []
     for ts, row in hist.iterrows():

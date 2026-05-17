@@ -131,6 +131,31 @@ export interface Accumulation {
   signals: StrategySignal[]
 }
 
+export type HealthStatus = 'ok' | 'warn' | 'error'
+export type HealthOverall = 'green' | 'yellow' | 'red'
+
+export interface HealthItem {
+  id: string
+  label: string
+  path: string
+  status: HealthStatus
+  detail: string
+  fix: string | null
+  last_modified: string | null
+}
+
+export interface HealthGroup {
+  name: string
+  items: HealthItem[]
+}
+
+export interface DataHealthReport {
+  overall: HealthOverall
+  checked_at: string
+  summary: { ok: number; warn: number; error: number; total: number }
+  groups: HealthGroup[]
+}
+
 export interface StockDetail {
   symbol: string
   company: string

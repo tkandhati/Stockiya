@@ -108,8 +108,14 @@ def _run_weekly() -> dict:
 
 
 def run_catchup() -> dict:
-    """Top-level self-healing. Returns a summary dict of what was done."""
-    summary: dict = {"started_at": datetime.now(IST).isoformat(timespec="seconds")}
+    """Top-level self-healing. Returns a summary dict of what was done.
+
+    Persists the outcome to `data/.last_run.json` so the data-health probe
+    can surface failures in the UI instead of leaving them buried in logs.
+    """
+    started = datetime.now(IST).isoformat(timespec="seconds")
+    summary: dict = {"started_at": started}
+    errors: list[str] = []
 
     if needs_nightly():
         log.info("Today's picks file missing — triggering nightly")
@@ -118,6 +124,7 @@ def run_catchup() -> dict:
         except Exception as e:
             log.exception("nightly catchup failed")
             summary["nightly_error"] = str(e)
+            errors.append(f"nightly: {e}")
     else:
         log.info("Picks file is current")
         summary["nightly"] = "skipped (current)"
@@ -129,12 +136,28 @@ def run_catchup() -> dict:
         except Exception as e:
             log.exception("weekly catchup failed")
             summary["weekly_error"] = str(e)
+            errors.append(f"weekly: {e}")
     else:
         log.info("Weekly closes are current (or no open picks)")
         summary["weekly"] = "skipped (current)"
 
-    summary["finished_at"] = datetime.now(IST).isoformat(timespec="seconds")
+    finished = datetime.now(IST).isoformat(timespec="seconds")
+    summary["finished_at"] = finished
     log.info("Catchup done: %s", {k: v for k, v in summary.items() if k != "nightly"})
+
+    # Surface to /api/health/data — replaces previous silent-swallow behavior.
+    try:
+        from backend.data_health import record_run
+        record_run(
+            kind="catchup",
+            ok=not errors,
+            error="; ".join(errors),
+            started_at=started,
+            finished_at=finished,
+        )
+    except Exception:
+        log.exception("data_health.record_run failed (non-fatal)")
+
     return summary
 
 

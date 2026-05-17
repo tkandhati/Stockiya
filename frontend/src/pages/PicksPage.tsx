@@ -3,6 +3,7 @@ import { RefreshCw, Sparkles } from 'lucide-react'
 import { fetchPicks, refreshPicks } from '../api'
 import { Disclaimer } from '../components/Disclaimer'
 import { DemoBanner } from '../components/DemoBanner'
+import { DataHealthPill } from '../components/DataHealthPill'
 import { PickCard } from '../components/PickCard'
 import type { PicksResponse } from '../types'
 
@@ -44,6 +45,9 @@ export function PicksPage() {
               </span>
             )}
           </p>
+          <div className="mt-2">
+            <DataHealthPill />
+          </div>
         </div>
         <button
           onClick={() => refresh.mutate()}
