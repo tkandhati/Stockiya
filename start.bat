@@ -13,8 +13,8 @@ REM  PRE-FLIGHT CHECKS  -- catch problems BEFORE we launch services
 REM  every check prints what it is doing and what to do if it fails
 REM ==================================================================
 
-REM ---- [1/6] Backend venv exists ----------------------------------
-echo [1/6] Checking backend Python venv...
+REM ---- [1/5] Backend venv exists ----------------------------------
+echo [1/5] Checking backend Python venv...
 if not exist "backend\.venv\Scripts\python.exe" (
     echo       MISSING: backend\.venv\Scripts\python.exe
     echo       FIX:     Run setup.bat first.
@@ -24,8 +24,8 @@ if not exist "backend\.venv\Scripts\python.exe" (
 )
 echo       OK.
 
-REM ---- [2/6] Backend critical packages installed ------------------
-echo [2/6] Checking backend Python packages...
+REM ---- [2/5] Backend critical packages installed ------------------
+echo [2/5] Checking backend Python packages...
 backend\.venv\Scripts\python.exe -c "import fastapi, uvicorn, yfinance, pandas, pydantic" 2>nul
 if errorlevel 1 (
     echo       MISSING: one of fastapi / uvicorn / yfinance / pandas / pydantic
@@ -38,8 +38,8 @@ if errorlevel 1 (
 )
 echo       OK.
 
-REM ---- [3/6] Frontend node_modules exists -------------------------
-echo [3/6] Checking frontend node_modules...
+REM ---- [3/5] Frontend node_modules exists -------------------------
+echo [3/5] Checking frontend node_modules...
 if not exist "frontend\node_modules" (
     echo       MISSING: frontend\node_modules
     echo       FIX:     Run setup.bat first, or manually:
@@ -51,58 +51,8 @@ if not exist "frontend\node_modules" (
 )
 echo       OK.
 
-REM ---- [4/6] Tailwind CSS install consistency ---------------------
-REM  We use Tailwind v4 with the @tailwindcss/postcss plugin.
-REM  Detect: missing tailwindcss, OR v4 installed without @tailwindcss/postcss,
-REM  OR v3 installed (legacy) -- any of these will crash Vite. Auto-reinstall.
-echo [4/6] Checking tailwindcss + @tailwindcss/postcss are consistent...
-if not exist "frontend\node_modules\tailwindcss\package.json" (
-    echo       MISSING: tailwindcss not installed.
-    goto :clean_reinstall_frontend
-)
-
-set TWVER=
-for /f "tokens=2 delims=:," %%v in ('findstr /c:"\"version\"" "frontend\node_modules\tailwindcss\package.json"') do (
-    if not defined TWVER set TWVER=%%v
-)
-set TWVER=!TWVER:"=!
-set TWVER=!TWVER: =!
-echo       Installed tailwindcss: !TWVER!
-
-echo !TWVER! | findstr /b "4." >nul
-if errorlevel 1 (
-    echo       PROBLEM: tailwindcss !TWVER! is not v4 -- our config expects v4.
-    goto :clean_reinstall_frontend
-)
-
-if not exist "frontend\node_modules\@tailwindcss\postcss" (
-    echo       MISSING: @tailwindcss/postcss plugin (required for Tailwind v4).
-    goto :clean_reinstall_frontend
-)
-echo       OK (v4 + @tailwindcss/postcss present).
-goto :tailwind_done
-
-:clean_reinstall_frontend
-echo.
-echo       Deleting frontend\node_modules and package-lock.json ...
-pushd frontend
-if exist node_modules rmdir /S /Q node_modules
-if exist package-lock.json del /Q package-lock.json
-echo       Running npm install (this can take 1-2 min)...
-call npm install --silent
-if errorlevel 1 (
-    echo       npm install FAILED. Run setup.bat manually.
-    popd
-    pause
-    exit /b 1
-)
-popd
-echo       OK -- frontend reinstalled.
-
-:tailwind_done
-
-REM ---- [5/6] Port 8000 free ---------------------------------------
-echo [5/6] Checking port 8000 (middleware) is free...
+REM ---- [4/5] Port 8000 free ---------------------------------------
+echo [4/5] Checking port 8000 (middleware) is free...
 netstat -ano | findstr ":8000 " | findstr "LISTENING" >nul
 if not errorlevel 1 (
     echo       BUSY: port 8000 is already in use.
@@ -113,8 +63,8 @@ if not errorlevel 1 (
 )
 echo       OK.
 
-REM ---- [6/6] Port 5173 free (or vite will pick 5174+) -------------
-echo [6/6] Checking port 5173 (frontend) is free...
+REM ---- [5/5] Port 5173 free (or vite will pick 5174+) -------------
+echo [5/5] Checking port 5173 (frontend) is free...
 netstat -ano | findstr ":5173 " | findstr "LISTENING" >nul
 if not errorlevel 1 (
     echo       NOTE: port 5173 busy -- Vite will pick 5174/5175/5176 automatically.
