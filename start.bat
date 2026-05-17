@@ -51,14 +51,13 @@ if not exist "frontend\node_modules" (
 )
 echo       OK.
 
-REM ---- [4/6] Tailwind CSS major-version sanity --------------------
-REM  Our index.css uses v3 directives (@tailwind base/components/utilities).
-REM  A v4 install would crash with "PostCSS plugin has moved" -- detect and
-REM  fix it here instead of letting Vite blow up later.
-echo [4/6] Checking tailwindcss version (must be v3.x for our CSS)...
+REM ---- [4/6] Tailwind CSS install consistency ---------------------
+REM  We use Tailwind v4 with the @tailwindcss/postcss plugin.
+REM  Detect: missing tailwindcss, OR v4 installed without @tailwindcss/postcss,
+REM  OR v3 installed (legacy) -- any of these will crash Vite. Auto-reinstall.
+echo [4/6] Checking tailwindcss + @tailwindcss/postcss are consistent...
 if not exist "frontend\node_modules\tailwindcss\package.json" (
-    echo       MISSING: tailwindcss not installed at all.
-    echo       Auto-fixing: clean reinstall...
+    echo       MISSING: tailwindcss not installed.
     goto :clean_reinstall_frontend
 )
 
@@ -70,15 +69,17 @@ set TWVER=!TWVER:"=!
 set TWVER=!TWVER: =!
 echo       Installed tailwindcss: !TWVER!
 
-echo !TWVER! | findstr /b "3." >nul
+echo !TWVER! | findstr /b "4." >nul
 if errorlevel 1 (
-    echo.
-    echo       PROBLEM: tailwindcss !TWVER! is incompatible with our CSS.
-    echo                Our src\index.css uses v3 directives; v4 needs @tailwindcss/postcss.
-    echo       Auto-fixing: clean reinstall of frontend deps...
+    echo       PROBLEM: tailwindcss !TWVER! is not v4 -- our config expects v4.
     goto :clean_reinstall_frontend
 )
-echo       OK (v3.x).
+
+if not exist "frontend\node_modules\@tailwindcss\postcss" (
+    echo       MISSING: @tailwindcss/postcss plugin (required for Tailwind v4).
+    goto :clean_reinstall_frontend
+)
+echo       OK (v4 + @tailwindcss/postcss present).
 goto :tailwind_done
 
 :clean_reinstall_frontend
