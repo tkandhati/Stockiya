@@ -103,6 +103,21 @@ class RegimeDTO(BaseModel):
     checks: list[RegimeCheckDTO] = []
 
 
+class NearMissGate(BaseModel):
+    stage_id: str
+    label: str
+    evidence: list[str] = []
+    reason: Optional[str] = None
+
+
+class NearMiss(BaseModel):
+    symbol: str
+    company: str
+    passed_count: int
+    passed_gates: list[NearMissGate] = []
+    failed_gate: NearMissGate
+
+
 class PicksResponse(BaseModel):
     date: str
     generated_at: str
@@ -111,6 +126,7 @@ class PicksResponse(BaseModel):
     regime: Optional[RegimeDTO] = None
     message: Optional[str] = None
     picks: list[Pick] = []
+    near_misses: list[NearMiss] = []
 
 
 # --------------------------------------------------------------------------- #

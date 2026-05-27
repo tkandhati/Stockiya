@@ -30,11 +30,13 @@ def render_picks_response(
     demo_mode: bool = False,
     regime: Optional[dict] = None,
     message: Optional[str] = None,
+    near_misses: Optional[list[dict]] = None,
 ) -> dict:
     """Return a PicksResponse-shaped dict. Caller is responsible for writing.
 
-    `regime` and `message` are optional — when present they surface as
-    top-level fields the UI consumes for the banner / empty-state message.
+    `regime`, `message` and `near_misses` are optional — when present they
+    surface as top-level fields the UI consumes (banner / empty-state /
+    contender panel on zero-pick days).
     """
     response: dict = {
         "date": today_iso,
@@ -47,6 +49,8 @@ def render_picks_response(
         response["regime"] = regime
     if message is not None:
         response["message"] = message
+    if near_misses:
+        response["near_misses"] = near_misses
     return response
 
 

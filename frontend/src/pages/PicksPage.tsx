@@ -5,6 +5,7 @@ import { fetchPicks, refreshPicks } from '../api'
 import { Disclaimer } from '../components/Disclaimer'
 import { DemoBanner } from '../components/DemoBanner'
 import { DataHealthPill } from '../components/DataHealthPill'
+import { NearMissPanel } from '../components/NearMissPanel'
 import { PickCard } from '../components/PickCard'
 import { RegimeBanner } from '../components/RegimeBanner'
 import type { PicksResponse } from '../types'
@@ -112,22 +113,27 @@ export function PicksPage() {
         )}
 
         {data && data.picks.length === 0 && (
-          <div className="rounded-2xl border border-slate-200 bg-white p-10 text-center">
-            <div className="mx-auto h-12 w-12 rounded-full bg-slate-100 leading-[3rem] text-2xl">
-              ⏸️
+          <>
+            <div className="rounded-2xl border border-slate-200 bg-white p-10 text-center">
+              <div className="mx-auto h-12 w-12 rounded-full bg-slate-100 leading-[3rem] text-2xl">
+                ⏸️
+              </div>
+              <h2 className="mt-4 text-lg font-semibold text-slate-900">
+                {data.regime && !data.regime.passed
+                  ? 'Buy alerts halted'
+                  : 'Nothing actionable today'}
+              </h2>
+              <p className="mx-auto mt-2 max-w-xl text-sm text-slate-600">
+                {data.message ||
+                  (data.regime && !data.regime.passed
+                    ? 'Market regime is off. No alerts will issue until NIFTY 50 AND BANKNIFTY both close above their 50-day moving average.'
+                    : 'No Nifty 100 stock cleared all five gates today. Quality over quantity — capital preserved is capital available for the next real signal.')}
+              </p>
             </div>
-            <h2 className="mt-4 text-lg font-semibold text-slate-900">
-              {data.regime && !data.regime.passed
-                ? 'Buy alerts halted'
-                : 'Nothing actionable today'}
-            </h2>
-            <p className="mx-auto mt-2 max-w-xl text-sm text-slate-600">
-              {data.message ||
-                (data.regime && !data.regime.passed
-                  ? 'Market regime is off. No alerts will issue until NIFTY 50 AND BANKNIFTY both close above their 50-day moving average.'
-                  : 'No Nifty 100 stock cleared all four gates today. Quality over quantity — capital preserved is capital available for the next real signal.')}
-            </p>
-          </div>
+            {data.near_misses && data.near_misses.length > 0 && (
+              <NearMissPanel items={data.near_misses} />
+            )}
+          </>
         )}
       </main>
 

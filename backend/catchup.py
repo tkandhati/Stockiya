@@ -162,6 +162,10 @@ def _run_weekly() -> dict:
 def run_catchup() -> dict:
     """Top-level self-healing. Returns a summary dict of what was done.
 
+    Emits structured INFO logs so the middleware terminal tells a clear
+    story while the user is opening the app (the user can read along and
+    see exactly what's being loaded and why).
+
     Persists the outcome to `data/.last_run.json` so the data-health probe
     can surface failures in the UI instead of leaving them buried in logs.
     """
@@ -169,63 +173,91 @@ def run_catchup() -> dict:
     summary: dict = {"started_at": started}
     errors: list[str] = []
 
-    # ---- One-shot NSE deal refresh (covers ALL backfill days; the CSVs are
-    # rolling ~3 months, so we download once even when walking many days).
-    # Without this the DD bonus signal silently scores 0 for every ticker.
+    log.info("#" * 76)
+    log.info("#   STOCKYA STARTUP — data refresh")
+    log.info("#" * 76)
+
+    # ---- Step 1/3: NSE deal refresh ----
     import os as _os
+    log.info("[Step 1/3] NSE block + bulk deal refresh")
     if _os.environ.get("DEMO_MODE", "0") != "1":
         try:
             from backend.block_deals import fetch_and_cache_nse_deals
-            log.info("Refreshing NSE block + bulk deals (one-shot, before backfill)...")
-            fetch_and_cache_nse_deals()
+            block_path, bulk_path = fetch_and_cache_nse_deals()
+            block_sz = block_path.stat().st_size if block_path.exists() else 0
+            bulk_sz = bulk_path.stat().st_size if bulk_path.exists() else 0
+            log.info("[Step 1/3]   OK -- block.csv (%d bytes), bulk.csv (%d bytes)",
+                     block_sz, bulk_sz)
             summary["nse_deals"] = "ok"
         except Exception as e:
-            log.exception("NSE deal refresh failed (continuing with cached data if present)")
+            log.exception("[Step 1/3]   FAILED (continuing with cached data if present)")
             summary["nse_deals_error"] = str(e)
             errors.append(f"nse_deals: {e}")
     else:
+        log.info("[Step 1/3]   skipped (DEMO_MODE=1)")
         summary["nse_deals"] = "skipped (DEMO_MODE)"
 
-    # Walk every missing trading day, not just today.
+    # ---- Step 2/3: Backfill missing trading days ----
+    log.info("[Step 2/3] Backfill missing trading days")
     missing_days = list_missing_trading_days()
     if missing_days:
-        log.info("Catchup: %d missing trading days (%s -> %s)",
+        log.info("[Step 2/3]   %d day(s) to fill: %s",
                  len(missing_days),
-                 missing_days[0].isoformat(),
-                 missing_days[-1].isoformat())
+                 ", ".join(d.isoformat() for d in missing_days))
         summary["missing_days"] = [d.isoformat() for d in missing_days]
         nightly_results: dict[str, dict] = {}
-        for d in missing_days:
+        for i, d in enumerate(missing_days, start=1):
+            log.info("[Step 2/3]   (%d/%d) running pipeline for %s ...",
+                     i, len(missing_days), d.isoformat())
             try:
                 resp = _run_nightly_for(d)
+                n_picks = len(resp.get("picks", []))
+                regime_ok = resp.get("regime", {}).get("passed")
                 nightly_results[d.isoformat()] = {
-                    "picks": len(resp.get("picks", [])),
-                    "regime_passed": resp.get("regime", {}).get("passed"),
+                    "picks": n_picks,
+                    "regime_passed": regime_ok,
                 }
+                log.info("[Step 2/3]   (%d/%d) %s -> %d pick(s), regime=%s",
+                         i, len(missing_days), d.isoformat(), n_picks,
+                         "ON" if regime_ok else "HALTED")
             except Exception as e:
-                log.exception("backfill for %s failed", d.isoformat())
+                log.exception("[Step 2/3]   (%d/%d) backfill for %s failed",
+                              i, len(missing_days), d.isoformat())
                 nightly_results[d.isoformat()] = {"error": str(e)}
                 errors.append(f"nightly {d.isoformat()}: {e}")
         summary["nightly"] = nightly_results
     else:
-        log.info("Picks file is current — no backfill needed")
+        log.info("[Step 2/3]   no missing days; picks file is current")
         summary["nightly"] = "skipped (current)"
 
+    # ---- Step 3/3: Weekly close updater ----
+    log.info("[Step 3/3] Weekly close updater (open positions)")
     if needs_weekly_update():
-        log.info("Weekly closes for open picks are stale — triggering weekly")
+        log.info("[Step 3/3]   stale -- running weekly close updater")
         try:
-            summary["weekly"] = _run_weekly()
+            wk_summary = _run_weekly()
+            summary["weekly"] = wk_summary
+            log.info("[Step 3/3]   OK -- %s", wk_summary)
         except Exception as e:
-            log.exception("weekly catchup failed")
+            log.exception("[Step 3/3]   FAILED")
             summary["weekly_error"] = str(e)
             errors.append(f"weekly: {e}")
     else:
-        log.info("Weekly closes are current (or no open picks)")
+        log.info("[Step 3/3]   current; no update needed")
         summary["weekly"] = "skipped (current)"
 
     finished = datetime.now(IST).isoformat(timespec="seconds")
     summary["finished_at"] = finished
-    log.info("Catchup done: %s", {k: v for k, v in summary.items() if k != "nightly"})
+
+    log.info("#" * 76)
+    if errors:
+        log.info("#   STARTUP COMPLETE -- with %d warning(s)", len(errors))
+        for e in errors:
+            log.info("#     - %s", e)
+    else:
+        log.info("#   STARTUP COMPLETE -- all systems go")
+    log.info("#   For per-gate detail:  python -m backend.trace_audit")
+    log.info("#" * 76)
 
     # Surface to /api/health/data — replaces previous silent-swallow behavior.
     try:

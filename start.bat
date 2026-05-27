@@ -83,7 +83,9 @@ REM  LAUNCH
 REM ==================================================================
 
 echo Starting middleware (HTTP API) on http://localhost:8000 ...
-start "Stockiya middleware" /D "%~dp0" cmd /k "backend\.venv\Scripts\python.exe -m uvicorn middleware.main:app --port 8000"
+REM PYTHONUNBUFFERED=1 makes log lines flush immediately so you can watch
+REM the catchup + per-gate breakdown live as the app loads.
+start "Stockiya middleware" /D "%~dp0" cmd /k "set PYTHONUNBUFFERED=1 && backend\.venv\Scripts\python.exe -m uvicorn middleware.main:app --port 8000"
 
 echo Starting frontend (UI) on http://localhost:5173 ...
 start "Stockiya frontend" /D "%~dp0frontend" cmd /k "npm run dev"

@@ -24,6 +24,8 @@ from datetime import datetime
 from typing import Optional
 from zoneinfo import ZoneInfo
 
+from collections import defaultdict
+
 from .pipeline import PipelineResult, append_final_trace, run_pipeline
 from .stages import PER_TICKER_CHAIN
 from .stages.hypothesis import build_pick_payload
@@ -31,6 +33,109 @@ from .stages.rank import rank_survivors
 from .stages.regime import check_regime
 from .stages.render import render_picks_response, write_picks_file
 from .universe import UNIVERSE
+
+# Stages in canonical order — used for the per-gate breakdown log.
+_GATE_ORDER = ["U", "I", "LT", "CS", "VD", "BR"]
+_GATE_LABEL = {
+    "U": "Universe", "I": "Ingest", "LT": "Long-term flow",
+    "CS": "Consolidation", "VD": "Volume/Divergence", "BR": "Breakout",
+}
+
+# Near-miss qualification: a ticker must have cleared at least this many
+# gates to be interesting enough to surface on the empty-picks page.
+_NEAR_MISS_MIN_PASSED = 3
+
+
+def _collect_near_misses(results: list[PipelineResult], n: int = 5) -> list[dict]:
+    """Pick the top-N tickers that cleared the most gates and then failed.
+
+    Each entry shows what passed and the specific reason it failed at the
+    killing-blow gate. This is the panel the user sees at the bottom of the
+    picks page on a zero-pick day — proof that the chain is filtering on
+    real data, not silently dropping things.
+    """
+    rows = []
+    for r in results:
+        # Build the ordered chain of evaluated stages
+        chain = [
+            (sid, r.stage_results[sid])
+            for sid in _GATE_ORDER
+            if sid in r.stage_results
+        ]
+        if not chain:
+            continue
+        last_sid, last_sr = chain[-1]
+        # Only "near miss" if the final stage was a failure (else it's a survivor)
+        if last_sr.passed:
+            continue
+        passed = [(sid, sr) for sid, sr in chain if sr.passed]
+        if len(passed) < _NEAR_MISS_MIN_PASSED:
+            continue
+
+        rows.append({
+            "symbol": r.symbol,
+            "company": (r.snapshot or {}).get("company") or r.symbol,
+            "passed_gates": [
+                {
+                    "stage_id": sid,
+                    "label": _GATE_LABEL.get(sid, sid),
+                    "evidence": list(sr.evidence or [])[:2],   # top-2 lines per gate
+                }
+                for sid, sr in passed
+            ],
+            "failed_gate": {
+                "stage_id": last_sid,
+                "label": _GATE_LABEL.get(last_sid, last_sid),
+                "reason": last_sr.reason or "",
+                "evidence": list(last_sr.evidence or []),       # all failure lines
+            },
+            "passed_count": len(passed),
+        })
+
+    # Closer to passing = more interesting. Tiebreak by latest stage reached.
+    def _sort_key(row):
+        last_idx = _GATE_ORDER.index(row["failed_gate"]["stage_id"])
+        return (-row["passed_count"], -last_idx)
+
+    rows.sort(key=_sort_key)
+    return rows[:n]
+
+
+def _log_gate_breakdown(results: list[PipelineResult]) -> None:
+    """Print the live story: how many tickers cleared each gate, with the
+    top failure reason. The middleware terminal shows this in real time so
+    the user can confirm the chain is doing real work, not silently failing.
+    """
+    evaluated: dict[str, int] = defaultdict(int)
+    passed: dict[str, int] = defaultdict(int)
+    fail_reasons: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+
+    for r in results:
+        for sid, sr in r.stage_results.items():
+            if sid not in _GATE_ORDER:
+                continue
+            evaluated[sid] += 1
+            if sr.passed:
+                passed[sid] += 1
+            else:
+                key = (sr.reason or "").split(";")[0].strip()[:50] or "(no reason)"
+                fail_reasons[sid][key] += 1
+
+    log.info("  Per-gate breakdown:")
+    log.info("    Gate                eval  pass  fail   top failure reason")
+    log.info("    ------------------  ----  ----  ----   -------------------------------")
+    for sid in _GATE_ORDER:
+        if evaluated[sid] == 0:
+            log.info("    %-18s  %4d  %4d  %4d   (not reached)",
+                     _GATE_LABEL[sid], 0, 0, 0)
+            continue
+        f = evaluated[sid] - passed[sid]
+        top = sorted(fail_reasons[sid].items(), key=lambda x: -x[1])
+        top_txt = f"{top[0][1]}x {top[0][0][:30]}" if top else ""
+        log.info(
+            "    %-18s  %4d  %4d  %4d   %s",
+            _GATE_LABEL[sid], evaluated[sid], passed[sid], f, top_txt,
+        )
 
 IST = ZoneInfo("Asia/Kolkata")
 log = logging.getLogger("orchestrator")
@@ -51,14 +156,15 @@ def run_universe(
     """
     today_iso = today_iso or datetime.now(IST).date().isoformat()
     demo_mode = os.environ.get("DEMO_MODE", "0") == "1"
-    log.info(
-        "Pipeline run for %s — universe=%d, top_n=%d, account=%.0f",
-        today_iso, len(UNIVERSE), top_n, account_value,
-    )
+    log.info("=" * 76)
+    log.info("  PIPELINE RUN  %s   (universe=%d, top_n=%d, account=%.0f, demo=%s)",
+             today_iso, len(UNIVERSE), top_n, account_value, demo_mode)
+    log.info("=" * 76)
 
     # ---- Phase 0: Market regime gate ----
+    log.info("  [Phase 0/4] Market regime gate ...")
     regime = check_regime()
-    log.info("Regime: %s", regime.summary)
+    log.info("  [Phase 0/4] %s", regime.summary)
     if not regime.passed:
         response = render_picks_response(
             [], today_iso,
@@ -67,10 +173,13 @@ def run_universe(
             message=regime.summary,
         )
         path = write_picks_file(response)
-        log.info("Regime halted — wrote empty %s", path.name)
+        log.info("  ABORT: regime halted -> wrote empty %s", path.name)
+        log.info("=" * 76)
         return response
 
     # ---- Phase 1: per-ticker pipeline (parallel) ----
+    log.info("  [Phase 1/4] Running per-ticker chain over %d tickers (%d workers) ...",
+             len(UNIVERSE), max_workers)
     results: list[PipelineResult] = []
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
         futures = {
@@ -84,16 +193,26 @@ def run_universe(
                 log.exception("pipeline crashed for %s", futures[fut])
 
     survivors = [r for r in results if r.passed_gates]
-    log.info(
-        "Per-ticker: %d processed, %d cleared all gates",
-        len(results), len(survivors),
-    )
+    log.info("  [Phase 1/4] Done. %d processed, %d cleared ALL gates.",
+             len(results), len(survivors))
+    _log_gate_breakdown(results)
 
     # ---- Phase 2: rank + select ----
+    log.info("  [Phase 2/4] Confirmation ranking over %d survivors ...", len(survivors))
     selected = rank_survivors(survivors, top_n=top_n)
-    log.info("Selected %d picks (top_n=%d)", len(selected), top_n)
+    if selected:
+        log.info("  [Phase 2/4] Selected %d:", len(selected))
+        for pick in selected:
+            bonuses = (pick.confirmation_components or {}).get("bonuses_fired") or []
+            log.info("    #%d  %-15s  confirmation=%.3f  bonuses=%s",
+                     pick.rank, pick.symbol, pick.confirmation_score,
+                     ", ".join(bonuses) or "-")
+    else:
+        log.info("  [Phase 2/4] No survivors — 0 picks today.")
+        log.info("             (Run: python -m backend.trace_audit  for the near-miss list.)")
 
     # ---- Phase 3: build pick payloads for selected ----
+    log.info("  [Phase 3/4] Building pick payloads + position sizing ...")
     pick_payloads: list[dict] = []
     for res in selected:
         try:
@@ -115,17 +234,31 @@ def run_universe(
             log.exception("append_final_trace failed for %s", r.symbol)
 
     # ---- Phase 4: render to disk ----
+    log.info("  [Phase 4/4] Rendering picks_%s.json ...", today_iso)
     message: Optional[str] = None
+    near_misses: list[dict] = []
     if not pick_payloads:
         message = "Nothing actionable today — quality over quantity."
+        near_misses = _collect_near_misses(results, n=5)
+        if near_misses:
+            log.info("  [Phase 4/4] Top %d near-misses (cleared >= %d gates):",
+                     len(near_misses), _NEAR_MISS_MIN_PASSED)
+            for nm in near_misses:
+                log.info("    %-15s cleared %d/%d -- failed [%s] %s",
+                         nm["symbol"], nm["passed_count"], len(_GATE_ORDER),
+                         nm["failed_gate"]["stage_id"],
+                         (nm["failed_gate"]["reason"] or "")[:60])
     response = render_picks_response(
         pick_payloads, today_iso,
         demo_mode=demo_mode,
         regime=regime.as_dict(),
         message=message,
+        near_misses=near_misses,
     )
     path = write_picks_file(response)
-    log.info("Wrote %s — %d picks", path.name, len(pick_payloads))
+    log.info("  [Phase 4/4] Wrote %s  (%d pick%s)",
+             path.name, len(pick_payloads), "" if len(pick_payloads) == 1 else "s")
+    log.info("=" * 76)
 
     # ---- Phase 5: portfolio ledger ----
     try:

@@ -168,6 +168,21 @@ export interface PositionsResponse {
   positions: Position[]
 }
 
+export interface NearMissGate {
+  stage_id: string
+  label: string
+  evidence?: string[]
+  reason?: string | null
+}
+
+export interface NearMiss {
+  symbol: string
+  company: string
+  passed_count: number
+  passed_gates: NearMissGate[]
+  failed_gate: NearMissGate
+}
+
 export interface PicksResponse {
   date: string
   generated_at: string
@@ -176,6 +191,7 @@ export interface PicksResponse {
   regime?: Regime
   message?: string
   picks: Pick[]
+  near_misses?: NearMiss[]
 }
 
 // --------------------------------------------------------------------------
