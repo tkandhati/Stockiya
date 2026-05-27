@@ -59,7 +59,8 @@ Each stage is one file in `backend/stages/` with signature `run(ctx) -> StageRes
 |---|---|---|---|
 | **[RG] Regime** | `stages/regime.py` | Index trend filter | `close(^NSEI) > sma(^NSEI, 50)` **AND** `close(^NSEBANK) > sma(^NSEBANK, 50)` |
 | **[U] Universe** | `stages/universe.py` | Membership check | `symbol ∈ NIFTY100` |
-| **[I] Ingest** | `stages/ingest.py` | Fetch + compute indicators | SMA-50/150/200, ATR(14), OBV cumulative, rolling H/L over the last 260 daily bars |
+| **[I] Ingest** | `stages/ingest.py` | Fetch OHLCV + slice to as-of date | Pulls 1y daily; if `ctx.today_iso` is a past date, slices bars to that date (no lookahead) and overrides snapshot.current with the as-of close |
+| **[LT] Long-term flow** | `stages/lt_flow.py` | 3+ months of institutional accumulation | `obv_slope_90d >= +3%` AND `up_down_vol(90) >= 1.1` AND `sma_slope(150, lookback=50) >= 0` |
 | **[CS] Consolidation** | `stages/consolidation.py` | ATR tightness + duration + trend filter | `atr_pct(14) ≤ 4 %` **AND** `days_within_band(close, ±10 %) ∈ [25, 40]` **AND** `close > sma(150)` |
 | **[VD] Volume / Divergence** | `stages/volume.py` | Dry-up + bullish OBV–price divergence | `adv(5) / adv(50) < 0.50` **AND** divergence detector (split-window swing-low: price LL while OBV HL, or price flat ±2 % while OBV +≥2 %) |
 | **[BR] Breakout** | `stages/breakout.py` | Resistance break + volume confirm + candle close | `close > rolling_high(20, exclude_today=True)` **AND** `today_volume ≥ 1.5 × adv(50)` **AND** `(close − low) / (high − low) ≥ 0.67` |
@@ -132,10 +133,11 @@ If zero tickers cleared all four gates on a regime-on day, the page shows *"Noth
 | Interval | Job | Module |
 |---|---|---|
 | Once daily, post-EOD (16:30 IST) | Full pipeline | `backend/nightly.py` |
-| On middleware boot | Self-heal: re-run today if picks file missing | `backend/catchup.py` |
-| Once daily, late evening | Outcome check on all open picks | `backend/stages/outcome.py` |
-| Once weekly (Friday close) | Snapshot all open picks' Friday close | `backend/weekly.py` |
+| On middleware boot | Backfill: walk every missing trading day since the last picks file (capped at 30) | `backend/catchup.py` |
+| Once daily, late evening | Outcome check on all open picks (T+90 / T+180) | `backend/stages/outcome.py` |
+| Once weekly (Friday close) | Snapshot all open picks' Friday close; update T1/T2/stop status | `backend/weekly.py` |
 | On demand | Force re-run on the same EOD bar | `POST /api/picks/refresh` |
+| On `/api/positions` request | Read portfolio.csv, enrich with current prices + today's action | `backend/positions_view.py` |
 
 API serving and UI fetches are **stateless reads** of the JSON files produced above. No live computation in the request path.
 
