@@ -66,7 +66,7 @@ def snapshot(symbol: str) -> dict:
         info = {}
 
     try:
-        hist: pd.DataFrame = t.history(period="1y", auto_adjust=False)
+        hist: pd.DataFrame = t.history(period="1y", auto_adjust=True)
     except Exception as e:
         log.warning("yfinance .history(1y) failed for %s: %s", symbol, e)
         hist = pd.DataFrame()
@@ -142,7 +142,7 @@ def history_ohlcv(symbol: str) -> pd.DataFrame:
         return demo_ohlcv(symbol)
     t = _ticker(symbol)
     try:
-        h = t.history(period="1y", auto_adjust=False)
+        h = t.history(period="1y", auto_adjust=True)
     except Exception as e:
         log.warning("history_ohlcv failed for %s: %s", symbol, e)
         return pd.DataFrame()
@@ -163,7 +163,7 @@ def history_6m(symbol: str) -> list[dict]:
         return demo_history_6m(symbol)
     t = _ticker(symbol)
     try:
-        hist = t.history(period="6mo", auto_adjust=False)
+        hist = t.history(period="6mo", auto_adjust=True)
     except Exception as e:
         log.warning("history_6m failed for %s: %s", symbol, e)
         return []

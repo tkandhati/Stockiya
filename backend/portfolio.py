@@ -35,39 +35,87 @@ WEEKLY_CSV = _DATA_DIR / "portfolio_weekly.csv"
 log = logging.getLogger("portfolio")
 
 PORTFOLIO_FIELDS = [
-    "pick_id", "entry_date", "symbol", "company",
-    "entry_price", "target_price", "stop_price",
-    "target_window_label", "target_date", "target_min_date", "target_max_date",
-    "weinstein_stage", "entry_timing",
-    "headline", "risk_headline",
-    "status", "exit_date", "exit_price", "exit_reason", "pnl_pct",
+    # ---- Identity ----
+    "pick_id",
+    "trace_id",                  # UUID from pipeline run; joins to data/traces/run_<date>_<ticker>.jsonl
+    "entry_date",
+    "symbol",
+    "company",
+    # ---- Price plan (new gates spine) ----
+    "entry_price",
+    "stop_price",
+    "target_price",              # == t2_price (kept for backward compat with weekly updater)
+    "t1_price",
+    "t2_price",
+    # ---- Position sizing ----
+    "shares_total",
+    "shares_at_t1",
+    "shares_at_t2",
+    "account_value",
+    "risk_pct_of_account",
+    # ---- Why we picked it ----
+    "confirmation_score",
+    "confirmation_bonuses",      # '; '-joined list for CSV readability
+    "headline",
+    # ---- Time stops (computed at entry) ----
+    "target_window_label",
+    "target_date",
+    "target_min_date",
+    "target_max_date",
+    # ---- Legacy fields (kept so older rows still load) ----
+    "weinstein_stage",
+    "entry_timing",
+    "risk_headline",
+    # ---- Lifecycle / outcome ----
+    "status",                    # open | partial_t1 | target_hit | stopped | timed_out | hypothesis_broken
+    "hit_t1",                    # 'true' once T1 has been crossed
+    "hit_t1_date",
+    "exit_date",
+    "exit_price",
+    "exit_reason",
+    "pnl_pct",
     "last_updated",
 ]
 
 WEEKLY_FIELDS = [
     "pick_id", "symbol", "week_ending", "close",
     "pnl_from_entry_pct", "dist_to_target_pct", "dist_to_stop_pct",
+    "dist_to_t1_pct", "dist_to_t2_pct",   # NEW: ladder distances
 ]
 
 
 @dataclass
 class PortfolioRow:
-    pick_id: str
-    entry_date: str
-    symbol: str
-    company: str
-    entry_price: float
-    target_price: float
-    stop_price: float
-    target_window_label: str
-    target_date: str
-    target_min_date: str
-    target_max_date: str
-    weinstein_stage: str
-    entry_timing: str
-    headline: str
-    risk_headline: str
+    """All fields default to safe empty/zero values so the row can be built
+    progressively as the payload schema grows."""
+    pick_id: str = ""
+    trace_id: str = ""
+    entry_date: str = ""
+    symbol: str = ""
+    company: str = ""
+    entry_price: float = 0.0
+    stop_price: float = 0.0
+    target_price: float = 0.0
+    t1_price: float = 0.0
+    t2_price: float = 0.0
+    shares_total: int = 0
+    shares_at_t1: int = 0
+    shares_at_t2: int = 0
+    account_value: float = 0.0
+    risk_pct_of_account: float = 0.0
+    confirmation_score: float = 0.0
+    confirmation_bonuses: str = ""
+    headline: str = ""
+    target_window_label: str = ""
+    target_date: str = ""
+    target_min_date: str = ""
+    target_max_date: str = ""
+    weinstein_stage: str = ""
+    entry_timing: str = ""
+    risk_headline: str = ""
     status: str = "open"
+    hit_t1: str = ""
+    hit_t1_date: str = ""
     exit_date: str = ""
     exit_price: str = ""
     exit_reason: str = ""
@@ -138,9 +186,21 @@ def record_picks(picks_payload: dict) -> int:
         key = (p["symbol"], today)
         if key in existing:
             continue
+
+        # Extract price plan from new payload (price_plan dict) or fall back
+        # to legacy top-level aliases so older payloads still load.
+        plan = p.get("price_plan") or {}
+        entry_price = float(plan.get("entry") or p.get("best_buy_at") or 0)
+        stop_price = float(plan.get("stop") or p.get("stop_loss") or 0)
+        t1_price = float(plan.get("t1") or 0)
+        t2_price = float(plan.get("t2") or p.get("sell_target") or 0)
+
+        conf = p.get("confirmation") or {}
+        bonuses_fired = conf.get("bonuses_fired") or []
+
         tw = p.get("target_window") or {}
-        center = float(tw.get("center_months", 4.5))
-        tol = float(tw.get("tolerance_months", 1.5))
+        center = float(tw.get("center_months", 6.0))  # 6-month hold default
+        tol = float(tw.get("tolerance_months", 2.0))
         entry_d = date.fromisoformat(today)
         target_d = entry_d + timedelta(days=int(center * 30))
         target_min = entry_d + timedelta(days=int((center - tol) * 30))
@@ -148,19 +208,29 @@ def record_picks(picks_payload: dict) -> int:
 
         row = PortfolioRow(
             pick_id=_next_pick_id(rows),
+            trace_id=str(p.get("trace_id") or ""),
             entry_date=today,
             symbol=p["symbol"],
-            company=p["company"],
-            entry_price=float(p["best_buy_at"]),
-            target_price=float(p["sell_target"]),
-            stop_price=float(p["stop_loss"]),
+            company=p.get("company") or p["symbol"],
+            entry_price=entry_price,
+            stop_price=stop_price,
+            target_price=t2_price,        # legacy alias used by weekly updater
+            t1_price=t1_price,
+            t2_price=t2_price,
+            shares_total=int(plan.get("shares_total", 0)),
+            shares_at_t1=int(plan.get("shares_at_t1", 0)),
+            shares_at_t2=int(plan.get("shares_at_t2", 0)),
+            account_value=float(plan.get("account_value", 0)),
+            risk_pct_of_account=float(plan.get("risk_pct_of_account", 0)),
+            confirmation_score=float(conf.get("score", 0)),
+            confirmation_bonuses="; ".join(str(b) for b in bonuses_fired),
+            headline=p.get("headline", ""),
             target_window_label=tw.get("label", ""),
             target_date=target_d.isoformat(),
             target_min_date=target_min.isoformat(),
             target_max_date=target_max.isoformat(),
             weinstein_stage=p.get("weinstein_stage", ""),
             entry_timing=p.get("entry_timing", ""),
-            headline=p.get("headline", ""),
             risk_headline=p.get("risk_headline", ""),
             last_updated=datetime.now(IST).isoformat(timespec="seconds"),
         )
@@ -191,10 +261,10 @@ def update_open_picks(close_price_for: callable) -> dict:
     today = datetime.now(IST).date()
     week_ending = today.isoformat()
     weekly_rows: list[dict] = []
-    summary = {"open": 0, "target_hit": 0, "stopped": 0, "timed_out": 0}
+    summary = {"open": 0, "partial_t1": 0, "target_hit": 0, "stopped": 0, "timed_out": 0}
 
     for r in rows:
-        if r.get("status") != "open":
+        if r.get("status") not in ("open", "partial_t1"):
             continue
 
         sym = r["symbol"]
@@ -212,6 +282,8 @@ def update_open_picks(close_price_for: callable) -> dict:
         stop_px = float(r["stop_price"])
         pnl_pct = (close / entry_px - 1) * 100
 
+        t1_px = float(r.get("t1_price") or 0)
+        t2_px = float(r.get("t2_price") or target_px)
         weekly_rows.append({
             "pick_id": r["pick_id"],
             "symbol": sym,
@@ -220,10 +292,28 @@ def update_open_picks(close_price_for: callable) -> dict:
             "pnl_from_entry_pct": round(pnl_pct, 2),
             "dist_to_target_pct": round((close / target_px - 1) * 100, 2),
             "dist_to_stop_pct": round((close / stop_px - 1) * 100, 2),
+            "dist_to_t1_pct": (
+                round((close / t1_px - 1) * 100, 2) if t1_px > 0 else ""
+            ),
+            "dist_to_t2_pct": (
+                round((close / t2_px - 1) * 100, 2) if t2_px > 0 else ""
+            ),
         })
 
-        new_status = "open"
+        # Lifecycle decision — T1 partial first, then T2 / stop / time.
+        prior_status = r.get("status", "open")
+        hit_t1_already = (r.get("hit_t1") == "true")
+
+        new_status = prior_status
         exit_reason = ""
+
+        # T1 ladder rung: log the cross but DON'T close the position.
+        if t1_px > 0 and not hit_t1_already and close >= t1_px:
+            r["hit_t1"] = "true"
+            r["hit_t1_date"] = today.isoformat()
+            new_status = "partial_t1"   # half exited (notional), half still riding
+
+        # Closing conditions
         if close >= target_px:
             new_status, exit_reason = "target_hit", f"close {close:.2f} >= target {target_px:.2f}"
         elif close <= stop_px:
@@ -233,14 +323,16 @@ def update_open_picks(close_price_for: callable) -> dict:
             if today > target_max:
                 new_status, exit_reason = "timed_out", f"past target_max_date {target_max.isoformat()}"
 
-        if new_status != "open":
+        if new_status in ("target_hit", "stopped", "timed_out"):
             r["status"] = new_status
             r["exit_date"] = today.isoformat()
             r["exit_price"] = f"{close:.2f}"
             r["exit_reason"] = exit_reason
             r["pnl_pct"] = f"{pnl_pct:.2f}"
+        elif new_status == "partial_t1":
+            r["status"] = new_status
         r["last_updated"] = datetime.now(IST).isoformat(timespec="seconds")
-        summary[new_status] += 1
+        summary[new_status] = summary.get(new_status, 0) + 1
 
     if weekly_rows:
         _append_weekly(weekly_rows)

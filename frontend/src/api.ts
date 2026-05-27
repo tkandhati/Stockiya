@@ -1,4 +1,9 @@
-import type { DataHealthReport, PicksResponse, StockDetail } from './types'
+import type {
+  DataHealthReport,
+  PicksResponse,
+  PositionsResponse,
+  StockDetail,
+} from './types'
 
 async function jsonOrThrow<T>(res: Response): Promise<T> {
   if (!res.ok) {
@@ -14,6 +19,10 @@ export function fetchPicks(): Promise<PicksResponse> {
 
 export function refreshPicks(): Promise<PicksResponse> {
   return fetch('/api/picks/refresh', { method: 'POST' }).then(jsonOrThrow<PicksResponse>)
+}
+
+export function fetchPositions(): Promise<PositionsResponse> {
+  return fetch('/api/positions').then(jsonOrThrow<PositionsResponse>)
 }
 
 export function fetchStockDetail(symbol: string): Promise<StockDetail> {

@@ -1,10 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { RefreshCw, Sparkles } from 'lucide-react'
+import { Link } from 'react-router-dom'
+import { Briefcase, RefreshCw, Sparkles } from 'lucide-react'
 import { fetchPicks, refreshPicks } from '../api'
 import { Disclaimer } from '../components/Disclaimer'
 import { DemoBanner } from '../components/DemoBanner'
 import { DataHealthPill } from '../components/DataHealthPill'
 import { PickCard } from '../components/PickCard'
+import { RegimeBanner } from '../components/RegimeBanner'
 import type { PicksResponse } from '../types'
 
 export function PicksPage() {
@@ -49,17 +51,28 @@ export function PicksPage() {
             <DataHealthPill />
           </div>
         </div>
-        <button
-          onClick={() => refresh.mutate()}
-          disabled={refresh.isPending || isLoading}
-          className="flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 shadow-sm transition hover:border-slate-400 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          <RefreshCw
-            className={`h-4 w-4 ${refresh.isPending ? 'animate-spin' : ''}`}
-          />
-          {refresh.isPending ? 'Regenerating…' : 'Refresh picks'}
-        </button>
+        <div className="flex items-center gap-2">
+          <Link
+            to="/positions"
+            className="flex items-center gap-2 rounded-lg border border-indigo-300 bg-indigo-50 px-3 py-2 text-sm font-medium text-indigo-900 shadow-sm transition hover:border-indigo-400 hover:bg-indigo-100"
+          >
+            <Briefcase className="h-4 w-4" />
+            My positions
+          </Link>
+          <button
+            onClick={() => refresh.mutate()}
+            disabled={refresh.isPending || isLoading}
+            className="flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 shadow-sm transition hover:border-slate-400 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <RefreshCw
+              className={`h-4 w-4 ${refresh.isPending ? 'animate-spin' : ''}`}
+            />
+            {refresh.isPending ? 'Regenerating…' : 'Refresh picks'}
+          </button>
+        </div>
       </header>
+
+      {data?.regime && <RegimeBanner regime={data.regime} />}
 
       {data?.demo_mode && (
         <div className="mt-6">
@@ -104,16 +117,15 @@ export function PicksPage() {
               ⏸️
             </div>
             <h2 className="mt-4 text-lg font-semibold text-slate-900">
-              Nothing actionable today
+              {data.regime && !data.regime.passed
+                ? 'Buy alerts halted'
+                : 'Nothing actionable today'}
             </h2>
             <p className="mx-auto mt-2 max-w-xl text-sm text-slate-600">
-              No Nifty 100 stock currently shows a clean long-term institutional-accumulation
-              footprint that meets the gate. The right move is to{' '}
-              <span className="font-semibold">do nothing</span> and check back tomorrow.
-            </p>
-            <p className="mx-auto mt-3 max-w-xl text-xs text-slate-500">
-              Quality over quantity. We'd rather show 0 picks than pad with weak setups —
-              capital preserved is capital available for the next real signal.
+              {data.message ||
+                (data.regime && !data.regime.passed
+                  ? 'Market regime is off. No alerts will issue until NIFTY 50 AND BANKNIFTY both close above their 50-day moving average.'
+                  : 'No Nifty 100 stock cleared all four gates today. Quality over quantity — capital preserved is capital available for the next real signal.')}
             </p>
           </div>
         )}

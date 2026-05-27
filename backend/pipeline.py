@@ -45,7 +45,16 @@ log = logging.getLogger("pipeline")
 
 
 # --------------------------------------------------------------------------- #
-# Stage weights — the only place these live. Replace numbers, not code.
+# Trace schema version — bumped to 2 for the gates-based spine.
+# v1 rows from the old weighted-composite spine remain readable.
+# --------------------------------------------------------------------------- #
+
+SCHEMA_VERSION = 2
+
+# --------------------------------------------------------------------------- #
+# Stage weights — DEPRECATED. Retained so the old per-ticker chain still runs
+# during the rebuild. The new spine (regime → CS → VD → BR → rank) uses hard
+# gates and a confirmation-strength ranker, not weighted composites.
 # --------------------------------------------------------------------------- #
 
 STAGE_WEIGHTS: dict[str, float] = {
@@ -84,10 +93,15 @@ class PipelineContext:
     snapshot: dict = field(default_factory=dict)   # current price + headline
     signals: Any = None                     # AccumulationSignals, filled by [I]
     stage_results: dict[str, StageResult] = field(default_factory=dict)
-    composite_score: float = 0.0            # 0–100 (filled by [S])
-    selected: bool = False                  # filled by [S]
-    rank: Optional[int] = None              # filled by [S]
+    composite_score: float = 0.0            # DEPRECATED (old spine) — 0–100 from [S]
+    selected: bool = False                  # filled by [S] / [RK]
+    rank: Optional[int] = None              # filled by [S] / [RK]
     pick_payload: dict = field(default_factory=dict)  # filled by [H]/[R]
+    # --- New gates-based spine additions (orchestrator-populated) ---
+    regime_passed: Optional[bool] = None    # set by orchestrator before per-ticker run
+    account_value: float = 100000.0         # for [PS] Position Sizer; default 1 lakh
+    confirmation_score: float = 0.0         # filled by [RK]
+    confirmation_components: dict = field(default_factory=dict)  # margin + bonuses, filled by [RK]
 
 
 @dataclass
@@ -95,14 +109,18 @@ class PipelineResult:
     """Per-ticker outcome of a single pipeline run."""
     symbol: str
     trace_id: str
-    passed_gates: bool                 # cleared U/I/HR
-    composite_score: float             # 0–100
+    passed_gates: bool                 # cleared all gate stages in the chain
+    composite_score: float             # DEPRECATED (old spine) — 0–100
     selected: bool
     rank: Optional[int]
     stage_results: dict[str, StageResult]
     pick_payload: dict
     snapshot: dict = field(default_factory=dict)   # carried over from ingest
     signals: Any = None                # AccumulationSignals from ingest
+    # --- New gates-based spine additions ---
+    confirmation_score: float = 0.0    # filled by [RK]
+    confirmation_components: dict = field(default_factory=dict)
+    ohlcv: Optional[pd.DataFrame] = None   # last EOD-closed bars; consumed by [RK] and [PS]
 
 
 # --------------------------------------------------------------------------- #
@@ -117,7 +135,8 @@ def _trace_path(today_iso: str, symbol: str) -> Path:
 def _append_trace(ctx: PipelineContext, payload: dict) -> None:
     p = _trace_path(ctx.today_iso, ctx.symbol)
     payload = {"ts": datetime.now(IST).isoformat(timespec="seconds"),
-               "trace_id": ctx.trace_id, "symbol": ctx.symbol, **payload}
+               "trace_id": ctx.trace_id, "symbol": ctx.symbol,
+               "schema_version": SCHEMA_VERSION, **payload}
     with p.open("a", encoding="utf-8") as f:
         f.write(json.dumps(payload, ensure_ascii=False, default=str) + "\n")
 
@@ -182,16 +201,25 @@ def run_pipeline(symbol: str, stages: list, today_iso: Optional[str] = None) -> 
         pick_payload=ctx.pick_payload,
         snapshot=ctx.snapshot,
         signals=ctx.signals,
+        confirmation_score=ctx.confirmation_score,
+        confirmation_components=ctx.confirmation_components,
+        ohlcv=ctx.ohlcv,
     )
 
 
 def append_final_trace(result: PipelineResult, today_iso: str) -> None:
-    """After ranking, append a `FINAL` row to each ticker's trace."""
+    """After ranking, append a `FINAL` row to each ticker's trace.
+
+    Logs both the legacy composite score (if any) and the new confirmation
+    score so the RL replay buffer can distinguish v1 vs v2 ranking decisions.
+    """
     ctx = PipelineContext(symbol=result.symbol, trace_id=result.trace_id, today_iso=today_iso)
     _append_trace(ctx, {
         "stage": "FINAL",
         "selected": result.selected,
         "rank": result.rank,
         "composite": result.composite_score,
+        "confirmation": result.confirmation_score,
+        "confirmation_components": result.confirmation_components,
         "weights": STAGE_WEIGHTS,
     })

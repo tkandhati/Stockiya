@@ -1,54 +1,106 @@
 """API DTOs (Pydantic models) used by the middleware HTTP layer.
 
-Volume-only schema — no peers, no valuation, no headwind text.
+Gates-based spine (PRINCIPLES Section 2). The Pick shape mirrors
+`backend/stages/hypothesis.py:build_pick_payload`.
+
+The stock-detail panel still uses the legacy AccumulationDTO so the rich
+Wyckoff/Weinstein view continues to render — that view is independent of
+the picker and reads from `backend/signals/__init__.py`.
 """
 
 from typing import Literal, Optional
+
 from pydantic import BaseModel
 
 
-class TargetWindowDTO(BaseModel):
-    center_months: float
-    tolerance_months: float
-    label: str
-    rationale: str
+# --------------------------------------------------------------------------- #
+# Pick payload — matches backend/stages/hypothesis.py
+# --------------------------------------------------------------------------- #
+
+class PricePlanDTO(BaseModel):
+    account_value: float
+    entry: float
+    stop: float
+    t1: float
+    t2: float
+    shares_total: int
+    shares_at_t1: int
+    shares_at_t2: int
+    risk_amount: float
+    risk_pct_of_account: float
+    notes: list[str] = []
 
 
-class ReasoningPointDTO(BaseModel):
-    """One auditable line under a pick — the user can verify this independently."""
-    label: str
-    value: str
-    state: Literal["bullish", "neutral", "bearish"]
-    why: str
-    verify: str
+class ExitStepDTO(BaseModel):
+    milestone_days: int
+    action: str
+    trigger: str
+    new_stop: Optional[float] = None
+    note: str = ""
+
+
+class ExitScheduleDTO(BaseModel):
+    day_45: ExitStepDTO
+    day_90: ExitStepDTO
+    day_180: ExitStepDTO
+
+
+class ConfirmationDTO(BaseModel):
+    score: float
+    gate_margin_sum: Optional[float] = None
+    bonus_count: Optional[int] = None
+    bonus_weight: Optional[float] = None
+    bonuses_fired: list[str] = []
+
+
+class GatesEvidenceDTO(BaseModel):
+    CS: list[str] = []
+    VD: list[str] = []
+    BR: list[str] = []
 
 
 class Pick(BaseModel):
     symbol: str
-    company: str
-    current: float
-    best_buy_at: float
-    sell_target: float
-    stop_loss: float
-    headline: str = ""
-    rationale: str
-    risk_headline: str = ""
-    risks: str
-    confidence: Literal["low", "medium", "high"] = "medium"
-    upside_pct: float
-    downside_pct: float
-    entry_timing: Literal["early", "mid", "late", "missed", "unknown"] = "unknown"
-    wyckoff_phase: Literal[
-        "accumulation", "markup", "distribution", "markdown", "indeterminate"
-    ] = "indeterminate"
-    weinstein_stage: Literal[
-        "stage_1_base", "stage_1_to_2", "stage_2_advance",
-        "stage_3_top", "stage_4_decline", "undefined",
-    ] = "undefined"
-    target_window: TargetWindowDTO
-    reasoning: list[ReasoningPointDTO] = []
-    composite_score: float = 0.0
     rank: Optional[int] = None
+    trace_id: Optional[str] = None
+    company: Optional[str] = None
+    sector: Optional[str] = None
+    industry: Optional[str] = None
+    current_price: Optional[float] = None
+    headline: str = ""
+    confirmation: ConfirmationDTO
+    price_plan: PricePlanDTO
+    exit_schedule: ExitScheduleDTO
+    distribution_flip_exit: str = ""
+    gates_evidence: GatesEvidenceDTO
+
+    # Legacy aliases — populated by build_pick_payload for transition-period
+    # frontends that still expect the old field names.
+    best_buy_at: Optional[float] = None
+    sell_target: Optional[float] = None
+    stop_loss: Optional[float] = None
+    upside_pct: Optional[float] = None
+    downside_pct: Optional[float] = None
+    shares_to_buy: Optional[int] = None
+
+
+# --------------------------------------------------------------------------- #
+# Regime + envelope
+# --------------------------------------------------------------------------- #
+
+class RegimeCheckDTO(BaseModel):
+    symbol: str
+    close: Optional[float] = None
+    ma50: Optional[float] = None
+    gap_pct: Optional[float] = None
+    passed: bool
+    reason: str
+
+
+class RegimeDTO(BaseModel):
+    passed: bool
+    summary: str
+    checks: list[RegimeCheckDTO] = []
 
 
 class PicksResponse(BaseModel):
@@ -56,8 +108,15 @@ class PicksResponse(BaseModel):
     generated_at: str
     source: Literal["pipeline"] = "pipeline"
     demo_mode: bool = False
-    picks: list[Pick]
+    regime: Optional[RegimeDTO] = None
+    message: Optional[str] = None
+    picks: list[Pick] = []
 
+
+# --------------------------------------------------------------------------- #
+# Stock-detail panel — still renders the legacy rich-volume narrative.
+# Untouched by the gates-based rebuild.
+# --------------------------------------------------------------------------- #
 
 class StrategySignalDTO(BaseModel):
     name: str
@@ -68,7 +127,6 @@ class StrategySignalDTO(BaseModel):
 
 
 class AccumulationDTO(BaseModel):
-    """Volume-strategy panel — the heart of the stock-detail view."""
     days_used: int
     verdict: Literal["accumulating", "neutral", "distributing", "unknown"]
     wyckoff_phase: Literal[
@@ -125,6 +183,45 @@ class AccumulationDTO(BaseModel):
     block_deal_net_qty_ratio: float = 0.0
 
     signals: list[StrategySignalDTO] = []
+
+
+class TimeStopsDTO(BaseModel):
+    day_45: str
+    day_90: str
+    day_180: str
+
+
+class Position(BaseModel):
+    pick_id: str
+    trace_id: str
+    symbol: str
+    company: str
+    entry_date: str
+    days_held: int
+    entry_price: float
+    stop_price: float
+    t1_price: float
+    t2_price: float
+    current_price: Optional[float] = None
+    pnl_pct: Optional[float] = None
+    status: str
+    hit_t1: bool
+    hit_t1_date: str = ""
+    shares_total: int
+    shares_at_t1: int
+    shares_at_t2: int
+    confirmation_score: float = 0.0
+    headline: str = ""
+    action: str
+    action_note: str
+    new_stop: Optional[float] = None
+    time_stops: TimeStopsDTO
+
+
+class PositionsResponse(BaseModel):
+    date_ist: str
+    count: int
+    positions: list[Position] = []
 
 
 class StockDetail(BaseModel):

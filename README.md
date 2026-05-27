@@ -15,7 +15,8 @@ Local web app that surfaces up to **3 Indian (Nifty 100) stock picks per day** f
 3. **Every pick ships with** Weinstein stage, entry timing, target window, all 4 exit scenarios, and an auditable point-by-point reasoning checklist.
 4. **Every decision is traced** to `data/traces/run_<date>_<ticker>.jsonl` — the RL training dataset for tomorrow.
 
-Read [PRINCIPLES.md](./PRINCIPLES.md) for the investing rule-set.
+Read [PRINCIPLES.md](./PRINCIPLES.md) for the investing rule-set.  
+Read [ARCHITECTURE.md](./ARCHITECTURE.md) for a full walkthrough: data loading, signal math, every strategy, final selection, and the RL instrumentation.
 
 ---
 

@@ -131,39 +131,78 @@ export function StockDetailPage() {
                   value={fmtINR(data.pick_today.stop_loss)}
                   extra={`${fmtPct(data.pick_today.downside_pct)} from buy`}
                 />
-                <RecStat
-                  icon={<CalendarClock className="h-4 w-4" />}
-                  label="Target window"
-                  value={data.pick_today.target_window.label}
-                  extra="hold horizon"
-                />
+                {data.pick_today.target_window ? (
+                  <RecStat
+                    icon={<CalendarClock className="h-4 w-4" />}
+                    label="Target window"
+                    value={data.pick_today.target_window.label}
+                    extra="hold horizon"
+                  />
+                ) : data.pick_today.price_plan ? (
+                  <RecStat
+                    icon={<CalendarClock className="h-4 w-4" />}
+                    label="Shares"
+                    value={data.pick_today.price_plan.shares_total.toLocaleString('en-IN')}
+                    extra={`${data.pick_today.price_plan.risk_pct_of_account.toFixed(2)}% risk`}
+                  />
+                ) : null}
               </div>
-              <p className="mt-3 rounded-lg bg-indigo-50/60 px-3 py-2 text-xs text-indigo-900">
-                <span className="font-semibold">Why this window: </span>
-                {data.pick_today.target_window.rationale}
-              </p>
-              <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2">
-                <div className="rounded-xl border border-emerald-200 bg-emerald-50/60 p-4">
-                  <div className="text-[11px] font-semibold uppercase tracking-wide text-emerald-800">
-                    Bull case · why we picked it
-                  </div>
-                  <p className="mt-1.5 text-sm leading-relaxed text-emerald-950">
-                    {data.pick_today.rationale}
-                  </p>
+              {data.pick_today.target_window?.rationale && (
+                <p className="mt-3 rounded-lg bg-indigo-50/60 px-3 py-2 text-xs text-indigo-900">
+                  <span className="font-semibold">Why this window: </span>
+                  {data.pick_today.target_window.rationale}
+                </p>
+              )}
+              {data.pick_today.headline && (
+                <p className="mt-3 rounded-lg bg-indigo-50/60 px-3 py-2 text-xs text-indigo-900">
+                  <span className="font-semibold">Thesis: </span>
+                  {data.pick_today.headline}
+                </p>
+              )}
+              {(data.pick_today.rationale || data.pick_today.risks) && (
+                <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2">
+                  {data.pick_today.rationale && (
+                    <div className="rounded-xl border border-emerald-200 bg-emerald-50/60 p-4">
+                      <div className="text-[11px] font-semibold uppercase tracking-wide text-emerald-800">
+                        Bull case · why we picked it
+                      </div>
+                      <p className="mt-1.5 text-sm leading-relaxed text-emerald-950">
+                        {data.pick_today.rationale}
+                      </p>
+                    </div>
+                  )}
+                  {data.pick_today.risks && (
+                    <div className="rounded-xl border border-rose-200 bg-rose-50/60 p-4">
+                      <div className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-rose-800">
+                        <AlertTriangle className="h-3 w-3" /> Bear case · risks we accepted
+                      </div>
+                      <p className="mt-1.5 text-sm leading-relaxed text-rose-950">
+                        {data.pick_today.risks}
+                      </p>
+                    </div>
+                  )}
                 </div>
-                <div className="rounded-xl border border-rose-200 bg-rose-50/60 p-4">
-                  <div className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-rose-800">
-                    <AlertTriangle className="h-3 w-3" /> Bear case · risks we accepted
+              )}
+              {data.pick_today.gates_evidence && (
+                <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50/60 p-4">
+                  <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-700">
+                    Why all four gates passed
                   </div>
-                  <p className="mt-1.5 text-sm leading-relaxed text-rose-950">
-                    {data.pick_today.risks}
-                  </p>
+                  <ul className="mt-2 space-y-1 text-xs text-slate-700">
+                    {(['CS', 'VD', 'BR'] as const).flatMap((gid) =>
+                      (data.pick_today!.gates_evidence?.[gid] ?? []).map((line, i) => (
+                        <li key={`${gid}-${i}`} className="font-mono">
+                          <span className="font-semibold">{gid}:</span> {line}
+                        </li>
+                      )),
+                    )}
+                  </ul>
                 </div>
-              </div>
+              )}
             </section>
           )}
 
-          {data.pick_today && data.pick_today.reasoning?.length > 0 && (
+          {data.pick_today?.reasoning && data.pick_today.reasoning.length > 0 && (
             <section className="mt-6">
               <ReasoningChecklist
                 points={data.pick_today.reasoning}

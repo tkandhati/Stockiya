@@ -64,6 +64,47 @@ def needs_nightly() -> bool:
     return not today_file.exists()
 
 
+def list_missing_trading_days(today: Optional[date] = None, max_lookback: int = 30) -> list[date]:
+    """All trading days between the last picks file on disk and `today`
+    that have no corresponding `picks_<date>.json`.
+
+    `max_lookback` caps how far back we'll backfill (default 30 trading days
+    of catch-up — enough for a month-long gap, prevents the first run on a
+    new install from scanning a year of history).
+    """
+    today = today or _ist_today()
+    files = sorted(_DATA_DIR.glob("picks_*.json"))
+
+    # Find the most recent picks file date
+    last_date: Optional[date] = None
+    for f in reversed(files):
+        try:
+            last_date = date.fromisoformat(f.stem.replace("picks_", ""))
+            break
+        except ValueError:
+            continue
+
+    if last_date is None:
+        # No history at all — only the current trading day (no deep backfill)
+        return [today] if is_trading_day(today) else []
+
+    missing: list[date] = []
+    cur = last_date + timedelta(days=1)
+    while cur <= today:
+        if is_trading_day(cur):
+            missing.append(cur)
+        cur += timedelta(days=1)
+
+    # Cap the backfill so a long absence doesn't trigger a year of compute
+    if len(missing) > max_lookback:
+        missing = missing[-max_lookback:]
+        log.warning(
+            "Catchup: capping backfill at the most recent %d trading days "
+            "(full gap was %d days)", max_lookback, len(missing),
+        )
+    return missing
+
+
 def needs_weekly_update() -> bool:
     """True if there are open picks AND the most recent Friday hasn't been
     recorded in portfolio_weekly.csv yet."""
@@ -96,9 +137,20 @@ def needs_weekly_update() -> bool:
 
 
 def _run_nightly() -> dict:
-    log.info("Running nightly orchestrator...")
+    log.info("Running nightly orchestrator (today)...")
     from backend.nightly import run_nightly
     return run_nightly()
+
+
+def _run_nightly_for(d: date) -> dict:
+    """Run the orchestrator for a specific past date (backfill).
+
+    Skips the NSE deal download (which is always 'today') because historical
+    deal data may already be cached and re-fetching adds nothing.
+    """
+    log.info("Backfilling pipeline for %s...", d.isoformat())
+    from backend.orchestrator import run_universe
+    return run_universe(today_iso=d.isoformat())
 
 
 def _run_weekly() -> dict:
@@ -117,16 +169,29 @@ def run_catchup() -> dict:
     summary: dict = {"started_at": started}
     errors: list[str] = []
 
-    if needs_nightly():
-        log.info("Today's picks file missing — triggering nightly")
-        try:
-            summary["nightly"] = _run_nightly()
-        except Exception as e:
-            log.exception("nightly catchup failed")
-            summary["nightly_error"] = str(e)
-            errors.append(f"nightly: {e}")
+    # Walk every missing trading day, not just today.
+    missing_days = list_missing_trading_days()
+    if missing_days:
+        log.info("Catchup: %d missing trading days (%s -> %s)",
+                 len(missing_days),
+                 missing_days[0].isoformat(),
+                 missing_days[-1].isoformat())
+        summary["missing_days"] = [d.isoformat() for d in missing_days]
+        nightly_results: dict[str, dict] = {}
+        for d in missing_days:
+            try:
+                resp = _run_nightly_for(d)
+                nightly_results[d.isoformat()] = {
+                    "picks": len(resp.get("picks", [])),
+                    "regime_passed": resp.get("regime", {}).get("passed"),
+                }
+            except Exception as e:
+                log.exception("backfill for %s failed", d.isoformat())
+                nightly_results[d.isoformat()] = {"error": str(e)}
+                errors.append(f"nightly {d.isoformat()}: {e}")
+        summary["nightly"] = nightly_results
     else:
-        log.info("Picks file is current")
+        log.info("Picks file is current — no backfill needed")
         summary["nightly"] = "skipped (current)"
 
     if needs_weekly_update():

@@ -87,7 +87,10 @@ def run_outcome_tracker(
                 continue
 
             summary["checked"] += 1
-            trace_id = r.get("pick_id", "")
+            # Prefer the pipeline's UUID trace_id so this row joins to the
+            # per-stage trace JSONL (data/traces/run_<date>_<ticker>.jsonl).
+            # Fall back to pick_id for older rows that pre-date the field.
+            trace_id = r.get("trace_id") or r.get("pick_id", "")
             if _already_logged(trace_id, horizon):
                 summary["skipped_already_logged"] += 1
                 continue
@@ -100,26 +103,38 @@ def run_outcome_tracker(
             entry_px = float(r["entry_price"])
             target_px = float(r["target_price"])
             stop_px = float(r["stop_price"])
+            t1_px = float(r.get("t1_price") or 0)
+            t2_px = float(r.get("t2_price") or target_px)
             ret = (close / entry_px - 1) * 100
+            hit_t1 = bool(t1_px and close >= t1_px) or (r.get("hit_t1") == "true")
+            hit_t2 = close >= t2_px
             hit_target = close >= target_px
             hit_stop = close <= stop_px
 
             _append_outcome({
                 "ts": datetime.now(IST).isoformat(timespec="seconds"),
                 "trace_id": trace_id,
+                "pick_id": r.get("pick_id", ""),
                 "symbol": r["symbol"],
                 "entry_date": entry_iso,
                 "entry_price": entry_px,
                 "horizon_days": horizon,
                 "exit_price": round(close, 2),
                 "return_pct": round(ret, 2),
+                "t1_price": t1_px,
+                "t2_price": t2_px,
+                "stop_price": stop_px,
+                "hit_t1": hit_t1,
+                "hit_t2": hit_t2,
                 "hit_target": hit_target,
                 "hit_stop": hit_stop,
                 "exit_reason": (
                     "target" if hit_target else
                     "stop" if hit_stop else
-                    "neither"
+                    ("t1" if hit_t1 else "neither")
                 ),
+                "confirmation_score": float(r.get("confirmation_score") or 0),
+                "shares_total": int(r.get("shares_total") or 0),
             })
             summary["appended"] += 1
 

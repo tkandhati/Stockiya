@@ -26,12 +26,16 @@ from backend.signals import compute as compute_accumulation  # noqa: E402
 from backend.universe import UNIVERSE  # noqa: E402
 from backend.yahoo import history_6m, history_ohlcv, snapshot  # noqa: E402
 
+from backend.positions_view import list_active_positions  # noqa: E402
+
 from .picks import generate_picks, get_or_generate_picks  # noqa: E402
 from .picks_cache import ist_today_iso, read_picks  # noqa: E402
 from .schemas import (  # noqa: E402
     AccumulationDTO,
     Pick,
     PicksResponse,
+    Position,
+    PositionsResponse,
     StockDetail,
     StrategySignalDTO,
 )
@@ -103,6 +107,20 @@ def get_picks() -> PicksResponse:
 @app.post("/api/picks/refresh", response_model=PicksResponse)
 def refresh_picks() -> PicksResponse:
     return generate_picks()
+
+
+@app.get("/api/positions", response_model=PositionsResponse)
+def get_positions() -> PositionsResponse:
+    """Active open holdings — each with today's recommended action."""
+    def _close(sym: str):
+        snap = snapshot(sym)
+        return snap.get("current")
+    items = list_active_positions(_close)
+    return PositionsResponse(
+        date_ist=ist_today_iso(),
+        count=len(items),
+        positions=[Position(**p) for p in items],
+    )
 
 
 def _todays_pick_for(symbol: str) -> Pick | None:

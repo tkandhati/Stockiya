@@ -1,47 +1,47 @@
-"""Pipeline stages. Each module exports a `run(ctx) -> StageResult`.
+"""Pipeline stages — gates-based spine.
 
-The full chain in execution order:
+Each per-ticker stage module exports `run(ctx) -> StageResult` with the
+contract in `backend/pipeline.py`. The chain is `PER_TICKER_CHAIN` below.
 
-    universe       → [U]   gate    Is the ticker in Nifty 100?
-    ingest         → [I]   gate    Have we got >=200 daily bars?
-    hard_rejects   → [HR]  gate    Wyckoff Distribution/Markdown, parabolic, etc.
-    lt_volume      → [LT]  50%     Long-term institutional accumulation
-    trend_template → [TT]  15%     Minervini 50>150>200 + slopes
-    mt_volume      → [MT]  20%     This month's confirmation
-    direct_deals   → [DD]  10%     NSE block + bulk deal aggregates
-    breakouts      → [BR]  5%      Pocket pivot / VDU / CAN SLIM
-    score          →               Composite weighted-sum + ranking
-    hypothesis     →               Template-built rationale + exit plan
-    render         →               Card JSON for the UI
-    outcome        →               T+90/T+180 realized return (RL reward)
+Per-ticker chain (run in parallel by the orchestrator):
 
-Replace any single file to swap that stage's logic; the orchestrator and
-every other stage are untouched.
+    universe        -> [U]   gate    In Nifty 100?
+    ingest          -> [I]   gate    >=200 daily bars; populates ctx.ohlcv
+    lt_flow         -> [LT]  gate    3-6 month institutional accumulation
+    consolidation   -> [CS]  gate    Tight base above 150d MA
+    volume          -> [VD]  gate    Dry-up + bullish OBV-price divergence
+    breakout        -> [BR]  gate    Resistance + 1.5x vol + upper-third close
+
+Run by the orchestrator OUTSIDE the per-ticker chain:
+
+    regime          -> [RG]  one-shot market gate (NIFTY + BANKNIFTY)
+    rank            -> [RK]  confirmation-strength ranker
+    hypothesis      -> [H]   pick payload + position sizing
+    render          -> [R]   JSON writer
+    outcome         -> [O]   T+90 / T+180 reward
+
+Replace any one file to swap that step's logic; nothing else changes.
 """
 
 from . import (  # noqa: F401
     universe,
     ingest,
-    hard_rejects,
-    lt_volume,
-    trend_template,
-    mt_volume,
-    direct_deals,
-    breakouts,
-    score,
+    lt_flow,
+    consolidation,
+    volume,
+    breakout,
+    regime,
+    rank,
     hypothesis,
     render,
     outcome,
 )
 
-# Default pipeline order — what `run_pipeline()` runs end-to-end for one ticker.
 PER_TICKER_CHAIN = [
     universe.run,
     ingest.run,
-    hard_rejects.run,
-    lt_volume.run,
-    trend_template.run,
-    mt_volume.run,
-    direct_deals.run,
-    breakouts.run,
+    lt_flow.run,
+    consolidation.run,
+    volume.run,
+    breakout.run,
 ]
