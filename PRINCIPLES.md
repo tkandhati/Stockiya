@@ -20,7 +20,7 @@ We scan **Nifty 100** daily after market close. We require the **market regime**
 |---|---|
 | **Regime** | NIFTY 50 *and* BANKNIFTY both close above their 50d MA |
 | **Long-term flow** | OBV-90d slope ≥ +3 %, up/down vol (90d) ≥ 1.1×, 150d MA slope ≥ 0 % (the 6-month-evidence check) |
-| **Consolidation** | ATR(14)/Close ≤ 4 %, close > 150d MA, range held for 25–40 trading days |
+| **Consolidation** | ATR(14)/Close ≤ 4 %, close > 150d MA, range held for **≥ 25 trading days** (no upper cap — longer bases are better) |
 | **Volume / Divergence** | 5d avg volume < 50 % of 50d avg **and** bullish OBV–price divergence in last 20 days |
 | **Breakout** | Close > rolling 20d high (excl. today), volume ≥ 1.5× 50d avg, (close−low)/(high−low) ≥ 0.67 |
 

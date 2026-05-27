@@ -61,7 +61,7 @@ Each stage is one file in `backend/stages/` with signature `run(ctx) -> StageRes
 | **[U] Universe** | `stages/universe.py` | Membership check | `symbol ∈ NIFTY100` |
 | **[I] Ingest** | `stages/ingest.py` | Fetch OHLCV + slice to as-of date | Pulls 1y daily; if `ctx.today_iso` is a past date, slices bars to that date (no lookahead) and overrides snapshot.current with the as-of close |
 | **[LT] Long-term flow** | `stages/lt_flow.py` | 3+ months of institutional accumulation | `obv_slope_90d >= +3%` AND `up_down_vol(90) >= 1.1` AND `sma_slope(150, lookback=50) >= 0` |
-| **[CS] Consolidation** | `stages/consolidation.py` | ATR tightness + duration + trend filter | `atr_pct(14) ≤ 4 %` **AND** `days_within_band(close, ±10 %) ∈ [25, 40]` **AND** `close > sma(150)` |
+| **[CS] Consolidation** | `stages/consolidation.py` | ATR tightness + duration + trend filter | `atr_pct(14) ≤ 4 %` **AND** `days_within_band(close, ±10 %) ≥ 25` (no upper cap; longer bases score higher in ranker) **AND** `close > sma(150)` |
 | **[VD] Volume / Divergence** | `stages/volume.py` | Dry-up + bullish OBV–price divergence | `adv(5) / adv(50) < 0.50` **AND** divergence detector (split-window swing-low: price LL while OBV HL, or price flat ±2 % while OBV +≥2 %) |
 | **[BR] Breakout** | `stages/breakout.py` | Resistance break + volume confirm + candle close | `close > rolling_high(20, exclude_today=True)` **AND** `today_volume ≥ 1.5 × adv(50)` **AND** `(close − low) / (high − low) ≥ 0.67` |
 | **[RK] Rank** | `stages/rank.py` | Confirmation-strength score | `margin_z_score_past_gates + 0.5 × bonus_signal_count`, sorted desc, top 3 |

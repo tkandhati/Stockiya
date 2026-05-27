@@ -1,19 +1,28 @@
 """[CS] Consolidation gate.
 
-Identifies stocks in a tight 5-8 week base above their 150-day moving
-average — the institutional accumulation footprint from PRINCIPLES Section 2.
+Identifies stocks in a tight base above their 150-day moving average — the
+institutional accumulation footprint from PRINCIPLES Section 2.
 
-All three checks must pass:
-  1. ATR(14) / Close <= 4 %                         (range is tight)
-  2. days_within_band(close, +/-10 %) in [25, 40]   (range held 5-8 weeks)
-  3. Close > 150d MA                                (above the long-term floor)
+Three checks; all must pass:
+  1. ATR(14) / Close <= 4 %                          (range is tight)
+  2. days_within_band(close, +/-10 %) >= 25          (base mature; min 5 weeks)
+  3. Close > 150d MA                                 (above the long-term floor)
+
+NOTE: There is NO upper cap on consolidation duration. Long bases are
+better. Stan Weinstein's Stage 1 bases run 6-18 months; Minervini's "perfect
+base" can be even longer. A 25-day cap is the floor; the longer a base
+holds at low ATR above the 150d MA, the higher the margin score (and
+therefore the rank).
+
+Margin scoring rewards bases up to ~90 days at full credit; longer than
+that gets full credit too (institutional accumulation has compounded).
 
 Fix points (top-of-file constants, all `# tunable`):
-    ATR_PCT_MAX        : max tightness threshold
-    MIN_DAYS_IN_BAND   : min consolidation duration (~5 weeks)
-    MAX_DAYS_IN_BAND   : max consolidation duration (~8 weeks)
-    BAND_PCT           : +/- price band defining "in range"
-    MA_PERIOD          : long-term trend filter MA
+    ATR_PCT_MAX           : max tightness threshold
+    MIN_DAYS_IN_BAND      : min consolidation duration (~5 weeks)
+    BAND_PCT              : +/- price band defining "in range"
+    MA_PERIOD             : long-term trend filter MA
+    MARGIN_FULL_CREDIT_DAYS : in-band days that earn full duration margin
 """
 
 from __future__ import annotations
@@ -27,11 +36,11 @@ stage_id = "CS"
 # Tunable thresholds
 # --------------------------------------------------------------------------- #
 
-ATR_PCT_MAX: float = 4.0          # tunable
-MIN_DAYS_IN_BAND: int = 25        # tunable (~5 weeks)
-MAX_DAYS_IN_BAND: int = 40        # tunable (~8 weeks)
-BAND_PCT: float = 0.10            # tunable
-MA_PERIOD: int = 150              # tunable
+ATR_PCT_MAX: float = 4.0                  # tunable
+MIN_DAYS_IN_BAND: int = 25                # tunable (~5 weeks; the floor)
+BAND_PCT: float = 0.10                    # tunable
+MA_PERIOD: int = 150                      # tunable
+MARGIN_FULL_CREDIT_DAYS: int = 90         # tunable; >=90 days in band = full margin
 
 
 def run(ctx: PipelineContext) -> StageResult:
@@ -76,14 +85,10 @@ def run(ctx: PipelineContext) -> StageResult:
         failures.append(
             f"only {days_band} days in band (<{MIN_DAYS_IN_BAND} = base too young)"
         )
-    elif days_band > MAX_DAYS_IN_BAND:
-        failures.append(
-            f"{days_band} days in band (>{MAX_DAYS_IN_BAND} = base stale)"
-        )
     else:
         evidence.append(
             f"{days_band} days in +/-{int(BAND_PCT*100)}% band "
-            f"(in [{MIN_DAYS_IN_BAND}, {MAX_DAYS_IN_BAND}])"
+            f"(>= {MIN_DAYS_IN_BAND} = base mature)"
         )
 
     if ma150 is None:
@@ -106,12 +111,9 @@ def run(ctx: PipelineContext) -> StageResult:
         margin += max(0.0, (ATR_PCT_MAX - atrp) / ATR_PCT_MAX)
         # Above-MA margin: how far above 150d MA, capped at 10 % = full margin
         margin += min(1.0, max(0.0, (last_close / ma150 - 1) / 0.10))
-        # Duration margin: 1.0 at centre of band, 0.0 at edges
-        mid = (MIN_DAYS_IN_BAND + MAX_DAYS_IN_BAND) / 2
-        half = (MAX_DAYS_IN_BAND - MIN_DAYS_IN_BAND) / 2
-        margin += (
-            max(0.0, 1.0 - abs(days_band - mid) / half) if half > 0 else 0.0
-        )
+        # Duration margin: 0.0 at MIN_DAYS_IN_BAND, 1.0 at MARGIN_FULL_CREDIT_DAYS+
+        span = max(1, MARGIN_FULL_CREDIT_DAYS - MIN_DAYS_IN_BAND)
+        margin += min(1.0, max(0.0, (days_band - MIN_DAYS_IN_BAND) / span))
         margin /= 3.0  # average of the three components, in [0, 1]
 
     return StageResult(
