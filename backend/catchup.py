@@ -169,6 +169,23 @@ def run_catchup() -> dict:
     summary: dict = {"started_at": started}
     errors: list[str] = []
 
+    # ---- One-shot NSE deal refresh (covers ALL backfill days; the CSVs are
+    # rolling ~3 months, so we download once even when walking many days).
+    # Without this the DD bonus signal silently scores 0 for every ticker.
+    import os as _os
+    if _os.environ.get("DEMO_MODE", "0") != "1":
+        try:
+            from backend.block_deals import fetch_and_cache_nse_deals
+            log.info("Refreshing NSE block + bulk deals (one-shot, before backfill)...")
+            fetch_and_cache_nse_deals()
+            summary["nse_deals"] = "ok"
+        except Exception as e:
+            log.exception("NSE deal refresh failed (continuing with cached data if present)")
+            summary["nse_deals_error"] = str(e)
+            errors.append(f"nse_deals: {e}")
+    else:
+        summary["nse_deals"] = "skipped (DEMO_MODE)"
+
     # Walk every missing trading day, not just today.
     missing_days = list_missing_trading_days()
     if missing_days:

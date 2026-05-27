@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 import math
 import os
+import time
 from functools import lru_cache
 from typing import Any, Optional
 
@@ -21,6 +22,41 @@ import yfinance as yf
 from .demo_data import DEMO_SNAPSHOTS, demo_history_6m
 
 log = logging.getLogger("yahoo")
+
+
+# --------------------------------------------------------------------------- #
+# Retry helper — Yahoo intermittently 404s legit tickers under load.
+# Three attempts with exponential backoff (0.5, 1.0, 2.0 s) before giving up.
+# --------------------------------------------------------------------------- #
+
+_RETRY_ATTEMPTS = 3
+_RETRY_BACKOFF_BASE = 0.5  # seconds; doubles each attempt
+
+
+def _history_with_retry(symbol: str, period: str) -> pd.DataFrame:
+    """yfinance.history wrapped with retry + backoff for transient failures.
+
+    Retries on either exception or empty DataFrame. Returns empty DataFrame
+    only after all attempts exhausted — distinguishes truly-dead tickers
+    (still empty after retries) from transient Yahoo flakiness.
+    """
+    t = _ticker(symbol)
+    last_err: Optional[str] = None
+    for attempt in range(_RETRY_ATTEMPTS):
+        try:
+            h = t.history(period=period, auto_adjust=True)
+            if h is not None and not h.empty:
+                return h
+            last_err = "empty result"
+        except Exception as e:
+            last_err = f"{type(e).__name__}: {e}"
+        if attempt < _RETRY_ATTEMPTS - 1:
+            time.sleep(_RETRY_BACKOFF_BASE * (2 ** attempt))
+    log.warning(
+        "yfinance history(%s, period=%s) failed after %d attempts: %s",
+        symbol, period, _RETRY_ATTEMPTS, last_err,
+    )
+    return pd.DataFrame()
 
 
 def _demo_enabled() -> bool:
@@ -65,11 +101,7 @@ def snapshot(symbol: str) -> dict:
         log.warning("yfinance .info failed for %s: %s", symbol, e)
         info = {}
 
-    try:
-        hist: pd.DataFrame = t.history(period="1y", auto_adjust=True)
-    except Exception as e:
-        log.warning("yfinance .history(1y) failed for %s: %s", symbol, e)
-        hist = pd.DataFrame()
+    hist = _history_with_retry(symbol, period="1y")
 
     current = _to_float(info.get("currentPrice")) or _to_float(info.get("regularMarketPrice"))
     prev_close = _to_float(info.get("previousClose"))
@@ -140,14 +172,8 @@ def history_ohlcv(symbol: str) -> pd.DataFrame:
     if _demo_enabled():
         from .demo_data import demo_ohlcv
         return demo_ohlcv(symbol)
-    t = _ticker(symbol)
-    try:
-        h = t.history(period="1y", auto_adjust=True)
-    except Exception as e:
-        log.warning("history_ohlcv failed for %s: %s", symbol, e)
-        return pd.DataFrame()
-    if h is None or h.empty:
-        log.warning("history_ohlcv: yfinance returned empty for %s", symbol)
+    h = _history_with_retry(symbol, period="1y")
+    if h.empty:
         return pd.DataFrame()
     cols = [c for c in ["Open", "High", "Low", "Close", "Volume"] if c in h.columns]
     return h[cols].dropna(subset=["Close"]).copy()
@@ -161,14 +187,8 @@ def history_6m(symbol: str) -> list[dict]:
     """Return list of {date, close} for the last ~6 months (UI sparkline)."""
     if _demo_enabled():
         return demo_history_6m(symbol)
-    t = _ticker(symbol)
-    try:
-        hist = t.history(period="6mo", auto_adjust=True)
-    except Exception as e:
-        log.warning("history_6m failed for %s: %s", symbol, e)
-        return []
+    hist = _history_with_retry(symbol, period="6mo")
     if hist.empty:
-        log.warning("history_6m: yfinance returned empty for %s", symbol)
         return []
     out: list[dict] = []
     for ts, row in hist.iterrows():
