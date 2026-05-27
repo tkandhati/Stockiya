@@ -12,6 +12,7 @@ Run manually:
 
 from __future__ import annotations
 
+import json
 import logging
 import sys
 from datetime import date, datetime, timedelta
@@ -64,28 +65,45 @@ def needs_nightly() -> bool:
     return not today_file.exists()
 
 
+def _file_schema_version(path: Path) -> int:
+    """Read just the top-level schema_version from a picks JSON file.
+    Returns 0 for legacy files that pre-date the field."""
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            doc = json.load(f)
+        return int(doc.get("schema_version") or 0)
+    except Exception:
+        return 0
+
+
 def list_missing_trading_days(today: Optional[date] = None, max_lookback: int = 30) -> list[date]:
     """All trading days between the last picks file on disk and `today`
-    that have no corresponding `picks_<date>.json`.
+    that have no corresponding `picks_<date>.json` — OR whose file is from a
+    superseded schema version (forces regeneration after code upgrades).
 
     `max_lookback` caps how far back we'll backfill (default 30 trading days
     of catch-up — enough for a month-long gap, prevents the first run on a
     new install from scanning a year of history).
     """
+    from backend.stages.render import PICKS_SCHEMA_VERSION
+
     today = today or _ist_today()
     files = sorted(_DATA_DIR.glob("picks_*.json"))
 
-    # Find the most recent picks file date
+    # Find the most recent picks file date that ALSO matches current schema
     last_date: Optional[date] = None
     for f in reversed(files):
         try:
-            last_date = date.fromisoformat(f.stem.replace("picks_", ""))
-            break
+            d = date.fromisoformat(f.stem.replace("picks_", ""))
         except ValueError:
             continue
+        if _file_schema_version(f) < PICKS_SCHEMA_VERSION:
+            # Stale-schema files don't count as "current" — they need re-running.
+            continue
+        last_date = d
+        break
 
     if last_date is None:
-        # No history at all — only the current trading day (no deep backfill)
         return [today] if is_trading_day(today) else []
 
     missing: list[date] = []
@@ -95,7 +113,22 @@ def list_missing_trading_days(today: Optional[date] = None, max_lookback: int = 
             missing.append(cur)
         cur += timedelta(days=1)
 
-    # Cap the backfill so a long absence doesn't trigger a year of compute
+    # Also re-run today's file if it exists but is stale-schema
+    todays_file = _DATA_DIR / f"picks_{today.isoformat()}.json"
+    if (
+        is_trading_day(today)
+        and todays_file.exists()
+        and _file_schema_version(todays_file) < PICKS_SCHEMA_VERSION
+        and today not in missing
+    ):
+        log.info(
+            "Catchup: today's picks_%s.json is schema-v%d, current is v%d -- forcing re-run",
+            today.isoformat(),
+            _file_schema_version(todays_file),
+            PICKS_SCHEMA_VERSION,
+        )
+        missing.append(today)
+
     if len(missing) > max_lookback:
         missing = missing[-max_lookback:]
         log.warning(
