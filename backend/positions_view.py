@@ -16,6 +16,8 @@ from pathlib import Path
 from typing import Callable, Optional
 from zoneinfo import ZoneInfo
 
+from .signal_trajectory import compute_trajectory
+
 IST = ZoneInfo("Asia/Kolkata")
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _PORTFOLIO_CSV = _PROJECT_ROOT / "data" / "portfolio.csv"
@@ -29,6 +31,37 @@ DAY_45_TIGHTEN_PCT: float = 0.04   # entry - 4 % on day 45 if T1 not hit
 DAY_45: int = 45
 DAY_90: int = 90
 DAY_180: int = 180
+
+# Expected days from entry to T1 for institutional breakouts that go on to
+# work. 21 trading days (~3 weeks) is the classical CAN SLIM heuristic for
+# winners. If T1 isn't hit by then, the setup is at least "slow" -- worth
+# re-checking the signal trajectory.
+EXPECTED_T1_TRADING_DAYS: int = 21
+
+
+def _add_trading_days(start: date, n: int) -> date:
+    """Add n weekdays (Mon-Fri) to start. NSE holidays are not modelled --
+    this is a UI-side checkpoint, not a settlement date."""
+    cur = start
+    added = 0
+    while added < n:
+        cur += timedelta(days=1)
+        if cur.weekday() < 5:
+            added += 1
+    return cur
+
+
+def _trading_days_between(a: date, b: date) -> int:
+    """Count weekdays in (a, b]. Negative if b < a."""
+    if b < a:
+        return -_trading_days_between(b, a)
+    cur = a
+    n = 0
+    while cur < b:
+        cur += timedelta(days=1)
+        if cur.weekday() < 5:
+            n += 1
+    return n
 
 
 def _ist_today() -> date:
@@ -45,8 +78,24 @@ def _read_portfolio() -> list[dict]:
 def _action_for(
     *, close: Optional[float], entry: float, stop: float, t1: float, t2: float,
     hit_t1: bool, days_held: int, shares_at_t1: int, shares_at_t2: int,
+    trajectory_flip: bool = False,
 ) -> tuple[str, str, Optional[float]]:
-    """Decide today's action + note + (optional new_stop)."""
+    """Decide today's action + note + (optional new_stop).
+
+    A signal-trajectory flip (an institutional indicator turning negative)
+    overrides all other actions short of an actual stop-hit -- volume turns
+    before price, per PRINCIPLES Section 4.
+    """
+    # Distribution-flip overrides everything except an already-hit stop
+    if trajectory_flip and (close is None or close > stop):
+        return (
+            "exit_distribution",
+            "Signal trajectory flipped -- an institutional indicator has "
+            "turned negative since entry. Exit at next open before price "
+            "catches up.",
+            None,
+        )
+
     # Time-stop overrides (most urgent first)
     if days_held >= DAY_180:
         return (
@@ -133,13 +182,33 @@ def list_active_positions(
         shares_at_t1 = int(r.get("shares_at_t1") or 0)
         shares_at_t2 = int(r.get("shares_at_t2") or 0)
 
+        # ---- Signal trajectory (Q2) ----
+        # Compare entry-time institutional indicators to today's values; if
+        # any flipped, escalate the action to exit.
+        try:
+            traj = compute_trajectory(sym, r["entry_date"])
+        except Exception:
+            traj = None
+        trajectory_flip = bool(traj and traj.exit_recommendation)
+
         action, action_note, new_stop = _action_for(
             close=close, entry=entry, stop=stop, t1=t1, t2=t2,
             hit_t1=hit_t1, days_held=days_held,
             shares_at_t1=shares_at_t1, shares_at_t2=shares_at_t2,
+            trajectory_flip=trajectory_flip,
         )
 
         pnl_pct = ((close / entry - 1) * 100) if (close is not None and entry > 0) else None
+
+        # ---- Expected T1 day (Q1) ----
+        expected_t1_date = _add_trading_days(entry_d, EXPECTED_T1_TRADING_DAYS)
+        days_to_expected_t1 = _trading_days_between(today, expected_t1_date)
+        if hit_t1:
+            t1_status = "hit"
+        elif days_to_expected_t1 < 0:
+            t1_status = "overdue"
+        else:
+            t1_status = "on_track"
 
         out.append({
             "pick_id": r["pick_id"],
@@ -170,12 +239,20 @@ def list_active_positions(
                 "day_90": (entry_d + timedelta(days=DAY_90)).isoformat(),
                 "day_180": (entry_d + timedelta(days=DAY_180)).isoformat(),
             },
+            # ---- Q1 expected-T1 fields ----
+            "expected_t1_date": expected_t1_date.isoformat(),
+            "expected_t1_trading_days": EXPECTED_T1_TRADING_DAYS,
+            "t1_status": t1_status,                  # 'on_track' | 'overdue' | 'hit'
+            "days_to_expected_t1": days_to_expected_t1,
+            # ---- Q2 trajectory fields ----
+            "trajectory": traj.as_dict() if traj else None,
         })
 
     # Sort: action urgency first (exits before holds), then by days_held desc
     urgency = {
-        "exit_stop": 0, "exit_final": 1, "exit_time_stop": 2,
-        "exit_t2": 3, "exit_t1": 4, "tighten_stop_45": 5, "hold": 6,
+        "exit_stop": 0, "exit_distribution": 1, "exit_final": 2,
+        "exit_time_stop": 3, "exit_t2": 4, "exit_t1": 5,
+        "tighten_stop_45": 6, "hold": 7,
     }
     out.sort(key=lambda x: (urgency.get(x["action"], 99), -x["days_held"]))
     return out

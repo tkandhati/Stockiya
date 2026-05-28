@@ -128,6 +128,30 @@ export type PositionAction =
   | 'exit_stop'
   | 'exit_time_stop'
   | 'exit_final'
+  | 'exit_distribution'
+
+export type SignalState =
+  | 'strong'
+  | 'stable'
+  | 'weakening'
+  | 'flipped'
+  | 'unknown'
+
+export interface IndicatorDelta {
+  name: string
+  label: string
+  entry_value?: number | null
+  current_value?: number | null
+  state: SignalState
+  description: string
+}
+
+export interface Trajectory {
+  overall: SignalState
+  indicators: IndicatorDelta[]
+  headline: string
+  exit_recommendation: boolean
+}
 
 export interface TimeStops {
   day_45: string
@@ -160,6 +184,13 @@ export interface Position {
   action_note: string
   new_stop?: number | null
   time_stops: TimeStops
+  // Q1 — expected T1 day
+  expected_t1_date?: string
+  expected_t1_trading_days?: number
+  t1_status?: 'on_track' | 'overdue' | 'hit'
+  days_to_expected_t1?: number
+  // Q2 — signal trajectory since entry
+  trajectory?: Trajectory | null
 }
 
 export interface PositionsResponse {

@@ -207,6 +207,22 @@ class TimeStopsDTO(BaseModel):
     day_180: str
 
 
+class IndicatorDeltaDTO(BaseModel):
+    name: str
+    label: str
+    entry_value: Optional[float] = None
+    current_value: Optional[float] = None
+    state: Literal["strong", "stable", "weakening", "flipped", "unknown"]
+    description: str = ""
+
+
+class TrajectoryDTO(BaseModel):
+    overall: Literal["strong", "stable", "weakening", "flipped", "unknown"]
+    indicators: list[IndicatorDeltaDTO] = []
+    headline: str = ""
+    exit_recommendation: bool = False
+
+
 class Position(BaseModel):
     pick_id: str
     trace_id: str
@@ -232,6 +248,13 @@ class Position(BaseModel):
     action_note: str
     new_stop: Optional[float] = None
     time_stops: TimeStopsDTO
+    # Q1 -- expected break-even / T1 day
+    expected_t1_date: Optional[str] = None
+    expected_t1_trading_days: Optional[int] = None
+    t1_status: Optional[Literal["on_track", "overdue", "hit"]] = None
+    days_to_expected_t1: Optional[int] = None
+    # Q2 -- signal trajectory since entry
+    trajectory: Optional[TrajectoryDTO] = None
 
 
 class PositionsResponse(BaseModel):

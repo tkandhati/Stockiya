@@ -61,6 +61,22 @@ const ACTION_META: Record<PositionAction, {
     tone: 'rose',
     icon: <AlertCircle className="h-4 w-4" />,
   },
+  exit_distribution: {
+    label: 'Distribution flip — exit',
+    tone: 'rose',
+    icon: <AlertTriangle className="h-4 w-4" />,
+  },
+}
+
+const TRAJECTORY_META: Record<
+  'strong' | 'stable' | 'weakening' | 'flipped' | 'unknown',
+  { label: string; tone: 'emerald' | 'slate' | 'amber' | 'rose'; arrow: string }
+> = {
+  strong:    { label: 'STRONG',    tone: 'emerald', arrow: 'up' },
+  stable:    { label: 'STABLE',    tone: 'slate',   arrow: '-' },
+  weakening: { label: 'WEAKENING', tone: 'amber',   arrow: 'down' },
+  flipped:   { label: 'FLIPPED',   tone: 'rose',    arrow: 'down' },
+  unknown:   { label: '—',         tone: 'slate',   arrow: '-' },
 }
 
 const TONE_BORDER = {
@@ -136,12 +152,57 @@ export function PositionCard({ position: p }: { position: Position }) {
         <Rung label="T2 (+16%)" value={fmtINR(p.t2_price)} tone="indigo" />
       </div>
 
+      {/* Q1 — expected T1 day + Q2 — trajectory pill */}
+      <div className="mt-3 flex flex-wrap items-center gap-2 text-[11px]">
+        {p.expected_t1_date && p.t1_status && (
+          <span
+            className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 font-mono ${
+              p.t1_status === 'hit'
+                ? 'bg-emerald-100 text-emerald-900'
+                : p.t1_status === 'overdue'
+                ? 'bg-amber-100 text-amber-900'
+                : 'bg-slate-100 text-slate-700'
+            }`}
+            title="Expected T1 day = entry + 21 trading days"
+          >
+            <CalendarClock className="h-3 w-3" />
+            T1 expected by {p.expected_t1_date}
+            {p.t1_status === 'overdue' && p.days_to_expected_t1 != null && (
+              <span className="ml-1">
+                ({Math.abs(p.days_to_expected_t1)}d overdue)
+              </span>
+            )}
+            {p.t1_status === 'hit' && <span className="ml-1">✓ hit</span>}
+          </span>
+        )}
+        {p.trajectory && (
+          <span
+            className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 font-semibold ${
+              TRAJECTORY_META[p.trajectory.overall].tone === 'emerald'
+                ? 'bg-emerald-100 text-emerald-900'
+                : TRAJECTORY_META[p.trajectory.overall].tone === 'amber'
+                ? 'bg-amber-100 text-amber-900'
+                : TRAJECTORY_META[p.trajectory.overall].tone === 'rose'
+                ? 'bg-rose-100 text-rose-900'
+                : 'bg-slate-100 text-slate-700'
+            }`}
+            title={p.trajectory.headline}
+          >
+            Signal: {TRAJECTORY_META[p.trajectory.overall].label}
+          </span>
+        )}
+      </div>
+
+      {/* Trajectory detail (only when something changed) */}
+      {p.trajectory && p.trajectory.overall !== 'stable' && p.trajectory.overall !== 'unknown' && (
+        <p className="mt-2 text-[11px] italic text-slate-600">
+          {p.trajectory.headline}
+        </p>
+      )}
+
       {/* Time-stop dates + position size */}
       <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-slate-500">
-        <span className="inline-flex items-center gap-1">
-          <CalendarClock className="h-3 w-3" />
-          d45 {p.time_stops.day_45}
-        </span>
+        <span>d45 {p.time_stops.day_45}</span>
         <span>· d90 {p.time_stops.day_90}</span>
         <span>· d180 {p.time_stops.day_180}</span>
         <span className="ml-auto inline-flex items-center gap-1">
