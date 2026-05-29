@@ -25,7 +25,7 @@ from ..yahoo import history_ohlcv
 # Tunable constants
 # --------------------------------------------------------------------------- #
 
-REGIME_TICKERS: tuple[str, ...] = ("^NSEI", "^NSEBANK")  # tunable
+REGIME_TICKERS: tuple[str, ...] = ("^CNX100",)  # tunable — match Nifty 100 universe
 MA_PERIOD: int = 50                                       # tunable
 
 
