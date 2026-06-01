@@ -13,10 +13,12 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
+from typing import Optional
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(_PROJECT_ROOT / "backend" / ".env")
@@ -80,6 +82,38 @@ def _startup_self_heal() -> None:
     t = threading.Thread(target=_bg, daemon=True, name="stockiya-catchup")
     t.start()
     logging.getLogger("startup").info("Catchup launched in background")
+
+
+class BacktestRequest(BaseModel):
+    as_of: str = Field(..., description="YYYY-MM-DD past trading date")
+    symbols: Optional[list[str]] = Field(
+        default=None,
+        description="Optional. 1-2 symbols → Mode A (explain). Blank → Mode B (universe).",
+    )
+    hold_days: int = Field(default=20, ge=1, le=180)
+    top_n: int = Field(default=3, ge=1, le=10)
+    capital: float = Field(default=100000.0, gt=0)
+
+
+@app.post("/api/backtest")
+def post_backtest(req: BacktestRequest) -> dict:
+    """Run the live picker against a historical date and walk results forward.
+
+    Mode auto-selected: 1-2 symbols → Mode A (deep explanation per symbol);
+    blank or >2 symbols → Mode B (universe funnel + outcomes).
+    """
+    from backend.backtest import run_backtest
+    try:
+        return run_backtest(
+            as_of=req.as_of,
+            symbols=req.symbols,
+            hold_days=req.hold_days,
+            top_n=req.top_n,
+            capital=req.capital,
+        )
+    except Exception as e:
+        logging.getLogger("backtest").exception("backtest crashed")
+        raise HTTPException(status_code=500, detail=f"backtest failed: {e}")
 
 
 @app.get("/api/health")

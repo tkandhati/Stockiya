@@ -33,18 +33,36 @@ _RETRY_ATTEMPTS = 3
 _RETRY_BACKOFF_BASE = 0.5  # seconds; doubles each attempt
 
 
-def _history_with_retry(symbol: str, period: str) -> pd.DataFrame:
+def _history_with_retry(
+    symbol: str,
+    period: Optional[str] = None,
+    start: Optional[str] = None,
+    end: Optional[str] = None,
+) -> pd.DataFrame:
     """yfinance.history wrapped with retry + backoff for transient failures.
 
     Retries on either exception or empty DataFrame. Returns empty DataFrame
     only after all attempts exhausted — distinguishes truly-dead tickers
     (still empty after retries) from transient Yahoo flakiness.
+
+    Pass either `period` (e.g. "2y") or an explicit `start`/`end` window. The
+    explicit window is used by backtest to fetch bars ending at a past date.
     """
     t = _ticker(symbol)
     last_err: Optional[str] = None
+    kwargs: dict = {"auto_adjust": True}
+    if start or end:
+        if start:
+            kwargs["start"] = start
+        if end:
+            kwargs["end"] = end
+        label = f"start={start} end={end}"
+    else:
+        kwargs["period"] = period or "2y"
+        label = f"period={kwargs['period']}"
     for attempt in range(_RETRY_ATTEMPTS):
         try:
-            h = t.history(period=period, auto_adjust=True)
+            h = t.history(**kwargs)
             if h is not None and not h.empty:
                 return h
             last_err = "empty result"
@@ -53,8 +71,8 @@ def _history_with_retry(symbol: str, period: str) -> pd.DataFrame:
         if attempt < _RETRY_ATTEMPTS - 1:
             time.sleep(_RETRY_BACKOFF_BASE * (2 ** attempt))
     log.warning(
-        "yfinance history(%s, period=%s) failed after %d attempts: %s",
-        symbol, period, _RETRY_ATTEMPTS, last_err,
+        "yfinance history(%s, %s) failed after %d attempts: %s",
+        symbol, label, _RETRY_ATTEMPTS, last_err,
     )
     return pd.DataFrame()
 
@@ -158,21 +176,44 @@ def snapshot(symbol: str) -> dict:
     }
 
 
-def history_ohlcv(symbol: str) -> pd.DataFrame:
-    """Return ~1 year of daily OHLCV for the volume engine.
+def history_ohlcv(
+    symbol: str,
+    end: Optional[str] = None,
+    lookback_days: int = 730,
+) -> pd.DataFrame:
+    """Return daily OHLCV for the volume engine.
 
-    1 year is the minimum window we need for a long-term lens:
-    - 30-week (150-day) moving average for Stan Weinstein Stage Analysis
-    - 200-day MA + slope for Minervini's Trend Template
-    - Quarter-over-quarter volume comparisons
-    - Multi-month base detection
+    Live mode (`end=None`): ~2 years ending today via yfinance `period="2y"`.
+    The 2-year window gives the long-term lens room to breathe:
+      - 30-week (150-day) MA for Stan Weinstein Stage Analysis
+      - 200-day MA + slope for Minervini's Trend Template
+      - Multi-month base detection (no longer capped at ~12 months)
+
+    Backtest mode (`end="YYYY-MM-DD"`): bars from `end - lookback_days` to
+    `end` inclusive (default lookback = 730 calendar days). Fetch ends at
+    `end + 1 day` because yfinance's `end` is exclusive.
 
     Columns: Open, High, Low, Close, Volume. Index: date. Empty on failure.
     """
     if _demo_enabled():
         from .demo_data import demo_ohlcv
         return demo_ohlcv(symbol)
-    h = _history_with_retry(symbol, period="1y")
+
+    if end:
+        from datetime import date as _date, timedelta as _td
+        try:
+            end_d = _date.fromisoformat(end)
+        except ValueError:
+            return pd.DataFrame()
+        start_d = end_d - _td(days=lookback_days)
+        h = _history_with_retry(
+            symbol,
+            start=start_d.isoformat(),
+            end=(end_d + _td(days=1)).isoformat(),
+        )
+    else:
+        h = _history_with_retry(symbol, period="2y")
+
     if h.empty:
         return pd.DataFrame()
     cols = [c for c in ["Open", "High", "Low", "Close", "Volume"] if c in h.columns]

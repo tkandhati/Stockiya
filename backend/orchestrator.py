@@ -2,7 +2,7 @@
 
 Gates-based flow (PRINCIPLES Section 2):
 
-    Phase 0  [RG]  Market regime gate (one shot, NIFTY + BANKNIFTY).
+    Phase 0  [RG]  Market regime gate (one shot, NIFTY 100).
                    FAIL -> write empty picks file with regime info, return.
     Phase 1  per-ticker pipeline (parallel) over Nifty 100.
     Phase 2  [RK]  Confirmation-strength ranking; select top N.
@@ -35,10 +35,11 @@ from .stages.render import render_picks_response, write_picks_file
 from .universe import UNIVERSE
 
 # Stages in canonical order — used for the per-gate breakdown log.
-_GATE_ORDER = ["U", "I", "LT", "CS", "VD", "BR"]
+_GATE_ORDER = ["U", "I", "HR", "LT", "CS", "VD", "BR"]
 _GATE_LABEL = {
-    "U": "Universe", "I": "Ingest", "LT": "Long-term flow",
-    "CS": "Consolidation", "VD": "Volume/Divergence", "BR": "Breakout",
+    "U": "Universe", "I": "Ingest", "HR": "Hard rejects",
+    "LT": "Long-term flow", "CS": "Consolidation",
+    "VD": "Volume/Divergence", "BR": "Breakout",
 }
 
 # Near-miss qualification: a ticker must have cleared at least this many

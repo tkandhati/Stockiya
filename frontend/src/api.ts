@@ -1,4 +1,6 @@
 import type {
+  BacktestRequest,
+  BacktestResponse,
   DataHealthReport,
   PicksResponse,
   PositionsResponse,
@@ -31,6 +33,14 @@ export function fetchStockDetail(symbol: string): Promise<StockDetail> {
 
 export function fetchDataHealth(): Promise<DataHealthReport> {
   return fetch('/api/health/data').then(jsonOrThrow<DataHealthReport>)
+}
+
+export function runBacktest(req: BacktestRequest): Promise<BacktestResponse> {
+  return fetch('/api/backtest', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+  }).then(jsonOrThrow<BacktestResponse>)
 }
 
 export function fmtINR(n: number | null | undefined, digits = 2): string {

@@ -3,6 +3,7 @@ import { PicksPage } from './pages/PicksPage'
 import { PositionsPage } from './pages/PositionsPage'
 import { StockDetailPage } from './pages/StockDetailPage'
 import { DataHealthPage } from './pages/DataHealthPage'
+import { SimulationPage } from './pages/SimulationPage'
 
 export default function App() {
   return (
@@ -11,6 +12,7 @@ export default function App() {
       <Route path="/positions" element={<PositionsPage />} />
       <Route path="/stock/:symbol" element={<StockDetailPage />} />
       <Route path="/health" element={<DataHealthPage />} />
+      <Route path="/simulate" element={<SimulationPage />} />
     </Routes>
   )
 }

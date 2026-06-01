@@ -1,10 +1,10 @@
 """[RG] Market Regime gate.
 
 Runs ONCE per day at the start of the orchestrator — NOT per ticker. Halts
-all per-ticker work if either configured index benchmark closes below its
+all per-ticker work if the configured index benchmark closes below its
 50-day moving average. The master switch from PRINCIPLES Section 2.
 
-Default: NIFTY 50 (^NSEI) AND BANKNIFTY (^NSEBANK) — both must pass.
+Default: NIFTY 100 (^CNX100) — aligned with our Nifty 100 trading universe.
 
 Fix points:
     REGIME_TICKERS : indices that gate the day (tuple, all must pass)
@@ -15,7 +15,10 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
+from datetime import date as _date
 from typing import Optional
+
+import pandas as pd
 
 from ..indicators import sma
 from ..yahoo import history_ohlcv
@@ -71,8 +74,25 @@ class RegimeStatus:
 # Entry point
 # --------------------------------------------------------------------------- #
 
-def check_regime() -> RegimeStatus:
+def _slice_to_as_of(df: pd.DataFrame, as_of: _date) -> pd.DataFrame:
+    """Drop bars dated after as_of. Safe with tz-aware or tz-naive indices."""
+    cutoff = pd.Timestamp(as_of)
+    try:
+        idx = df.index.normalize()
+        if getattr(idx, "tz", None) is not None:
+            idx = idx.tz_localize(None)
+        return df[idx <= cutoff]
+    except Exception:
+        return df[[ts.date() <= as_of for ts in df.index]]
+
+
+def check_regime(as_of: Optional[str] = None) -> RegimeStatus:
     """Fetch each regime index and verify last close > MA_PERIOD-day MA.
+
+    Live (`as_of=None`): uses today's close.
+    Backtest (`as_of="YYYY-MM-DD"`): fetches the historical window and slices
+    to bars <= as_of, so the regime decision matches what would have been
+    known on that historical EOD.
 
     Conservative: if ANY index fails fetch, has missing data, or closes at
     or below its MA, the regime is HALTED. We never assume an unknown-state
@@ -97,12 +117,19 @@ def check_regime() -> RegimeStatus:
             ),
         )
 
+    as_of_date: Optional[_date] = None
+    if as_of:
+        try:
+            as_of_date = _date.fromisoformat(as_of)
+        except ValueError:
+            as_of_date = None
+
     checks: list[RegimeIndexCheck] = []
     all_pass = True
 
     for sym in REGIME_TICKERS:
         try:
-            df = history_ohlcv(sym)
+            df = history_ohlcv(sym, end=as_of) if as_of_date else history_ohlcv(sym)
         except Exception as e:
             checks.append(RegimeIndexCheck(sym, None, None, None, False, f"fetch error: {e}"))
             all_pass = False
@@ -112,6 +139,16 @@ def check_regime() -> RegimeStatus:
             checks.append(RegimeIndexCheck(sym, None, None, None, False, "no data"))
             all_pass = False
             continue
+
+        if as_of_date is not None:
+            df = _slice_to_as_of(df, as_of_date)
+            if df.empty:
+                checks.append(RegimeIndexCheck(
+                    sym, None, None, None, False,
+                    f"no bars at or before as_of={as_of}",
+                ))
+                all_pass = False
+                continue
 
         ma = sma(df["Close"], MA_PERIOD)
         if ma is None:
@@ -125,9 +162,10 @@ def check_regime() -> RegimeStatus:
         close = float(df["Close"].iloc[-1])
         gap_pct = (close / ma - 1) * 100 if ma > 0 else 0.0
         passed = close > ma
+        as_of_suffix = f" · as-of {as_of}" if as_of_date else ""
         reason = (
             f"close {close:.2f} {'>' if passed else '<='} {MA_PERIOD}d MA {ma:.2f} "
-            f"({gap_pct:+.2f}%)"
+            f"({gap_pct:+.2f}%){as_of_suffix}"
         )
         checks.append(RegimeIndexCheck(sym, close, ma, gap_pct, passed, reason))
         if not passed:

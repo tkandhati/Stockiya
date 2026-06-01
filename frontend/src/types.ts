@@ -226,6 +226,117 @@ export interface PicksResponse {
 }
 
 // --------------------------------------------------------------------------
+// Backtest / Simulation
+// --------------------------------------------------------------------------
+
+export interface BacktestAssumptions {
+  hold_days: number
+  top_n: number
+  capital: number
+  fill_model: string
+  stop_pct: number
+  t1_pct: number
+  t2_pct: number
+  costs_modeled: boolean
+  survivorship_note: string
+}
+
+export interface BacktestGateRow {
+  stage_id: string
+  label: string
+  passed: boolean | null
+  score?: number
+  features?: Record<string, unknown>
+  evidence: string[]
+  reason: string
+  fix_point?: string
+  explanation: string
+}
+
+export interface ForwardWalkBar {
+  day: number
+  date: string
+  open: number
+  high: number
+  low: number
+  close: number
+  event: string | null
+}
+
+export interface ForwardWalk {
+  entry_date?: string
+  entry_px: number
+  stop_px: number
+  t1_px: number
+  t2_px: number
+  exit_reason: string
+  exit_day: number
+  exit_px_avg: number
+  return_pct: number
+  hit_t1_day: number | null
+  hit_t2_day: number | null
+  hit_stop_day: number | null
+  daily_path: ForwardWalkBar[]
+}
+
+export interface BacktestSymbolBlock {
+  symbol: string
+  passed_all_gates?: boolean
+  killing_gate?: string | null
+  killing_gate_label?: string | null
+  chain?: BacktestGateRow[]
+  counterfactual?: Pick & { is_counterfactual?: boolean; error?: string }
+  forward?: ForwardWalk | null
+  snapshot?: { company?: string | null; sector?: string | null; industry?: string | null }
+  error?: string
+}
+
+export interface BacktestFunnelRow {
+  stage_id: string
+  label: string
+  eval: number
+  pass: number
+  fail: number
+  top_reason: string
+}
+
+export interface BacktestSelected {
+  rank: number | null
+  symbol: string
+  company?: string | null
+  confirmation: Confirmation
+  payload: Pick
+  forward: ForwardWalk | null
+}
+
+export interface BacktestSummary {
+  n_picks: number
+  hit_rate_pct: number | null
+  avg_return_pct: number | null
+  sum_return_pct: number | null
+}
+
+export interface BacktestResponse {
+  mode: 'A' | 'B'
+  as_of: string
+  regime: Regime
+  assumptions: BacktestAssumptions
+  symbols?: BacktestSymbolBlock[]
+  funnel?: BacktestFunnelRow[]
+  selected?: BacktestSelected[]
+  summary?: BacktestSummary
+  error?: string
+}
+
+export interface BacktestRequest {
+  as_of: string
+  symbols?: string[]
+  hold_days?: number
+  top_n?: number
+  capital?: number
+}
+
+// --------------------------------------------------------------------------
 // Stock-detail panel (unchanged; reads from the legacy AccumulationDTO)
 // --------------------------------------------------------------------------
 

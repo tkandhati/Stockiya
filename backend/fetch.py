@@ -11,6 +11,7 @@ Add new sources by writing a new `_fetch_via_*` function and routing in `fetch()
 from __future__ import annotations
 
 import os
+from typing import Optional
 
 import pandas as pd
 
@@ -18,8 +19,16 @@ from .yahoo import history_ohlcv as _yahoo_history
 from .yahoo import snapshot as _yahoo_snapshot
 
 
-def fetch_ohlcv(symbol: str) -> pd.DataFrame:
-    """Return ~1 year of daily OHLCV for one ticker.
+def fetch_ohlcv(
+    symbol: str,
+    end: Optional[str] = None,
+    lookback_days: int = 730,
+) -> pd.DataFrame:
+    """Return ~2 years of daily OHLCV for one ticker.
+
+    Live mode (`end=None`): bars ending today.
+    Backtest mode (`end="YYYY-MM-DD"`): bars ending at that historical date,
+    going back `lookback_days` calendar days.
 
     Source is selected by env var `DATA_SOURCE`:
         - `yahoo` (default) — yfinance via the demo-mode-aware wrapper
@@ -27,7 +36,7 @@ def fetch_ohlcv(symbol: str) -> pd.DataFrame:
     """
     src = os.environ.get("DATA_SOURCE", "yahoo").lower()
     if src == "yahoo":
-        return _yahoo_history(symbol)
+        return _yahoo_history(symbol, end=end, lookback_days=lookback_days)
     if src == "bhavcopy":
         return _fetch_via_bhavcopy(symbol)
     raise ValueError(f"Unknown DATA_SOURCE={src!r}")

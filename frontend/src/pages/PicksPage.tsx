@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
-import { Briefcase, RefreshCw, Sparkles } from 'lucide-react'
+import { Briefcase, FlaskConical, RefreshCw, Sparkles } from 'lucide-react'
 import { fetchPicks, refreshPicks } from '../api'
 import { Disclaimer } from '../components/Disclaimer'
 import { DemoBanner } from '../components/DemoBanner'
@@ -53,6 +53,13 @@ export function PicksPage() {
           </div>
         </div>
         <div className="flex items-center gap-2">
+          <Link
+            to="/simulate"
+            className="flex items-center gap-2 rounded-lg border border-violet-300 bg-violet-50 px-3 py-2 text-sm font-medium text-violet-900 shadow-sm transition hover:border-violet-400 hover:bg-violet-100"
+          >
+            <FlaskConical className="h-4 w-4" />
+            Simulate
+          </Link>
           <Link
             to="/positions"
             className="flex items-center gap-2 rounded-lg border border-indigo-300 bg-indigo-50 px-3 py-2 text-sm font-medium text-indigo-900 shadow-sm transition hover:border-indigo-400 hover:bg-indigo-100"
@@ -126,7 +133,7 @@ export function PicksPage() {
               <p className="mx-auto mt-2 max-w-xl text-sm text-slate-600">
                 {data.message ||
                   (data.regime && !data.regime.passed
-                    ? 'Market regime is off. No alerts will issue until NIFTY 50 AND BANKNIFTY both close above their 50-day moving average.'
+                    ? 'Market regime is off. No alerts will issue until NIFTY 100 closes above its 50-day moving average.'
                     : 'No Nifty 100 stock cleared all five gates today. Quality over quantity — capital preserved is capital available for the next real signal.')}
               </p>
             </div>

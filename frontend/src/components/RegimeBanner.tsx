@@ -5,8 +5,8 @@ import { fmtPct } from '../api'
 /**
  * Top-of-page banner showing the day's market-regime decision.
  *
- *  - Green pill if NIFTY + BANKNIFTY both close above their 50d MA
- *  - Red banner if either halts — no buy alerts will issue today
+ *  - Green pill if NIFTY 100 closes above its 50d MA
+ *  - Red banner if it halts — no buy alerts will issue today
  *
  * Reads PicksResponse.regime (optional — older cached files have no field).
  */

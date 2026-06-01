@@ -13,6 +13,7 @@ gate doesn't peek at today.
 from __future__ import annotations
 
 from datetime import date as _date
+from typing import Optional
 
 import pandas as pd
 
@@ -39,59 +40,118 @@ def _slice_to_as_of(ohlcv: pd.DataFrame, as_of: _date) -> pd.DataFrame:
         return ohlcv[[ts.date() <= as_of for ts in ohlcv.index]]
 
 
+def _recompute_snapshot_from_ohlcv(snap: dict, ohlcv: "pd.DataFrame") -> dict:
+    """Replace today-leaking fields (ma50, ma200, 52w high/low, return_*) with
+    values computed from the as-of-sliced OHLCV. Display fields (company,
+    sector, industry) and the now-overridden `current` are preserved.
+
+    Used only in backtest mode so the downstream stages and any UI rendering
+    see point-in-time snapshot values instead of live ones.
+    """
+    snap = dict(snap)
+    closes = ohlcv["Close"].dropna()
+    vols = ohlcv["Volume"].dropna() if "Volume" in ohlcv.columns else None
+
+    def _f(x):
+        try:
+            f = float(x)
+        except (TypeError, ValueError):
+            return None
+        if f != f or f in (float("inf"), float("-inf")):
+            return None
+        return f
+
+    snap["ma50"] = _f(closes.tail(50).mean()) if len(closes) >= 50 else None
+    snap["ma200"] = _f(closes.tail(200).mean()) if len(closes) >= 200 else None
+
+    # 52-week window = last ~252 bars or whatever we have if less
+    last_252 = closes.tail(252) if len(closes) > 252 else closes
+    snap["fifty_two_w_high"] = _f(last_252.max()) if not last_252.empty else None
+    snap["fifty_two_w_low"] = _f(last_252.min()) if not last_252.empty else None
+
+    if len(closes) >= 65:
+        r3 = (closes.iloc[-1] / closes.iloc[-65] - 1) * 100
+        snap["return_3m_pct"] = round(r3, 2) if r3 == r3 else None
+    else:
+        snap["return_3m_pct"] = None
+
+    if len(last_252) >= 2:
+        r1 = (last_252.iloc[-1] / last_252.iloc[0] - 1) * 100
+        snap["return_1y_pct"] = round(r1, 2) if r1 == r1 else None
+    else:
+        snap["return_1y_pct"] = None
+
+    if vols is not None and not vols.empty:
+        snap["vol_today"] = _f(vols.iloc[-1])
+        snap["vol_avg30"] = _f(vols.tail(30).mean()) if len(vols) >= 30 else None
+
+    # day_change_pct = (today close vs prior close)
+    if len(closes) >= 2:
+        prev = _f(closes.iloc[-2])
+        cur = _f(closes.iloc[-1])
+        if prev and cur:
+            snap["day_change_pct"] = round((cur - prev) / prev * 100, 2)
+        else:
+            snap["day_change_pct"] = None
+    return snap
+
+
 def run(ctx: PipelineContext) -> StageResult:
+    # Resolve as_of first so we can scope the OHLCV fetch.
+    as_of: Optional[_date] = None
+    if ctx.today_iso:
+        try:
+            as_of = _date.fromisoformat(ctx.today_iso)
+        except ValueError:
+            as_of = None
+    as_of_iso = as_of.isoformat() if as_of else None
+    is_backtest = as_of is not None
+
     snap = fetch_snapshot(ctx.symbol)
 
-    ohlcv = fetch_ohlcv(ctx.symbol)
+    # Backtest mode: fetch a window ending at as_of so we don't rely on
+    # "live window then slice". Live mode: fetch the default ~2y ending today.
+    ohlcv = fetch_ohlcv(ctx.symbol, end=as_of_iso) if is_backtest else fetch_ohlcv(ctx.symbol)
     if ohlcv is None or ohlcv.empty:
         return StageResult(
             stage_id=stage_id, passed=False,
-            features={"has_ohlcv": False},
+            features={"has_ohlcv": False, "as_of": as_of_iso},
             fix_point="backend/yahoo.py:history_ohlcv",
             reason="no OHLCV from data source",
         )
 
-    # Lookahead protection: if today_iso is a past date (backfill / backtest),
-    # drop any bars after that date.
-    as_of_used = None
-    if ctx.today_iso:
-        try:
-            as_of = _date.fromisoformat(ctx.today_iso)
-            ohlcv = _slice_to_as_of(ohlcv, as_of)
-            as_of_used = as_of.isoformat()
-        except ValueError:
-            pass
+    # Defensive slice (handles live windows or oversized backtest fetches).
+    if as_of is not None:
+        ohlcv = _slice_to_as_of(ohlcv, as_of)
 
     if ohlcv.empty:
         return StageResult(
             stage_id=stage_id, passed=False,
-            features={"as_of": as_of_used, "has_ohlcv": False},
+            features={"as_of": as_of_iso, "has_ohlcv": False},
             fix_point="backend/stages/ingest.py:_slice_to_as_of",
-            reason=f"no bars at or before as_of={as_of_used}",
+            reason=f"no bars at or before as_of={as_of_iso}",
         )
 
     bars = len(ohlcv)
     if bars < MIN_BARS:
         return StageResult(
             stage_id=stage_id, passed=False,
-            features={"bars": bars, "min_required": MIN_BARS, "as_of": as_of_used},
+            features={"bars": bars, "min_required": MIN_BARS, "as_of": as_of_iso},
             fix_point="backend/stages/ingest.py:MIN_BARS",
             reason=f"only {bars} bars, need >={MIN_BARS}",
         )
 
-    # For historical backfill, snapshot's "current" was today's live price.
-    # Override with the close of the as-of bar so downstream gates see the
-    # correct historical price.
     as_of_close = float(ohlcv["Close"].iloc[-1])
-    if as_of_used:
-        snap = dict(snap)
+    if is_backtest:
+        # Replace today-leaking snapshot fields with values from sliced OHLCV.
+        snap = _recompute_snapshot_from_ohlcv(snap, ohlcv)
         snap["current"] = as_of_close
 
     current = snap.get("current") or as_of_close
     if not current:
         return StageResult(
             stage_id=stage_id, passed=False,
-            features={"has_snapshot": False, "as_of": as_of_used},
+            features={"has_snapshot": False, "as_of": as_of_iso},
             fix_point="backend/yahoo.py:snapshot",
             reason="no current price from data source",
         )
@@ -101,10 +161,10 @@ def run(ctx: PipelineContext) -> StageResult:
 
     return StageResult(
         stage_id=stage_id, passed=True,
-        features={"bars": bars, "current": current, "as_of": as_of_used},
+        features={"bars": bars, "current": current, "as_of": as_of_iso},
         evidence=[
             f"{bars} daily bars · current ₹{current:.2f}"
-            + (f" · as-of {as_of_used}" if as_of_used else "")
+            + (f" · as-of {as_of_iso}" if as_of_iso else "")
         ],
         fix_point="backend/stages/ingest.py:MIN_BARS",
     )

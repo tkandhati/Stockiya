@@ -15,7 +15,7 @@
 ├────────────────────────────────────────────────────────────────────────┤
 │  16:00      NSE close. Wait 30 min for late prints / corrections.      │
 │  16:30      backend/nightly.py kicks off the run.                      │
-│  16:30–35   [RG] Regime gate. NIFTY 50 + BANKNIFTY 50d-MA check.       │
+│  16:30–35   [RG] Regime gate. NIFTY 100 50d-MA check.                  │
 │             FAIL → write empty picks file. End run.                    │
 │  16:35–17:10  Per-ticker pipeline, parallel by thread, over Nifty 100. │
 │  17:10–12   [RK] Rank survivors, [PS] size, [H] hypothesis, [R] render.│
@@ -40,7 +40,7 @@ Intra-day data is **intentionally not consumed** — there is no signal we trust
 | Source | Cached at | Why |
 |---|---|---|
 | Yahoo Finance — 1y daily OHLCV per ticker | in-memory per run | Price + volume tape |
-| Yahoo Finance — `^NSEI` + `^NSEBANK` 1y | in-memory per run | Regime indices |
+| Yahoo Finance — `^CNX100` 1y | in-memory per run | Regime index (matches Nifty 100 universe) |
 | NSE block-deal CSV (`archives.nseindia.com/.../block.csv`) | `data/deals/block_<date>.csv` | Bonus rank signal |
 | NSE bulk-deal CSV | `data/deals/bulk_<date>.csv` | Bonus rank signal |
 | `backend/universe.py:UNIVERSE` | code-tracked | The 100 tickers |
@@ -57,7 +57,7 @@ Each stage is one file in `backend/stages/` with signature `run(ctx) -> StageRes
 
 | Stage | File | Algorithm | Math summary |
 |---|---|---|---|
-| **[RG] Regime** | `stages/regime.py` | Index trend filter | `close(^NSEI) > sma(^NSEI, 50)` **AND** `close(^NSEBANK) > sma(^NSEBANK, 50)` |
+| **[RG] Regime** | `stages/regime.py` | Index trend filter | `close(^CNX100) > sma(^CNX100, 50)` |
 | **[U] Universe** | `stages/universe.py` | Membership check | `symbol ∈ NIFTY100` |
 | **[I] Ingest** | `stages/ingest.py` | Fetch OHLCV + slice to as-of date | Pulls 1y daily; if `ctx.today_iso` is a past date, slices bars to that date (no lookahead) and overrides snapshot.current with the as-of close |
 | **[LT] Long-term flow** | `stages/lt_flow.py` | 3+ months of institutional accumulation | `obv_slope_90d >= +3%` AND `up_down_vol(90) >= 1.1` AND `sma_slope(150, lookback=50) >= 0` |
@@ -101,7 +101,7 @@ Trace `schema_version: 2` (new gates spine). Old `schema_version: 1` rows are st
 │ T2    (+16 %)    ₹ 2,103.66         → sell remaining 50 %        │
 │                                                                  │
 │ Why this passed all 4 gates:                                     │
-│   ✓ Regime ON   (NIFTY +2.1 % vs 50d MA, BANKNIFTY +1.4 %)      │
+│   ✓ Regime ON   (NIFTY 100 +2.1 % vs 50d MA)                    │
 │   ✓ Consolidation   ATR/price 3.2 %, 31 days in band, > 150d MA │
 │   ✓ Volume/Divergence   5d vol = 38 % of 50d, OBV +6.8 % HL    │
 │   ✓ Breakout   close +1.9 % over 20d high, vol 1.7× avg, 78 % UT│
@@ -122,7 +122,7 @@ Trace `schema_version: 2` (new gates spine). Old `schema_version: 1` rows are st
 
 At the top of every page is a regime banner:
 - **Regime ON** (green) — today's picks are shown
-- **Regime HALTED** (red) — *"No buy alerts will issue until NIFTY 50 and BANKNIFTY both close above their 50-day MA."*
+- **Regime HALTED** (red) — *"No buy alerts will issue until NIFTY 100 closes above its 50-day MA."*
 
 If zero tickers cleared all four gates on a regime-on day, the page shows *"Nothing actionable today — quality over quantity."*
 

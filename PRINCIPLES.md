@@ -10,7 +10,7 @@ Volume is the only signal that cannot be faked. Institutions cannot enter or exi
 
 ## 1. The strategy in one paragraph
 
-We scan **Nifty 100** daily after market close. We require the **market regime** to be on — NIFTY 50 *and* BANKNIFTY both above their 50-day moving averages — before any buy alert. For each ticker, **five hard gates must all pass**: 3+ months of long-term institutional flow, a 5–8 week tight consolidation above the 150-day MA, a volume dry-up paired with bullish OBV–price divergence, and an end-of-day breakout closing in the upper third of its candle on 1.5× average volume. Survivors are ranked by **confirmation strength** — the pick with the most independent corroborating signals is #1. The "Today's buy alerts" list naturally churns daily; the **My Positions** page tracks what was bought and what to do with it each day.
+We scan **Nifty 100** daily after market close. We require the **market regime** to be on — NIFTY 100 above its 50-day moving average — before any buy alert. For each ticker, **five hard gates must all pass**: 3+ months of long-term institutional flow, a 5–8 week tight consolidation above the 150-day MA, a volume dry-up paired with bullish OBV–price divergence, and an end-of-day breakout closing in the upper third of its candle on 1.5× average volume. Survivors are ranked by **confirmation strength** — the pick with the most independent corroborating signals is #1. The "Today's buy alerts" list naturally churns daily; the **My Positions** page tracks what was bought and what to do with it each day.
 
 ---
 
@@ -18,7 +18,7 @@ We scan **Nifty 100** daily after market close. We require the **market regime**
 
 | Gate | What passes |
 |---|---|
-| **Regime** | NIFTY 50 *and* BANKNIFTY both close above their 50d MA |
+| **Regime** | NIFTY 100 closes above its 50d MA (matches the trading universe) |
 | **Long-term flow** | OBV-90d slope ≥ +3 %, up/down vol (90d) ≥ 1.1×, 150d MA slope ≥ 0 % (the 6-month-evidence check) |
 | **Consolidation** | ATR(14)/Close ≤ 4 %, close > 150d MA, range held for **≥ 25 trading days** (no upper cap — longer bases are better) |
 | **Volume / Divergence** | 5d avg volume < 50 % of 50d avg **and** bullish OBV–price divergence in last 20 days |
@@ -72,7 +72,7 @@ More bonuses firing = the same setup has more independent confirmations = less-l
 
 ## 6. Hard rejects — never alert
 
-- Either regime index below its 50d MA
+- Regime index below its 50d MA
 - Any one of the four gates fails
 - Parabolic 30-day move (> +25 %) — institutions are selling to retail
 - Auditor exit / open SEBI action / promoter pledge > 50 %
