@@ -1036,6 +1036,149 @@ def _quarter_key(iso: str) -> str:
     return f"{d.year}-Q{q}"
 
 
+def _bar_n_back(df: pd.DataFrame, as_of: _date, n: int) -> Optional[str]:
+    """Return the iso date of the bar n trading bars before as_of (inclusive).
+    Used to surface the setup-window dates so the user can visually verify
+    each pick against the actual price chart. Never reads future data —
+    we just step back through the same `df` the gates already saw.
+    """
+    idx = df.index.normalize()
+    if getattr(idx, "tz", None) is not None:
+        idx = idx.tz_localize(None)
+    in_range = df[idx <= pd.Timestamp(as_of)]
+    if len(in_range) <= n:
+        return None
+    return in_range.index[-(n + 1)].strftime("%Y-%m-%d")
+
+
+def _gate_inputs(pick: PipelineResult) -> dict:
+    """Per-gate feature dict for the feedback file. These are the raw
+    measurements each gate computed; an RL bandit trains on these.
+    """
+    out: dict = {}
+    for sid in ("HR", "LT", "CS", "VD", "BR"):
+        sr = pick.stage_results.get(sid)
+        out[sid] = dict(sr.features) if (sr and sr.features) else {}
+    return out
+
+
+def _misses(plan: dict, forward: Optional[dict]) -> dict:
+    """Plan-vs-reality gaps for one pick.
+
+    `mfe` (max favorable excursion) = best % above entry achieved during hold.
+    `mae` (max adverse excursion) = worst % below entry. Together they tell
+    you how close the trade got to T1/T2 even if it didn't formally hit.
+    """
+    if not forward:
+        return {"available": False}
+
+    hit_t1_day = forward.get("hit_t1_day")
+    hit_t2_day = forward.get("hit_t2_day")
+    hit_stop_day = forward.get("hit_stop_day")
+    entry_px = forward.get("entry_px") or 0.0
+    path = forward.get("daily_path") or []
+
+    mfe = 0.0
+    mae = 0.0
+    if entry_px > 0:
+        for bar in path:
+            high = float(bar.get("high") or 0)
+            low = float(bar.get("low") or 0)
+            if high > 0:
+                mfe = max(mfe, (high - entry_px) / entry_px * 100)
+            if low > 0:
+                mae = min(mae, (low - entry_px) / entry_px * 100)
+
+    out = {
+        "available": True,
+        "hit_t1": hit_t1_day is not None,
+        "hit_t2": hit_t2_day is not None,
+        "hit_stop": hit_stop_day is not None,
+        "stopped_before_t1": hit_stop_day is not None and hit_t1_day is None,
+        "mfe_pct": round(mfe, 2),
+        "mae_pct": round(mae, 2),
+    }
+    # Delta between expected and actual T1 hit time, if T1 actually hit
+    if hit_t1_day is not None and plan and plan.get("t1_expected_days"):
+        out["t1_delta_days"] = hit_t1_day - int(plan["t1_expected_days"])
+    if hit_t2_day is not None and plan and plan.get("t2_expected_days"):
+        out["t2_delta_days"] = hit_t2_day - int(plan["t2_expected_days"])
+    return out
+
+
+def _setup_windows(pick: PipelineResult, df: pd.DataFrame, as_of: _date) -> dict:
+    """Per-pick map of when each gate's lookback began. For visual verification:
+    open the chart, zoom to base_start..trigger_date and check the algorithm's
+    claims against your eyes.
+    """
+    cs = pick.stage_results.get("CS")
+    base_days = (cs.features.get("days_in_band") if cs and cs.features else None) or 30
+    return {
+        "lt_lookback_start": _bar_n_back(df, as_of, 90),
+        "base_start": _bar_n_back(df, as_of, int(base_days)),
+        "base_days": int(base_days),
+        "dryup_start": _bar_n_back(df, as_of, 5),
+        "trigger_date": as_of.isoformat(),
+    }
+
+
+def _strategy_plan(pick: PipelineResult) -> dict:
+    """Estimate expected horizons for this pick's T1/T2 hits.
+
+    Heuristic — NOT a guarantee. Uses the consolidation base length and the
+    confirmation score to roughly forecast how quickly the trade reaches T1
+    (+8%) and T2 (+16%). Rule of thumb from base-and-breakout literature
+    (O'Neill, Minervini): post-breakout move duration ≈ ½ × base length,
+    accelerated by stronger confirmation.
+
+    Returns:
+        {
+          "t1_expected_days": int,
+          "t2_expected_days": int,
+          "setup_strength": "tight" | "normal" | "loose",
+          "rationale": str,
+        }
+    """
+    cs = pick.stage_results.get("CS")
+    base_days = (cs.features.get("days_in_band") if cs and cs.features else None) or 30
+    atr_pct = (cs.features.get("atr_pct") if cs and cs.features else None) or 4.0
+    conf = pick.confirmation_score or 1.0
+
+    # Base half-life: half the base length, clamped to a realistic range.
+    base_half = max(15, min(120, base_days // 2))
+
+    # Confirmation accelerator: each unit above 2.0 shaves 10% off.
+    accel = max(0.6, 1.0 - max(0.0, conf - 2.0) * 0.10)
+
+    t1_days = int(round(base_half * accel))
+    t2_days = int(round(t1_days * 2.2))   # T2 is typically ~2× T1 time
+    # Respect the day-90 hard exit if T1 doesn't hit — cap T1 estimate at 60.
+    t1_days = max(10, min(60, t1_days))
+    t2_days = max(45, min(180, t2_days))
+
+    if atr_pct <= 2.5:
+        strength = "tight"
+    elif atr_pct <= 4.0:
+        strength = "normal"
+    else:
+        strength = "loose"
+
+    rationale = (
+        f"{base_days}-day base, ATR {atr_pct:.1f}% ({strength}), "
+        f"confirmation {conf:.2f}"
+    )
+
+    return {
+        "t1_expected_days": t1_days,
+        "t2_expected_days": t2_days,
+        "t1_target_pct": 8,
+        "t2_target_pct": 16,
+        "stop_pct": -8,
+        "setup_strength": strength,
+        "rationale": rationale,
+    }
+
+
 def _month_key(iso: str) -> str:
     return iso[:7]   # "YYYY-MM"
 
@@ -1214,20 +1357,37 @@ def scan_universe(
             except Exception as e:
                 payload = {"error": str(e)}
 
+            # Setup window dates — for visual verification on a chart
+            windows = _setup_windows(pick, df, as_of) if df is not None else None
+            # Exit date from forward walk (if any)
+            exit_date_iso = None
+            if forward and forward.get("daily_path"):
+                eday = forward.get("exit_day") or len(forward["daily_path"])
+                idx = max(0, eday - 1)
+                if idx < len(forward["daily_path"]):
+                    exit_date_iso = forward["daily_path"][idx].get("date")
+
+            plan_dict = _strategy_plan(pick)
             picks_chronological.append({
                 "as_of": as_of_iso,
                 "entry_date": entry_date_iso,
+                "exit_date": exit_date_iso,
                 "rank": pick.rank,
                 "symbol": pick.symbol,
                 "company": (pick.snapshot or {}).get("company"),
                 "sector": (pick.snapshot or {}).get("sector"),
                 "confirmation_score": pick.confirmation_score,
+                "confirmation_components": pick.confirmation_components or {},
                 "bonuses_fired": (pick.confirmation_components or {}).get("bonuses_fired") or [],
                 "headline": payload.get("headline") if isinstance(payload, dict) else None,
                 "entry_px": payload.get("best_buy_at") if isinstance(payload, dict) else None,
                 "stop_px": payload.get("stop_loss") if isinstance(payload, dict) else None,
                 "target_px": payload.get("sell_target") if isinstance(payload, dict) else None,
+                "plan": plan_dict,
+                "windows": windows,
                 "forward": forward,
+                "gate_inputs": _gate_inputs(pick),
+                "misses": _misses(plan_dict, forward),
             })
 
     # ---- Aggregates ----

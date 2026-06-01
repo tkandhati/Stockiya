@@ -376,20 +376,56 @@ export interface ScanResponse {
 }
 
 // Mode C universe-scope: historical picks from the strategy over a range.
+export interface StrategyPlan {
+  t1_expected_days: number
+  t2_expected_days: number
+  t1_target_pct: number
+  t2_target_pct: number
+  stop_pct: number
+  setup_strength: 'tight' | 'normal' | 'loose'
+  rationale: string
+}
+
+export interface SetupWindows {
+  lt_lookback_start: string | null
+  base_start: string | null
+  base_days: number
+  dryup_start: string | null
+  trigger_date: string
+}
+
+export interface PickMisses {
+  available: boolean
+  hit_t1?: boolean
+  hit_t2?: boolean
+  hit_stop?: boolean
+  stopped_before_t1?: boolean
+  mfe_pct?: number
+  mae_pct?: number
+  t1_delta_days?: number
+  t2_delta_days?: number
+}
+
 export interface UniversePick {
   as_of: string
   entry_date: string | null
+  exit_date: string | null
   rank: number | null
   symbol: string
   company: string | null
   sector: string | null
   confirmation_score: number
+  confirmation_components?: Record<string, unknown>
   bonuses_fired: string[]
   headline: string | null
   entry_px: number | null
   stop_px: number | null
   target_px: number | null
+  plan?: StrategyPlan
+  windows?: SetupWindows
   forward: ForwardWalk | null
+  gate_inputs?: Record<string, Record<string, unknown>>
+  misses?: PickMisses
 }
 
 export interface UniverseSummary {

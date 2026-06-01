@@ -97,7 +97,15 @@ class BacktestRequest(BaseModel):
         default=None,
         description="Optional. 1-2 symbols → Mode A (explain). Blank → Mode B (universe).",
     )
-    hold_days: int = Field(default=90, ge=1, le=180)
+    hold_days: int = Field(
+        default=180, ge=1, le=180,
+        description=(
+            "Forward-walk window in trading days. Defaults to 180 — the "
+            "strategy's day-180 final-exit milestone. Not user-tunable in "
+            "the UI; the strategy's own T1/T2/stop/day-45/day-90 milestones "
+            "govern actual exits."
+        ),
+    )
     top_n: int = Field(default=3, ge=1, le=10)
     capital: float = Field(default=100000.0, gt=0)
     overrides: Optional[dict[str, float]] = Field(

@@ -20,6 +20,7 @@ import type {
   BacktestSymbolBlock,
   ForwardWalk,
   ForwardWalkBar,
+  PickMisses,
   ScanDay,
   ScanGateId,
   UniverseBucket,
@@ -250,9 +251,10 @@ export function BacktestPage() {
     return { any, payload: out }
   }, [overrides])
 
-  // Fixed defaults — hidden from the user per the simplified UI.
-  // hold_days = 90 matches PRINCIPLES.md. top_n + capital are display-only knobs.
-  const HOLD_DAYS = 90
+  // Fixed defaults — not user-tunable.
+  // The strategy's own T1/T2/stop/day-45/day-90/day-180 milestones govern
+  // exits; the API forward-walks 180 trading days. top_n / capital are
+  // display-only knobs that don't affect which symbols are picked.
   const TOP_N = 3
   const CAPITAL = 100000
 
@@ -298,7 +300,7 @@ export function BacktestPage() {
       as_of: start,
       end,
       symbols: symbols.length ? symbols : undefined,
-      hold_days: HOLD_DAYS,
+      // hold_days omitted — server defaults to 180 (the strategy's final exit)
       top_n: TOP_N,
       capital: CAPITAL,
       overrides: overridesDeviated.any ? (overridesDeviated.payload as BacktestOverrides) : undefined,
@@ -510,7 +512,9 @@ export function BacktestPage() {
 
         <div className="mt-5 flex flex-wrap items-center justify-between gap-3">
           <p className="text-xs text-slate-500">
-            Hold = 90 days · Top-N = 3 · Capital = ₹1L (defaults; not user-tunable).
+            Exits governed by the strategy ladder — T1 +8% (sell 50%) · T2 +16%
+            (sell rest) · stop −8% · day-45 tighten · day-90 hard exit · day-180
+            final. Each pick below shows its own expected T1/T2 horizon.
           </p>
           <button
             type="submit"
@@ -1732,12 +1736,17 @@ function ModeCUniverse({ resp }: { resp: BacktestResponse }) {
 
       {/* Chronological picks table */}
       <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-        <h3 className="text-sm font-semibold text-slate-800">
-          Chronological picks{' '}
-          <span className="ml-1 rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[10px] text-slate-700">
-            {picks.length}
-          </span>
-        </h3>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <h3 className="text-sm font-semibold text-slate-800">
+            Chronological picks{' '}
+            <span className="ml-1 rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[10px] text-slate-700">
+              {picks.length}
+            </span>
+          </h3>
+          {picks.length > 0 && (
+            <FeedbackDownload picks={picks} resp={resp} />
+          )}
+        </div>
         {picks.length === 0 ? (
           <p className="mt-3 text-sm text-slate-600">
             No picks in this window. Either the regime was halted on most days,
@@ -1764,6 +1773,11 @@ function ModeCUniverse({ resp }: { resp: BacktestResponse }) {
                       <span className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[10px] text-slate-700">
                         conf {p.confirmation_score?.toFixed(2) ?? '—'}
                       </span>
+                      {p.plan && (
+                        <span className="rounded bg-violet-50 px-1.5 py-0.5 font-mono text-[10px] text-violet-900">
+                          plan: T1 ~{p.plan.t1_expected_days}d · T2 ~{p.plan.t2_expected_days}d
+                        </span>
+                      )}
                     </div>
                     <div className="text-right text-xs">
                       {r != null ? (
@@ -1785,6 +1799,16 @@ function ModeCUniverse({ resp }: { resp: BacktestResponse }) {
                         <p className="mb-2 text-xs italic text-slate-600">
                           {p.headline}
                         </p>
+                      )}
+                      {p.plan && <StrategyPlanCard plan={p.plan} />}
+                      {p.windows && (
+                        <SetupTimeline
+                          symbol={p.symbol}
+                          windows={p.windows}
+                          entryDate={p.entry_date}
+                          exitDate={p.exit_date}
+                          forward={p.forward}
+                        />
                       )}
                       <div className="mb-2 grid grid-cols-2 gap-x-4 gap-y-1 text-xs sm:grid-cols-4">
                         <div>
@@ -1892,6 +1916,332 @@ function UniverseFunnel({ rows }: { rows: import('../types').BacktestFunnelRow[]
           )
         })}
       </div>
+    </div>
+  )
+}
+
+
+function FeedbackDownload({
+  picks,
+  resp,
+}: {
+  picks: UniversePick[]
+  resp: BacktestResponse
+}) {
+  const downloadJsonl = () => {
+    const meta = {
+      schema: 'backtest-feedback-1',
+      generated_at: new Date().toISOString(),
+      scan_window: { start: resp.start, end: resp.end },
+      universe_size: resp.universe_size,
+      thresholds: resp.assumptions?.thresholds ?? {},
+      thresholds_deviated: resp.assumptions?.thresholds_deviated ?? {},
+      hold_days: resp.assumptions?.hold_days,
+      total_picks: picks.length,
+    }
+
+    const lines: string[] = []
+    // First line is a meta record so the file is self-describing.
+    lines.push(JSON.stringify({ record: 'meta', ...meta }))
+    for (const p of picks) {
+      lines.push(
+        JSON.stringify({
+          record: 'pick',
+          schema: 'backtest-feedback-1',
+          symbol: p.symbol,
+          company: p.company,
+          sector: p.sector,
+          as_of: p.as_of,
+          decision: {
+            passed_all_gates: true,
+            rank: p.rank,
+            confirmation_score: p.confirmation_score,
+            confirmation_components: p.confirmation_components ?? {},
+            bonuses_fired: p.bonuses_fired,
+          },
+          gate_inputs: p.gate_inputs ?? {},
+          windows: p.windows ?? null,
+          plan: p.plan ?? null,
+          actual: {
+            entry_date: p.entry_date,
+            entry_px: p.entry_px,
+            stop_px: p.stop_px,
+            target_px: p.target_px,
+            exit_date: p.exit_date,
+            exit_reason: p.forward?.exit_reason ?? null,
+            exit_day: p.forward?.exit_day ?? null,
+            exit_px_avg: p.forward?.exit_px_avg ?? null,
+            return_pct: p.forward?.return_pct ?? null,
+            hit_t1_day: p.forward?.hit_t1_day ?? null,
+            hit_t2_day: p.forward?.hit_t2_day ?? null,
+            hit_stop_day: p.forward?.hit_stop_day ?? null,
+          },
+          misses: p.misses ?? null,
+        }),
+      )
+    }
+
+    const blob = new Blob([lines.join('\n') + '\n'], {
+      type: 'application/jsonl',
+    })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    const stem = `backtest_${resp.start}_to_${resp.end}`
+    a.download = `${stem}_${picks.length}picks.jsonl`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+  }
+
+  const downloadCsv = () => {
+    const headers = [
+      'as_of',
+      'symbol',
+      'company',
+      'rank',
+      'confirmation',
+      'base_days',
+      'atr_pct',
+      'vd_ratio_5_50',
+      'br_break_pct',
+      'br_vol_ratio',
+      'plan_t1_days',
+      'plan_t2_days',
+      'entry_date',
+      'entry_px',
+      'stop_px',
+      'target_px',
+      'exit_date',
+      'exit_day',
+      'exit_reason',
+      'return_pct',
+      'hit_t1',
+      'hit_t2',
+      'hit_stop',
+      'mfe_pct',
+      'mae_pct',
+    ]
+    const escape = (v: unknown) => {
+      if (v == null) return ''
+      const s = String(v)
+      return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
+    }
+    const rows = picks.map((p) => {
+      const g = p.gate_inputs ?? {}
+      const cs = (g['CS'] ?? {}) as Record<string, unknown>
+      const vd = (g['VD'] ?? {}) as Record<string, unknown>
+      const br = (g['BR'] ?? {}) as Record<string, unknown>
+      const m = p.misses ?? ({} as PickMisses)
+      return [
+        p.as_of,
+        p.symbol,
+        p.company,
+        p.rank,
+        p.confirmation_score,
+        cs['days_in_band'],
+        cs['atr_pct'],
+        vd['vol_ratio_5_50'],
+        br['break_pct'],
+        br['vol_ratio_today_50d'],
+        p.plan?.t1_expected_days,
+        p.plan?.t2_expected_days,
+        p.entry_date,
+        p.entry_px,
+        p.stop_px,
+        p.target_px,
+        p.exit_date,
+        p.forward?.exit_day,
+        p.forward?.exit_reason,
+        p.forward?.return_pct,
+        m.hit_t1,
+        m.hit_t2,
+        m.hit_stop,
+        m.mfe_pct,
+        m.mae_pct,
+      ].map(escape).join(',')
+    })
+    const csv = headers.join(',') + '\n' + rows.join('\n') + '\n'
+    const blob = new Blob([csv], { type: 'text/csv' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    const stem = `backtest_${resp.start}_to_${resp.end}`
+    a.download = `${stem}_${picks.length}picks.csv`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+  }
+
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <button
+        type="button"
+        onClick={downloadJsonl}
+        title="One row per pick. Self-describing. For RL bandit ingestion."
+        className="inline-flex items-center gap-1 rounded-lg border border-emerald-300 bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-emerald-900 transition hover:border-emerald-400 hover:bg-emerald-100"
+      >
+        ⬇ Feedback (JSONL)
+      </button>
+      <button
+        type="button"
+        onClick={downloadCsv}
+        title="Flat CSV for spreadsheet review."
+        className="inline-flex items-center gap-1 rounded-lg border border-slate-300 bg-white px-2.5 py-1 text-xs font-semibold text-slate-700 transition hover:border-slate-400 hover:bg-slate-50"
+      >
+        ⬇ CSV
+      </button>
+    </div>
+  )
+}
+
+
+function SetupTimeline({
+  symbol,
+  windows,
+  entryDate,
+  exitDate,
+  forward,
+}: {
+  symbol: string
+  windows: import('../types').SetupWindows
+  entryDate: string | null
+  exitDate: string | null
+  forward: ForwardWalk | null
+}) {
+  const yahooUrl = `https://finance.yahoo.com/quote/${encodeURIComponent(symbol)}/chart`
+  const exitReason = forward?.exit_reason ?? null
+  const exitPct = forward?.return_pct
+  const events: Array<{ date: string | null; gate?: string; label: string; cls?: string }> = [
+    {
+      date: windows.lt_lookback_start,
+      gate: 'LT',
+      label: '90-day OBV lookback starts',
+    },
+    {
+      date: windows.base_start,
+      gate: 'CS',
+      label: `${windows.base_days}-day base begins`,
+    },
+    {
+      date: windows.dryup_start,
+      gate: 'VD',
+      label: '5-day dry-up window',
+    },
+    {
+      date: windows.trigger_date,
+      gate: 'BR',
+      label: 'TRIGGER — all 5 gates fire',
+      cls: 'text-violet-900 font-bold',
+    },
+    {
+      date: entryDate,
+      label: 'Entry @ next-day open',
+      cls: 'text-indigo-900',
+    },
+    exitDate
+      ? {
+          date: exitDate,
+          label: `Exit · ${exitReason ?? '—'}${
+            exitPct != null ? ` (${exitPct >= 0 ? '+' : ''}${exitPct.toFixed(1)}%)` : ''
+          }`,
+          cls:
+            exitPct != null && exitPct >= 0
+              ? 'text-emerald-900 font-bold'
+              : 'text-rose-900 font-bold',
+        }
+      : null,
+  ].filter(Boolean) as Array<{ date: string | null; gate?: string; label: string; cls?: string }>
+
+  return (
+    <div className="mb-3 rounded-md border border-slate-300 bg-slate-50 p-3 text-xs">
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+        <strong className="text-slate-900">Setup timeline — for visual verification</strong>
+        <a
+          href={yahooUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="rounded border border-slate-300 bg-white px-2 py-0.5 text-[11px] font-semibold text-indigo-700 hover:border-indigo-400 hover:bg-indigo-50"
+        >
+          Open chart ↗
+        </a>
+      </div>
+      <ul className="space-y-1">
+        {events.map((e, i) => (
+          <li key={i} className="flex items-baseline gap-3 font-mono">
+            <span className="w-24 text-slate-600">{e.date ?? '—'}</span>
+            {e.gate && (
+              <span className="rounded bg-slate-200 px-1.5 py-0.5 text-[10px] font-bold text-slate-800">
+                [{e.gate}]
+              </span>
+            )}
+            <span className={`flex-1 font-sans ${e.cls ?? 'text-slate-700'}`}>
+              {e.label}
+            </span>
+          </li>
+        ))}
+      </ul>
+      <p className="mt-2 text-[10px] text-slate-500">
+        Open the chart and zoom to {windows.base_start ?? '—'} → {windows.trigger_date}.
+        Verify: was the base tight in a ±10% range? Did volume drop in the
+        last 5 days? Did the trigger day close above the 20-day high on heavy
+        volume?
+      </p>
+    </div>
+  )
+}
+
+
+function StrategyPlanCard({ plan }: { plan: import('../types').StrategyPlan }) {
+  const strengthColor =
+    plan.setup_strength === 'tight'
+      ? 'bg-emerald-100 text-emerald-900'
+      : plan.setup_strength === 'normal'
+      ? 'bg-slate-100 text-slate-900'
+      : 'bg-amber-100 text-amber-900'
+  return (
+    <div className="mb-3 rounded-md border border-violet-200 bg-violet-50/60 p-3 text-xs">
+      <div className="mb-1 flex flex-wrap items-center gap-2">
+        <strong className="text-violet-900">Strategy plan</strong>
+        <span className={`rounded px-1.5 py-0.5 font-mono text-[10px] ${strengthColor}`}>
+          {plan.setup_strength} setup
+        </span>
+        <span className="font-mono text-[10px] text-slate-600">{plan.rationale}</span>
+      </div>
+      <div className="grid grid-cols-3 gap-2">
+        <div className="rounded border border-emerald-300 bg-white px-2 py-1">
+          <div className="text-[10px] uppercase text-emerald-800">T1 target</div>
+          <div className="font-mono font-bold text-emerald-900">
+            +{plan.t1_target_pct}% in ~{plan.t1_expected_days}d
+          </div>
+          <div className="text-[10px] text-slate-600">
+            sell 50% · stop → break-even
+          </div>
+        </div>
+        <div className="rounded border border-emerald-400 bg-white px-2 py-1">
+          <div className="text-[10px] uppercase text-emerald-800">T2 target</div>
+          <div className="font-mono font-bold text-emerald-900">
+            +{plan.t2_target_pct}% in ~{plan.t2_expected_days}d
+          </div>
+          <div className="text-[10px] text-slate-600">
+            sell remaining 50%
+          </div>
+        </div>
+        <div className="rounded border border-rose-300 bg-white px-2 py-1">
+          <div className="text-[10px] uppercase text-rose-800">Stop (max loss)</div>
+          <div className="font-mono font-bold text-rose-900">{plan.stop_pct}%</div>
+          <div className="text-[10px] text-slate-600">
+            risk capped at 1% of account
+          </div>
+        </div>
+      </div>
+      <p className="mt-1 text-[10px] text-slate-500">
+        Expected horizons are heuristic — based on this pick's base length,
+        ATR, and confirmation. Actual exits are governed by the live ladder
+        (T1/T2/stop/time stops); see "actual" below.
+      </p>
     </div>
   )
 }
