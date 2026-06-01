@@ -281,6 +281,7 @@ export interface ForwardWalk {
 
 export interface BacktestSymbolBlock {
   symbol: string
+  in_universe?: boolean
   passed_all_gates?: boolean
   killing_gate?: string | null
   killing_gate_label?: string | null
@@ -340,6 +341,7 @@ export interface ScanFullPass {
 
 export interface ScanResponse {
   mode: 'C'
+  scope: 'symbol'
   symbol: string
   start: string
   end: string
@@ -357,6 +359,60 @@ export interface ScanResponse {
   error?: string
 }
 
+// Mode C universe-scope: historical picks from the strategy over a range.
+export interface UniversePick {
+  as_of: string
+  entry_date: string | null
+  rank: number | null
+  symbol: string
+  company: string | null
+  sector: string | null
+  confirmation_score: number
+  bonuses_fired: string[]
+  headline: string | null
+  entry_px: number | null
+  stop_px: number | null
+  target_px: number | null
+  forward: ForwardWalk | null
+}
+
+export interface UniverseSummary {
+  trading_days: number
+  regime_halt_days: number
+  active_days: number
+  days_with_picks: number
+  total_picks: number
+  unique_symbols_picked: number
+  hit_rate_pct: number | null
+  avg_return_pct: number | null
+  sum_return_pct: number | null
+}
+
+export interface UniverseBucket {
+  key?: string
+  symbol?: string
+  company?: string | null
+  n: number
+  avg_return_pct: number | null
+  hit_rate_pct: number | null
+}
+
+export interface UniverseScanResponse {
+  mode: 'C'
+  scope: 'universe'
+  symbol: null
+  start: string
+  end: string
+  universe_size: number
+  picks: UniversePick[]
+  summary: UniverseSummary
+  by_symbol: UniverseBucket[]
+  by_quarter: UniverseBucket[]
+  by_month: UniverseBucket[]
+  assumptions: BacktestAssumptions
+  error?: string
+}
+
 export interface BacktestResponse {
   mode: 'A' | 'B' | 'C'
   as_of?: string
@@ -366,9 +422,10 @@ export interface BacktestResponse {
   symbols?: BacktestSymbolBlock[]
   funnel?: BacktestFunnelRow[]
   selected?: BacktestSelected[]
-  summary?: BacktestSummary
-  // Mode C fields:
-  symbol?: string
+  summary?: BacktestSummary | UniverseSummary
+  // Mode C fields (single-symbol scope):
+  scope?: 'symbol' | 'universe'
+  symbol?: string | null
   start?: string
   end?: string
   trading_days?: number
@@ -381,6 +438,13 @@ export interface BacktestResponse {
     ratio_5_50: number | null
     vd_passed: boolean | null
   }>
+  // Mode C fields (universe scope):
+  universe_size?: number
+  picks?: UniversePick[]
+  by_symbol?: UniverseBucket[]
+  by_quarter?: UniverseBucket[]
+  by_month?: UniverseBucket[]
+  // Re-using `summary` for universe scan too (different shape; component picks)
   error?: string
   unresolved?: string[]
 }

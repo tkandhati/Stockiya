@@ -9,6 +9,7 @@ import {
   PlayCircle,
   XCircle,
 } from 'lucide-react'
+import { FlaskConical, Layers } from 'lucide-react'
 import { fmtINR, fmtPct, runBacktest } from '../api'
 import { Disclaimer } from '../components/Disclaimer'
 import { RegimeBanner } from '../components/RegimeBanner'
@@ -20,18 +21,28 @@ import type {
   ForwardWalkBar,
   ScanDay,
   ScanGateId,
+  UniverseBucket,
+  UniversePick,
+  UniverseSummary,
 } from '../types'
 
 /**
- * SimulationPage — backtest UI built on POST /api/backtest.
+ * BacktestPage — historical replay UI built on POST /api/backtest.
  *
- * Two modes, auto-selected by the form:
- *   - 1-2 symbols   → Mode A: per-symbol deep explanation + counterfactual
- *   - 0 or >2 syms  → Mode B: universe funnel + top-N + outcomes
+ * Two tabs:
+ *   - "Historical scan"  — picks across the universe over a date range.
+ *                          Single-date edge → Mode B (one-day funnel).
+ *                          Range            → Mode C universe (full history).
+ *   - "Symbol check"     — one symbol over a date range, any Yahoo ticker
+ *                          (not just Nifty 100). Single-date edge → Mode A
+ *                          (gate explanation for one day). Range → Mode C
+ *                          symbol (timeline + pass-list + forward walks).
  *
  * Explanation comes first. The numbers are secondary. The screen exists to
- * teach the user WHY each pick (or each rejection) happened.
+ * teach WHY each pick (or each rejection) happened.
  */
+
+type TabId = 'historical' | 'symbol'
 
 const MIN_AS_OF = '2022-01-01'
 const TODAY_ISO = new Date().toISOString().slice(0, 10)
@@ -47,35 +58,124 @@ function lastTradingDayBefore(today: string): string {
   return d.toISOString().slice(0, 10)
 }
 
-export function SimulationPage() {
-  const [asOf, setAsOf] = useState<string>(lastTradingDayBefore(TODAY_ISO))
-  const [scanMode, setScanMode] = useState<boolean>(false)
-  const [endDate, setEndDate] = useState<string>(lastTradingDayBefore(TODAY_ISO))
+function TabButton({
+  active,
+  onClick,
+  icon,
+  label,
+  hint,
+}: {
+  active: boolean
+  onClick: () => void
+  icon: React.ReactNode
+  label: string
+  hint: string
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`flex flex-col gap-0.5 px-4 py-3 text-left transition ${
+        active
+          ? 'border-b-2 border-indigo-600 text-indigo-900'
+          : 'border-b-2 border-transparent text-slate-600 hover:text-slate-900'
+      }`}
+    >
+      <span className="flex items-center gap-2 text-sm font-semibold">
+        {icon} {label}
+      </span>
+      <span
+        className={`text-[11px] ${active ? 'text-indigo-700' : 'text-slate-500'}`}
+      >
+        {hint}
+      </span>
+    </button>
+  )
+}
+
+function OutsideUniverseBanner({ symbol }: { symbol: string }) {
+  return (
+    <div className="mt-4 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-xs text-amber-900">
+      <strong>{symbol}</strong> isn't in the tuned Nifty 100 universe. The
+      gate thresholds (OBV slope, ATR%, breakout volume) were calibrated
+      against large-cap institutional patterns. Mid/small caps and non-NSE
+      tickers may legitimately show different volume/divergence dynamics —
+      treat results as exploratory, not prescriptive.
+    </div>
+  )
+}
+
+export function BacktestPage() {
+  const lastDay = lastTradingDayBefore(TODAY_ISO)
+  const oneYearAgo = (() => {
+    const d = new Date(lastDay)
+    d.setFullYear(d.getFullYear() - 1)
+    return d.toISOString().slice(0, 10)
+  })()
+  const [tab, setTab] = useState<TabId>('historical')
+  const [start, setStart] = useState<string>(oneYearAgo)
+  const [end, setEnd] = useState<string>(lastDay)
   const [symbolsRaw, setSymbolsRaw] = useState<string>('')
-  const [holdDays, setHoldDays] = useState<number>(20)
+  const [holdDays, setHoldDays] = useState<number>(90)
   const [topN, setTopN] = useState<number>(3)
   const [capital, setCapital] = useState<number>(100000)
   const [expanded, setExpanded] = useState<string | null>(null)
 
-  const mut = useMutation({
-    mutationFn: runBacktest,
-  })
+  const mut = useMutation({ mutationFn: runBacktest })
 
   const symbols = useMemo(() => {
-    const parts = symbolsRaw
+    return symbolsRaw
       .split(/[,\s]+/)
       .map((s) => s.trim().toUpperCase())
       .filter(Boolean)
-    return parts
   }, [symbolsRaw])
 
-  const scanRequiresOne = scanMode && symbols.length !== 1
+  const windowDays = useMemo(() => {
+    const a = new Date(start)
+    const b = new Date(end)
+    return Math.floor((b.getTime() - a.getTime()) / (86400 * 1000))
+  }, [start, end])
+  const isSingleDay = windowDays === 0
+  const windowTooSmall = !isSingleDay && windowDays < holdDays
+
+  // Symbol-check tab requires exactly one symbol; universe scan doesn't.
+  const symbolMissing = tab === 'symbol' && symbols.length === 0
+  const symbolTooMany = tab === 'symbol' && symbols.length > 1
+
+  // top_n / capital are only meaningful when multiple symbols compete for slots.
+  const showTopN = tab === 'historical'
+  const showCapital = tab === 'historical'
+
+  // When user switches tabs, reset symbol input + sensible date defaults
+  const switchTo = (next: TabId) => {
+    if (next === tab) return
+    setTab(next)
+    setSymbolsRaw('')
+    setExpanded(null)
+    if (next === 'historical') {
+      setStart(oneYearAgo)
+      setEnd(lastDay)
+    } else {
+      // Symbol check: default to a 1-year window also; user may shorten
+      setStart(oneYearAgo)
+      setEnd(lastDay)
+    }
+  }
+
+  const canRun =
+    !mut.isPending &&
+    !!start &&
+    !!end &&
+    !windowTooSmall &&
+    !symbolMissing &&
+    !symbolTooMany
 
   const onRun = () => {
+    if (!canRun) return
     setExpanded(null)
     mut.mutate({
-      as_of: asOf,
-      end: scanMode ? endDate : undefined,
+      as_of: start,
+      end: end === start ? undefined : end,
       symbols: symbols.length ? symbols : undefined,
       hold_days: holdDays,
       top_n: topN,
@@ -89,11 +189,11 @@ export function SimulationPage() {
     <div className="mx-auto max-w-6xl px-6 py-10">
       <header className="flex flex-wrap items-end justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-slate-900">Simulation</h1>
+          <h1 className="text-2xl font-bold text-slate-900">Backtest</h1>
           <p className="mt-1 text-sm text-slate-700">
-            Run the live picker against a historical date. See what would have
-            been alerted, why each rejection happened, and how the trade would
-            have unfolded over the holding period.
+            Replay the live picker against history. See what would have been
+            alerted, why each rejection happened, and how the trade would have
+            unfolded over the holding period.
           </p>
         </div>
         <Link
@@ -105,95 +205,132 @@ export function SimulationPage() {
         </Link>
       </header>
 
+      {/* Tab nav */}
+      <div className="mt-6 flex gap-2 border-b border-slate-200">
+        <TabButton
+          active={tab === 'historical'}
+          onClick={() => switchTo('historical')}
+          icon={<Layers className="h-4 w-4" />}
+          label="Historical scan"
+          hint="Every pick across the universe, by year / quarter"
+        />
+        <TabButton
+          active={tab === 'symbol'}
+          onClick={() => switchTo('symbol')}
+          icon={<FlaskConical className="h-4 w-4" />}
+          label="Symbol check"
+          hint="When was THIS stock a right pick? (any Yahoo ticker)"
+        />
+      </div>
+
       <form
         onSubmit={(e) => {
           e.preventDefault()
-          if (!scanRequiresOne) onRun()
+          onRun()
         }}
-        className="mt-6 rounded-xl border border-slate-200 bg-white p-5 shadow-sm"
+        className="mt-4 rounded-xl border border-slate-200 bg-white p-5 shadow-sm"
       >
-        <div className="mb-4 flex items-center gap-3 rounded-lg border border-violet-200 bg-violet-50 p-3 text-xs">
-          <input
-            id="scanMode"
-            type="checkbox"
-            checked={scanMode}
-            onChange={(e) => setScanMode(e.target.checked)}
-            className="h-4 w-4 rounded border-slate-300 text-violet-600"
-          />
-          <label htmlFor="scanMode" className="cursor-pointer">
-            <strong className="text-violet-900">Scan a date range</strong>{' '}
-            <span className="text-slate-700">— walk every trading day, see which gates fired and when. Requires exactly one symbol.</span>
-          </label>
-        </div>
+        {tab === 'symbol' && (
+          <div className="mb-4 rounded-md border border-violet-200 bg-violet-50 px-3 py-2 text-xs text-violet-900">
+            <strong>Symbol check.</strong> Enter any ticker (Nifty 100 or not).
+            We'll walk every trading day in your window and show which gates
+            fired, on which days, and what the forward outcome was. Useful for
+            "was this a right pick for our strategy?" research.
+          </div>
+        )}
+        {tab === 'historical' && (
+          <div className="mb-4 rounded-md border border-violet-200 bg-violet-50 px-3 py-2 text-xs text-violet-900">
+            <strong>Historical scan.</strong> Pick a window (year, quarter,
+            etc.) and we walk every trading day across the Nifty 100, listing
+            every pick the strategy would have alerted plus its forward outcome.
+            Leave symbols blank for the full universe, or list a few to filter.
+          </div>
+        )}
 
         <div className="grid grid-cols-1 gap-4 md:grid-cols-12">
           <label className="md:col-span-3">
             <span className="block text-xs font-semibold uppercase tracking-wide text-slate-600">
-              {scanMode ? 'Start' : 'As of'} <span className="text-rose-600">*</span>
+              Start <span className="text-rose-600">*</span>
             </span>
             <input
               type="date"
               required
               min={MIN_AS_OF}
-              max={lastTradingDayBefore(TODAY_ISO)}
-              value={asOf}
-              onChange={(e) => setAsOf(e.target.value)}
+              max={lastDay}
+              value={start}
+              onChange={(e) => setStart(e.target.value)}
               className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 font-mono text-sm"
             />
             <span className="mt-1 block text-[11px] text-slate-500">
-              Past date · {MIN_AS_OF} or later
+              {MIN_AS_OF} or later
             </span>
           </label>
 
-          {scanMode && (
-            <label className="md:col-span-3">
-              <span className="block text-xs font-semibold uppercase tracking-wide text-slate-600">
-                End <span className="text-rose-600">*</span>
-              </span>
-              <input
-                type="date"
-                required
-                min={asOf}
-                max={lastTradingDayBefore(TODAY_ISO)}
-                value={endDate}
-                onChange={(e) => setEndDate(e.target.value)}
-                className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 font-mono text-sm"
-              />
-              <span className="mt-1 block text-[11px] text-slate-500">
-                Scan walks every trading day from start to end
-              </span>
-            </label>
-          )}
-
-          <label className={scanMode ? 'md:col-span-2' : 'md:col-span-5'}>
+          <label className="md:col-span-3">
             <span className="block text-xs font-semibold uppercase tracking-wide text-slate-600">
-              Symbols {scanMode && <span className="text-rose-600">*</span>}
+              End <span className="text-rose-600">*</span>
+            </span>
+            <input
+              type="date"
+              required
+              min={start}
+              max={lastDay}
+              value={end}
+              onChange={(e) => setEnd(e.target.value)}
+              className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 font-mono text-sm"
+            />
+            <span className="mt-1 block text-[11px] text-slate-500">
+              {isSingleDay ? 'Single day — focused view' : `Window: ${windowDays}d`}
+            </span>
+          </label>
+
+          <label className={tab === 'symbol' ? 'md:col-span-4' : 'md:col-span-3'}>
+            <span className="block text-xs font-semibold uppercase tracking-wide text-slate-600">
+              {tab === 'symbol' ? (
+                <>Symbol <span className="text-rose-600">*</span></>
+              ) : (
+                <>Symbols (optional filter)</>
+              )}
             </span>
             <input
               type="text"
-              placeholder={scanMode ? 'e.g. BAJAJ-AUTO.NS' : 'Blank = Nifty 100. e.g. INFY.NS'}
+              placeholder={
+                tab === 'symbol'
+                  ? 'Any Yahoo ticker. e.g. BAJAJ-AUTO.NS, TANLA.NS, AAPL'
+                  : 'Blank = full Nifty 100. Or list a few to filter.'
+              }
               value={symbolsRaw}
               onChange={(e) => setSymbolsRaw(e.target.value)}
               className={`mt-1 w-full rounded-md border px-3 py-2 font-mono text-sm ${
-                scanRequiresOne ? 'border-rose-400 bg-rose-50' : 'border-slate-300'
+                symbolMissing || symbolTooMany
+                  ? 'border-rose-400 bg-rose-50'
+                  : 'border-slate-300'
               }`}
             />
-            <span className="mt-1 block text-[11px] text-slate-500">
-              {scanMode
-                ? scanRequiresOne
-                  ? 'Scan needs exactly one symbol'
-                  : `Mode C (scan): ${symbols[0]}`
-                : symbols.length === 0
-                ? 'Mode B (universe scan)'
-                : symbols.length <= 2
-                ? `Mode A (deep explanation): ${symbols.join(', ')}`
-                : `Mode B (${symbols.length} symbols)`}
+            <span
+              className={`mt-1 block text-[11px] ${
+                symbolMissing || symbolTooMany ? 'text-rose-700' : 'text-slate-500'
+              }`}
+            >
+              {tab === 'symbol' && symbolMissing && 'Required'}
+              {tab === 'symbol' && symbolTooMany && 'Enter exactly one symbol'}
+              {tab === 'symbol' && symbols.length === 1 && `Will check: ${symbols[0]}`}
+              {tab === 'historical' &&
+                (symbols.length === 0
+                  ? 'Scanning full Nifty 100'
+                  : `Filtering to ${symbols.length} symbol${symbols.length === 1 ? '' : 's'}`)}
             </span>
           </label>
 
           <label className="md:col-span-2">
             <span className="block text-xs font-semibold uppercase tracking-wide text-slate-600">
               Hold days
+              <span
+                className="ml-1 cursor-help text-slate-400"
+                title="How long each picked stock is held in the forward simulation. PRINCIPLES default = 90. For a range scan, the window must be at least this long."
+              >
+                ⓘ
+              </span>
             </span>
             <input
               type="number"
@@ -201,37 +338,64 @@ export function SimulationPage() {
               max={180}
               value={holdDays}
               onChange={(e) => setHoldDays(Number(e.target.value))}
-              className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 font-mono text-sm"
+              className={`mt-1 w-full rounded-md border px-3 py-2 font-mono text-sm ${
+                windowTooSmall ? 'border-rose-400 bg-rose-50' : 'border-slate-300'
+              }`}
             />
+            {!isSingleDay && (
+              <span
+                className={`mt-1 block text-[11px] ${
+                  windowTooSmall ? 'text-rose-700' : 'text-slate-500'
+                }`}
+              >
+                {windowTooSmall ? 'Window < hold — widen window or shrink hold' : 'OK'}
+              </span>
+            )}
           </label>
 
-          <label className="md:col-span-1">
-            <span className="block text-xs font-semibold uppercase tracking-wide text-slate-600">
-              Top N
-            </span>
-            <input
-              type="number"
-              min={1}
-              max={10}
-              value={topN}
-              onChange={(e) => setTopN(Number(e.target.value))}
-              className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 font-mono text-sm"
-            />
-          </label>
+          {showTopN && (
+            <label className="md:col-span-1">
+              <span className="block text-xs font-semibold uppercase tracking-wide text-slate-600">
+                Top N
+                <span
+                  className="ml-1 cursor-help text-slate-400"
+                  title="Daily slot cap. If more than N stocks pass all gates on the same day, only the top N (by confirmation score) get picked — same as live."
+                >
+                  ⓘ
+                </span>
+              </span>
+              <input
+                type="number"
+                min={1}
+                max={10}
+                value={topN}
+                onChange={(e) => setTopN(Number(e.target.value))}
+                className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 font-mono text-sm"
+              />
+            </label>
+          )}
 
-          <label className="md:col-span-1">
-            <span className="block text-xs font-semibold uppercase tracking-wide text-slate-600">
-              Capital ₹
-            </span>
-            <input
-              type="number"
-              min={1000}
-              step={1000}
-              value={capital}
-              onChange={(e) => setCapital(Number(e.target.value))}
-              className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 font-mono text-sm"
-            />
-          </label>
+          {showCapital && (
+            <label className="md:col-span-1">
+              <span className="block text-xs font-semibold uppercase tracking-wide text-slate-600">
+                Capital ₹
+                <span
+                  className="ml-1 cursor-help text-slate-400"
+                  title="Affects share count + displayed ₹ returns. Does NOT affect which stocks get picked or whether they win/lose."
+                >
+                  ⓘ
+                </span>
+              </span>
+              <input
+                type="number"
+                min={1000}
+                step={1000}
+                value={capital}
+                onChange={(e) => setCapital(Number(e.target.value))}
+                className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 font-mono text-sm"
+              />
+            </label>
+          )}
         </div>
 
         <div className="mt-4 flex items-center justify-between">
@@ -241,11 +405,11 @@ export function SimulationPage() {
           </p>
           <button
             type="submit"
-            disabled={mut.isPending || !asOf}
+            disabled={!canRun}
             className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50"
           >
             <PlayCircle className={`h-4 w-4 ${mut.isPending ? 'animate-pulse' : ''}`} />
-            {mut.isPending ? 'Running…' : 'Run simulation'}
+            {mut.isPending ? 'Running…' : 'Run backtest'}
           </button>
         </div>
       </form>
@@ -266,6 +430,23 @@ export function SimulationPage() {
       {resp && !resp.error && (
         <>
           {resp.regime && <RegimeBanner regime={resp.regime} />}
+          {/* Outside-universe advisory */}
+          {(resp as { scope?: string }).scope === 'symbol' &&
+            resp.symbol &&
+            (resp as { in_universe?: boolean }).in_universe === false && (
+              <OutsideUniverseBanner symbol={resp.symbol} />
+            )}
+          {resp.mode === 'A' &&
+            (resp.symbols ?? []).some((b) => b.in_universe === false) && (
+              <OutsideUniverseBanner
+                symbol={
+                  (resp.symbols ?? [])
+                    .filter((b) => b.in_universe === false)
+                    .map((b) => b.symbol)
+                    .join(', ')
+                }
+              />
+            )}
           <AssumptionsBanner resp={resp} />
 
           {resp.mode === 'A' && <ModeA resp={resp} />}
@@ -276,7 +457,11 @@ export function SimulationPage() {
               onExpand={(sym) => setExpanded(expanded === sym ? null : sym)}
             />
           )}
-          {resp.mode === 'C' && <ModeC resp={resp} />}
+          {resp.mode === 'C' && (
+            (resp as { scope?: string }).scope === 'universe'
+              ? <ModeCUniverse resp={resp} />
+              : <ModeC resp={resp} />
+          )}
         </>
       )}
 
@@ -1360,6 +1545,298 @@ function DayDetailPanel({
           <ForwardWalkPanel forward={fullPass.forward} />
         </div>
       )}
+    </div>
+  )
+}
+
+// --------------------------------------------------------------------------- //
+// Mode C universe — historical picks across the universe over a date range
+// --------------------------------------------------------------------------- //
+
+function ModeCUniverse({ resp }: { resp: BacktestResponse }) {
+  const summary = resp.summary as UniverseSummary | undefined
+  const picks = (resp.picks ?? []) as UniversePick[]
+  const bySymbol = (resp.by_symbol ?? []) as UniverseBucket[]
+  const byQuarter = (resp.by_quarter ?? []) as UniverseBucket[]
+  const byMonth = (resp.by_month ?? []) as UniverseBucket[]
+  const [expandedRow, setExpandedRow] = useState<number | null>(null)
+
+  return (
+    <div className="mt-6 space-y-6">
+      {/* Header */}
+      <div className="rounded-xl border border-violet-200 bg-violet-50 p-5">
+        <h2 className="text-sm font-semibold text-violet-900">
+          Historical picks · Nifty 100 ({resp.universe_size} symbols)
+        </h2>
+        <p className="mt-1 text-xs text-violet-900/80">
+          {resp.start} → {resp.end} · Every trading day was scanned. Below
+          is every pick the live strategy would have alerted, in chronological
+          order, with what would have happened over the {resp.assumptions.hold_days}-day hold.
+        </p>
+      </div>
+
+      {/* Summary stats */}
+      {summary && <UniverseSummaryPanel s={summary} />}
+
+      {/* Quarterly breakdown */}
+      {byQuarter.length > 0 && (
+        <BreakdownTable title="By quarter" rows={byQuarter} keyLabel="Quarter" />
+      )}
+
+      {/* Most-picked symbols */}
+      {bySymbol.length > 0 && (
+        <SymbolLeaderboard rows={bySymbol.slice(0, 15)} />
+      )}
+
+      {/* Chronological picks table */}
+      <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+        <h3 className="text-sm font-semibold text-slate-800">
+          Chronological picks{' '}
+          <span className="ml-1 rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[10px] text-slate-700">
+            {picks.length}
+          </span>
+        </h3>
+        {picks.length === 0 ? (
+          <p className="mt-3 text-sm text-slate-600">
+            No picks in this window. Either the regime was halted on most days,
+            or no symbol passed all gates. Try a wider date range.
+          </p>
+        ) : (
+          <ul className="mt-3 divide-y divide-slate-100">
+            {picks.map((p, i) => {
+              const r = p.forward?.return_pct ?? null
+              const isOpen = expandedRow === i
+              return (
+                <li key={`${p.as_of}-${p.symbol}-${i}`}>
+                  <button
+                    onClick={() => setExpandedRow(isOpen ? null : i)}
+                    className="flex w-full flex-wrap items-center justify-between gap-3 py-2 text-left hover:bg-slate-50"
+                  >
+                    <div className="flex flex-wrap items-center gap-3 text-xs">
+                      <span className="font-mono text-slate-700">{p.as_of}</span>
+                      <span className="rounded bg-indigo-100 px-1.5 py-0.5 font-mono font-bold text-indigo-900">
+                        #{p.rank}
+                      </span>
+                      <span className="font-mono text-sm font-bold">{p.symbol}</span>
+                      <span className="text-slate-600">{p.company}</span>
+                      <span className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[10px] text-slate-700">
+                        conf {p.confirmation_score?.toFixed(2) ?? '—'}
+                      </span>
+                    </div>
+                    <div className="text-right text-xs">
+                      {r != null ? (
+                        <span
+                          className={`font-mono font-bold ${
+                            r >= 0 ? 'text-emerald-700' : 'text-rose-700'
+                          }`}
+                        >
+                          {fmtPct(r)} · {p.forward?.exit_reason}
+                        </span>
+                      ) : (
+                        <span className="font-mono text-slate-500">no fwd data</span>
+                      )}
+                    </div>
+                  </button>
+                  {isOpen && (
+                    <div className="border-t border-slate-100 px-2 py-3">
+                      {p.headline && (
+                        <p className="mb-2 text-xs italic text-slate-600">
+                          {p.headline}
+                        </p>
+                      )}
+                      <div className="mb-2 grid grid-cols-2 gap-x-4 gap-y-1 text-xs sm:grid-cols-4">
+                        <div>
+                          <span className="text-slate-500">Entry day:</span>{' '}
+                          <strong className="font-mono">{p.entry_date ?? '—'}</strong>
+                        </div>
+                        <div>
+                          <span className="text-slate-500">Entry:</span>{' '}
+                          <strong className="font-mono">{fmtINR(p.entry_px)}</strong>
+                        </div>
+                        <div>
+                          <span className="text-slate-500">Stop:</span>{' '}
+                          <strong className="font-mono text-rose-700">
+                            {fmtINR(p.stop_px)}
+                          </strong>
+                        </div>
+                        <div>
+                          <span className="text-slate-500">Target (T2):</span>{' '}
+                          <strong className="font-mono text-emerald-700">
+                            {fmtINR(p.target_px)}
+                          </strong>
+                        </div>
+                      </div>
+                      {p.bonuses_fired.length > 0 && (
+                        <div className="mb-2 text-[11px]">
+                          <span className="text-slate-500">Bonuses fired:</span>{' '}
+                          {p.bonuses_fired.map((b) => (
+                            <span
+                              key={b}
+                              className="ml-1 rounded bg-amber-100 px-1.5 py-0.5 font-mono text-amber-900"
+                            >
+                              {b}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                      {p.forward && <ForwardWalkPanel forward={p.forward} />}
+                    </div>
+                  )}
+                </li>
+              )
+            })}
+          </ul>
+        )}
+      </div>
+
+      {/* Monthly breakdown — bottom for full historical record */}
+      {byMonth.length > 0 && (
+        <BreakdownTable title="By month" rows={byMonth} keyLabel="Month" />
+      )}
+    </div>
+  )
+}
+
+function UniverseSummaryPanel({ s }: { s: UniverseSummary }) {
+  return (
+    <div className="grid grid-cols-2 gap-4 sm:grid-cols-4 lg:grid-cols-6">
+      <SummaryCard label="Total picks" value={`${s.total_picks}`} />
+      <SummaryCard label="Trading days" value={`${s.trading_days}`} />
+      <SummaryCard
+        label="Active days"
+        value={`${s.active_days}`}
+        hint={`${s.regime_halt_days} regime-halt`}
+      />
+      <SummaryCard label="Days with picks" value={`${s.days_with_picks}`} />
+      <SummaryCard
+        label="Hit rate"
+        value={s.hit_rate_pct != null ? `${s.hit_rate_pct}%` : '—'}
+        cls={s.hit_rate_pct != null && s.hit_rate_pct >= 50 ? 'text-emerald-700' : 'text-rose-700'}
+      />
+      <SummaryCard
+        label="Avg return"
+        value={s.avg_return_pct != null ? fmtPct(s.avg_return_pct) : '—'}
+        cls={
+          s.avg_return_pct != null && s.avg_return_pct >= 0 ? 'text-emerald-700' : 'text-rose-700'
+        }
+      />
+    </div>
+  )
+}
+
+function SummaryCard({
+  label,
+  value,
+  hint,
+  cls,
+}: {
+  label: string
+  value: string
+  hint?: string
+  cls?: string
+}) {
+  return (
+    <div className="rounded-lg border border-slate-200 bg-white p-3 shadow-sm">
+      <div className="text-[10px] uppercase tracking-wide text-slate-500">
+        {label}
+      </div>
+      <div className={`mt-0.5 font-mono text-lg font-bold ${cls ?? 'text-slate-900'}`}>
+        {value}
+      </div>
+      {hint && <div className="text-[10px] text-slate-500">{hint}</div>}
+    </div>
+  )
+}
+
+function BreakdownTable({
+  title,
+  rows,
+  keyLabel,
+}: {
+  title: string
+  rows: UniverseBucket[]
+  keyLabel: string
+}) {
+  return (
+    <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+      <h3 className="text-sm font-semibold text-slate-800">{title}</h3>
+      <table className="mt-3 w-full text-xs">
+        <thead className="border-b text-left text-slate-600">
+          <tr>
+            <th className="py-1.5 font-medium">{keyLabel}</th>
+            <th className="py-1.5 font-medium">Picks</th>
+            <th className="py-1.5 font-medium">Hit rate</th>
+            <th className="py-1.5 font-medium">Avg return</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr key={r.key} className="border-b border-slate-100">
+              <td className="py-1.5 font-mono">{r.key}</td>
+              <td className="py-1.5 font-mono">{r.n}</td>
+              <td className="py-1.5 font-mono">
+                {r.hit_rate_pct != null ? `${r.hit_rate_pct}%` : '—'}
+              </td>
+              <td
+                className={`py-1.5 font-mono ${
+                  r.avg_return_pct == null
+                    ? ''
+                    : r.avg_return_pct >= 0
+                    ? 'text-emerald-700'
+                    : 'text-rose-700'
+                }`}
+              >
+                {r.avg_return_pct != null ? fmtPct(r.avg_return_pct) : '—'}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+function SymbolLeaderboard({ rows }: { rows: UniverseBucket[] }) {
+  return (
+    <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+      <h3 className="text-sm font-semibold text-slate-800">Most-picked symbols</h3>
+      <p className="mt-0.5 text-xs text-slate-600">
+        The stocks the strategy returned to most often in this window.
+      </p>
+      <table className="mt-3 w-full text-xs">
+        <thead className="border-b text-left text-slate-600">
+          <tr>
+            <th className="py-1.5 font-medium">Symbol</th>
+            <th className="py-1.5 font-medium">Company</th>
+            <th className="py-1.5 font-medium">Times picked</th>
+            <th className="py-1.5 font-medium">Hit rate</th>
+            <th className="py-1.5 font-medium">Avg return</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr key={r.symbol} className="border-b border-slate-100">
+              <td className="py-1.5 font-mono font-bold">{r.symbol}</td>
+              <td className="py-1.5 text-slate-700">{r.company}</td>
+              <td className="py-1.5 font-mono">{r.n}</td>
+              <td className="py-1.5 font-mono">
+                {r.hit_rate_pct != null ? `${r.hit_rate_pct}%` : '—'}
+              </td>
+              <td
+                className={`py-1.5 font-mono ${
+                  r.avg_return_pct == null
+                    ? ''
+                    : r.avg_return_pct >= 0
+                    ? 'text-emerald-700'
+                    : 'text-rose-700'
+                }`}
+              >
+                {r.avg_return_pct != null ? fmtPct(r.avg_return_pct) : '—'}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   )
 }

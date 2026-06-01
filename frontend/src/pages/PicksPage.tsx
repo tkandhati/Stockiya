@@ -54,11 +54,11 @@ export function PicksPage() {
         </div>
         <div className="flex items-center gap-2">
           <Link
-            to="/simulate"
+            to="/backtest"
             className="flex items-center gap-2 rounded-lg border border-violet-300 bg-violet-50 px-3 py-2 text-sm font-medium text-violet-900 shadow-sm transition hover:border-violet-400 hover:bg-violet-100"
           >
             <FlaskConical className="h-4 w-4" />
-            Simulate
+            Backtest
           </Link>
           <Link
             to="/positions"

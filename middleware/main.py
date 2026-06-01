@@ -97,7 +97,7 @@ class BacktestRequest(BaseModel):
         default=None,
         description="Optional. 1-2 symbols → Mode A (explain). Blank → Mode B (universe).",
     )
-    hold_days: int = Field(default=20, ge=1, le=180)
+    hold_days: int = Field(default=90, ge=1, le=180)
     top_n: int = Field(default=3, ge=1, le=10)
     capital: float = Field(default=100000.0, gt=0)
 

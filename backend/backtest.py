@@ -59,7 +59,7 @@ MIN_AS_OF = _date(2022, 1, 1)
 # Default lookback for the BACKTEST fetch — needs history for the stages
 # (>=200 bars for MA200) AND enough cushion forward for the hold window.
 DEFAULT_LOOKBACK_DAYS = 730
-DEFAULT_HOLD_DAYS = 20
+DEFAULT_HOLD_DAYS = 90        # matches PRINCIPLES.md "3-6 month hold" cadence
 DEFAULT_TOP_N = 3
 
 # PRINCIPLES.md Section 3 — fixed risk math, never tuned.
@@ -110,6 +110,41 @@ def _normalize_symbol(raw: str) -> Optional[str]:
         if _collapse(sym_base) == collapsed:
             return sym
     return None
+
+
+def _resolve_symbol_loose(raw: str) -> tuple[Optional[str], bool]:
+    """Like _normalize_symbol, but accepts any plausible Yahoo ticker even
+    when it is not in the strict Nifty 100 universe.
+
+    Returns (canonical_symbol_or_None, in_universe_bool).
+
+    Used by single-symbol views ("Symbol check") so the user can backtest
+    any ticker — mid-caps, small-caps, or even US stocks — without editing
+    `universe.py`. The `in_universe=False` flag lets the UI surface an
+    advisory banner about gate tuning.
+    """
+    in_univ = _normalize_symbol(raw)
+    if in_univ is not None:
+        return in_univ, True
+    if not raw:
+        return None, False
+    s = raw.strip().upper()
+    if not s:
+        return None, False
+
+    # Accept anything that looks like a Yahoo ticker. Yahoo accepts:
+    #   - bare letters/digits  (e.g. AAPL, TSLA)
+    #   - ".NS" / ".BO" / ".BSE" / "^" prefixed indices
+    #   - hyphens (BAJAJ-AUTO) and ampersands (M&M)
+    # If the user typed something without a suffix and it isn't pure indices,
+    # default to .NS for the Indian-equity context this app is scoped to.
+    has_exchange_suffix = "." in s
+    base = s.rsplit(".", 1)[0]
+    if not base or not any(c.isalnum() for c in base):
+        return None, False
+
+    canonical = s if has_exchange_suffix else f"{s}.NS"
+    return canonical, False
 
 
 def _slice_to_as_of(df: pd.DataFrame, as_of: _date) -> pd.DataFrame:
@@ -377,46 +412,71 @@ def run_backtest(
 
     # ---- Resolve symbol set + mode ----
     unresolved: list[str] = []
+    in_universe_map: dict[str, bool] = {}
     if symbols:
         raw_in = [s for s in symbols if s and s.strip()]
         resolved: list[str] = []
         for raw in raw_in:
-            norm = _normalize_symbol(raw)
-            if norm is None:
+            sym, in_univ = _resolve_symbol_loose(raw)
+            if sym is None:
                 unresolved.append(raw)
             else:
-                resolved.append(norm)
+                resolved.append(sym)
+                in_universe_map[sym] = in_univ
         # de-duplicate preserving order
         seen: set[str] = set()
         symbols = [s for s in resolved if not (s in seen or seen.add(s))]
         if not symbols:
             return {
                 "error": (
-                    f"Symbol(s) not found in Nifty 100: {', '.join(unresolved)}. "
-                    f"Try the canonical form (e.g. INFY.NS, BAJAJ-AUTO.NS, M&M.NS)."
+                    f"Could not parse symbol(s): {', '.join(unresolved)}. "
+                    f"Try canonical form like INFY.NS, BAJAJ-AUTO.NS, M&M.NS."
                 ),
                 "unresolved": unresolved,
             }
         mode = "A" if len(symbols) <= 2 else "B"
     else:
         symbols = list(UNIVERSE)
+        for s in symbols:
+            in_universe_map[s] = True
         mode = "B"
 
-    # ---- Mode C — scan range for a single symbol ----
+    # ---- Mode C — scan range (single symbol OR full universe) ----
     if end and end != as_of:
-        if len(symbols) != 1:
+        # Validate window vs hold_days
+        try:
+            _start_d = _date.fromisoformat(as_of)
+            _end_d = _date.fromisoformat(end)
+            window_days = (_end_d - _start_d).days
+        except ValueError:
+            window_days = 0
+        if window_days < hold_days:
             return {
                 "error": (
-                    "Scan mode (date range) requires exactly one symbol. "
-                    "Pass a single symbol or remove the end date."
+                    f"Scan window ({window_days} days) is shorter than hold_days "
+                    f"({hold_days}). Pick a wider window or a smaller hold."
                 ),
             }
-        return scan_symbol(
-            symbol=symbols[0],
+
+        # Did the caller pass exactly one symbol? Single-symbol gate timeline.
+        # Otherwise (zero, or many): universe historical-picks scan.
+        if len(symbols) == 1 and len(UNIVERSE) > 1 and symbols != list(UNIVERSE):
+            return scan_symbol(
+                symbol=symbols[0],
+                start=as_of,
+                end=end,
+                hold_days=hold_days,
+                capital=capital,
+                in_universe=in_universe_map.get(symbols[0], True),
+            )
+        return scan_universe(
             start=as_of,
             end=end,
             hold_days=hold_days,
+            top_n=top_n,
             capital=capital,
+            symbols=symbols if symbols and symbols != list(UNIVERSE) else None,
+            max_workers=max_workers,
         )
 
     # ---- Regime check at as_of ----
@@ -476,6 +536,7 @@ def run_backtest(
     if mode == "A":
         return _assemble_mode_a(
             per_symbol, as_of, hold_days, top_n, capital, regime_dict,
+            in_universe_map=in_universe_map,
         )
     return _assemble_mode_b(
         per_symbol, selected, as_of, hold_days, top_n, capital, regime_dict,
@@ -568,8 +629,14 @@ def _build_per_symbol_block(entry: dict, capital: float) -> dict:
     }
 
 
-def _assemble_mode_a(per_symbol, as_of, hold_days, top_n, capital, regime) -> dict:
+def _assemble_mode_a(
+    per_symbol, as_of, hold_days, top_n, capital, regime,
+    in_universe_map: Optional[dict[str, bool]] = None,
+) -> dict:
+    in_universe_map = in_universe_map or {}
     blocks = [_build_per_symbol_block(e, capital) for e in per_symbol]
+    for b in blocks:
+        b["in_universe"] = in_universe_map.get(b.get("symbol"), True)
     return {
         "mode": "A",
         "as_of": as_of,
@@ -714,15 +781,19 @@ def scan_symbol(
     end: str,
     hold_days: int = DEFAULT_HOLD_DAYS,
     capital: float = 100000.0,
+    in_universe: Optional[bool] = None,
 ) -> dict:
     """Walk every trading day in [start, end] and record each gate's verdict.
 
+    `in_universe` lets the caller signal whether the symbol is in the tuned
+    Nifty 100 universe; the response echoes it so the UI can show an advisory
+    banner. If None, we figure it out via loose resolution.
+
     Returns:
         {
-          "mode": "C",
-          "symbol": str,
-          "start": str, "end": str,
-          "trading_days": int,
+          "mode": "C", "scope": "symbol",
+          "symbol": str, "in_universe": bool,
+          "start": str, "end": str, "trading_days": int,
           "counts": {gate_id: {eval, pass, fail}, ...},
           "timeline": [{date, gates: {U, I, HR, LT, CS, VD, BR}, killed_at}],
           "pass_dates_by_gate": {gate_id: [iso_date, ...]},
@@ -730,11 +801,13 @@ def scan_symbol(
           "assumptions": {...},
         }
     """
-    # ---- Validate inputs ----
-    norm = _normalize_symbol(symbol)
-    if norm is None:
-        return {"error": f"symbol '{symbol}' not in Nifty 100 universe"}
-    symbol = norm
+    # ---- Validate inputs (loose: accept any plausible Yahoo ticker) ----
+    sym_norm, resolved_in_univ = _resolve_symbol_loose(symbol)
+    if sym_norm is None:
+        return {"error": f"could not parse symbol '{symbol}'"}
+    symbol = sym_norm
+    if in_universe is None:
+        in_universe = resolved_in_univ
 
     try:
         start_d = _date.fromisoformat(start)
@@ -855,7 +928,9 @@ def scan_symbol(
 
     return {
         "mode": "C",
+        "scope": "symbol",
         "symbol": symbol,
+        "in_universe": in_universe,
         "start": start,
         "end": end,
         "trading_days": len(timeline),
@@ -865,4 +940,307 @@ def scan_symbol(
         "full_passes": full_passes,
         "vol_ratio_series": vol_ratio_series,
         "assumptions": _assumptions(hold_days, DEFAULT_TOP_N, capital),
+    }
+
+
+# --------------------------------------------------------------------------- #
+# Mode C — Universe historical picks (multi-symbol, walk every trading day)
+# --------------------------------------------------------------------------- #
+#
+# Answers the "last 1 year, last quarter — what did our strategy pick?"
+# question. Walks every trading day in [start, end]; for each day runs the
+# full pipeline + ranker on the universe; records the top-N selections and
+# how each unfolded over `hold_days`.
+#
+# Performance: 100 symbols × ~250 days × ~5 ms (in-memory gates) ≈ 125 s
+# single-threaded. With max_workers=10 the per-day fan-out brings it to
+# ~15–25 s for a full year, ~5 s for a quarter. The OHLCV fetch is the
+# bottleneck — done ONCE per symbol upfront.
+
+def _prefetch_universe_ohlcv(
+    symbols: list[str],
+    end_d: _date,
+    lookback_days: int,
+    max_workers: int = 10,
+) -> dict[str, pd.DataFrame]:
+    """Fetch each symbol's full window once. Returns a dict; failed symbols
+    are simply absent (and silently skipped by the day loop).
+    """
+    cache: dict[str, pd.DataFrame] = {}
+
+    def _one(sym: str) -> tuple[str, Optional[pd.DataFrame]]:
+        try:
+            df = fetch_ohlcv(
+                sym,
+                end=end_d.isoformat(),
+                lookback_days=lookback_days,
+            )
+            if df is None or df.empty:
+                return sym, None
+            return sym, df
+        except Exception:
+            log.exception("prefetch failed for %s", sym)
+            return sym, None
+
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        for sym, df in pool.map(_one, symbols):
+            if df is not None and not df.empty:
+                cache[sym] = df
+    return cache
+
+
+def _quarter_key(iso: str) -> str:
+    """2024-04-15 → 2024-Q2."""
+    d = _date.fromisoformat(iso)
+    q = (d.month - 1) // 3 + 1
+    return f"{d.year}-Q{q}"
+
+
+def _month_key(iso: str) -> str:
+    return iso[:7]   # "YYYY-MM"
+
+
+def scan_universe(
+    start: str,
+    end: str,
+    hold_days: int = DEFAULT_HOLD_DAYS,
+    top_n: int = DEFAULT_TOP_N,
+    capital: float = 100000.0,
+    symbols: Optional[list[str]] = None,
+    max_workers: int = 10,
+) -> dict:
+    """Walk every trading day in [start, end] and collect the picks the live
+    strategy would have alerted, with each pick's forward outcome.
+    """
+    # ---- Validate dates ----
+    try:
+        start_d = _date.fromisoformat(start)
+        end_d = _date.fromisoformat(end)
+    except ValueError:
+        return {"error": "invalid date(s); expected YYYY-MM-DD"}
+    if start_d < MIN_AS_OF:
+        return {
+            "error": (
+                f"start {start} is before {MIN_AS_OF.isoformat()} — universe "
+                "drift too large to defend without point-in-time data"
+            ),
+        }
+    if start_d >= end_d:
+        return {"error": "start must be strictly before end"}
+    if end_d >= _date.today():
+        return {"error": "end must be a past date"}
+
+    window_days = (end_d - start_d).days
+    if window_days < hold_days:
+        return {
+            "error": (
+                f"Scan window ({window_days} days) is shorter than hold_days "
+                f"({hold_days}). Pick a wider window or a smaller hold."
+            ),
+        }
+
+    sym_set = list(symbols) if symbols else list(UNIVERSE)
+
+    # ---- Prefetch all OHLCV in parallel ----
+    fetch_end = end_d + _td(days=int(hold_days * 1.6) + 5)
+    lookback = DEFAULT_LOOKBACK_DAYS + window_days + int(hold_days * 1.6) + 10
+    log.info(
+        "scan_universe: prefetching %d symbols (%s..%s, lookback=%d)",
+        len(sym_set), start, end, lookback,
+    )
+    cache = _prefetch_universe_ohlcv(sym_set, fetch_end, lookback, max_workers)
+    if not cache:
+        return {"error": "could not fetch OHLCV for any symbol"}
+    sym_set = sorted(cache.keys())
+
+    # ---- Resolve the set of trading days in [start, end] using a benchmark ----
+    # Use the first available symbol as the trading-day calendar.
+    benchmark = cache[sym_set[0]]
+    idx = benchmark.index.normalize()
+    if getattr(idx, "tz", None) is not None:
+        idx = idx.tz_localize(None)
+    in_range = (idx >= pd.Timestamp(start_d)) & (idx <= pd.Timestamp(end_d))
+    trading_days = list(benchmark[in_range].index)
+    if not trading_days:
+        return {"error": f"no trading days between {start} and {end}"}
+
+    # ---- Per-day: run the gate chain on every symbol, rank, take top_n ----
+    def _run_one_day_one_symbol(sym: str, as_of: _date) -> Optional[PipelineResult]:
+        df = cache.get(sym)
+        if df is None:
+            return None
+        sliced = _slice_to_as_of(df, as_of)
+        if len(sliced) < MIN_BARS:
+            return None
+        ctx = _build_ctx_for_scan(sym, as_of, sliced)
+        passed = True
+        for stage_fn in _SCAN_CHAIN:
+            try:
+                sr = stage_fn(ctx)
+            except Exception as e:
+                sr = StageResult(
+                    stage_id=getattr(stage_fn, "stage_id", "?"),
+                    passed=False, reason=f"crash: {e}",
+                )
+            ctx.stage_results[sr.stage_id] = sr
+            if not sr.passed:
+                passed = False
+                break
+        if not passed:
+            return None
+        # Build a PipelineResult so rank_survivors can score it
+        return PipelineResult(
+            symbol=sym,
+            trace_id=ctx.trace_id,
+            passed_gates=True,
+            composite_score=0.0,
+            selected=False,
+            rank=None,
+            stage_results=ctx.stage_results,
+            pick_payload={},
+            snapshot=ctx.snapshot,
+            signals=None,
+            ohlcv=ctx.ohlcv,
+        )
+
+    picks_chronological: list[dict] = []
+    regime_halt_days = 0
+    days_with_picks = 0
+
+    for ts in trading_days:
+        as_of = ts.date()
+        as_of_iso = as_of.isoformat()
+
+        # Regime check using the as_of date — same gate live picks must pass
+        regime = check_regime(as_of=as_of_iso)
+        if not regime.passed:
+            regime_halt_days += 1
+            continue
+
+        survivors: list[PipelineResult] = []
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            futures = [pool.submit(_run_one_day_one_symbol, s, as_of) for s in sym_set]
+            for fut in as_completed(futures):
+                try:
+                    r = fut.result()
+                except Exception:
+                    r = None
+                if r is not None:
+                    survivors.append(r)
+
+        if not survivors:
+            continue
+
+        selected = rank_survivors(survivors, top_n=top_n)
+        if not selected:
+            continue
+
+        days_with_picks += 1
+        for pick in selected:
+            df = cache.get(pick.symbol)
+            forward = None
+            entry_date_iso: Optional[str] = None
+            if df is not None:
+                forward_bars = _bars_after(df, as_of)
+                entry_info = _resolve_entry(forward_bars)
+                if entry_info:
+                    entry_px, entry_date_iso = entry_info
+                    forward = forward_walk(forward_bars, entry_px, hold_days=hold_days)
+                    forward["entry_date"] = entry_date_iso
+
+            try:
+                payload = build_pick_payload(
+                    pick, pick.snapshot or {},
+                    account_value=capital,
+                    today_iso=as_of_iso,
+                )
+            except Exception as e:
+                payload = {"error": str(e)}
+
+            picks_chronological.append({
+                "as_of": as_of_iso,
+                "entry_date": entry_date_iso,
+                "rank": pick.rank,
+                "symbol": pick.symbol,
+                "company": (pick.snapshot or {}).get("company"),
+                "sector": (pick.snapshot or {}).get("sector"),
+                "confirmation_score": pick.confirmation_score,
+                "bonuses_fired": (pick.confirmation_components or {}).get("bonuses_fired") or [],
+                "headline": payload.get("headline") if isinstance(payload, dict) else None,
+                "entry_px": payload.get("best_buy_at") if isinstance(payload, dict) else None,
+                "stop_px": payload.get("stop_loss") if isinstance(payload, dict) else None,
+                "target_px": payload.get("sell_target") if isinstance(payload, dict) else None,
+                "forward": forward,
+            })
+
+    # ---- Aggregates ----
+    by_symbol: dict[str, dict] = {}
+    by_quarter: dict[str, dict] = {}
+    by_month: dict[str, dict] = {}
+    total_return = 0.0
+    wins = 0
+    rets: list[float] = []
+
+    for p in picks_chronological:
+        sym = p["symbol"]
+        bs = by_symbol.setdefault(sym, {"symbol": sym, "company": p["company"], "n": 0, "returns": []})
+        bs["n"] += 1
+        if p["forward"] and p["forward"].get("return_pct") is not None:
+            r = p["forward"]["return_pct"]
+            bs["returns"].append(r)
+            rets.append(r)
+            total_return += r
+            if r > 0:
+                wins += 1
+
+        qk = _quarter_key(p["as_of"])
+        qb = by_quarter.setdefault(qk, {"key": qk, "n": 0, "returns": []})
+        qb["n"] += 1
+        if p["forward"] and p["forward"].get("return_pct") is not None:
+            qb["returns"].append(p["forward"]["return_pct"])
+
+        mk = _month_key(p["as_of"])
+        mb = by_month.setdefault(mk, {"key": mk, "n": 0, "returns": []})
+        mb["n"] += 1
+        if p["forward"] and p["forward"].get("return_pct") is not None:
+            mb["returns"].append(p["forward"]["return_pct"])
+
+    def _finalize(bucket: dict) -> dict:
+        r = bucket.pop("returns", [])
+        bucket["avg_return_pct"] = round(sum(r) / len(r), 2) if r else None
+        bucket["hit_rate_pct"] = round(100 * sum(1 for x in r if x > 0) / len(r), 1) if r else None
+        return bucket
+
+    by_symbol_list = sorted(
+        (_finalize(v) for v in by_symbol.values()),
+        key=lambda x: -x["n"],
+    )
+    by_quarter_list = sorted((_finalize(v) for v in by_quarter.values()), key=lambda x: x["key"])
+    by_month_list = sorted((_finalize(v) for v in by_month.values()), key=lambda x: x["key"])
+
+    summary = {
+        "trading_days": len(trading_days),
+        "regime_halt_days": regime_halt_days,
+        "active_days": len(trading_days) - regime_halt_days,
+        "days_with_picks": days_with_picks,
+        "total_picks": len(picks_chronological),
+        "unique_symbols_picked": len(by_symbol_list),
+        "hit_rate_pct": round(100 * wins / len(rets), 1) if rets else None,
+        "avg_return_pct": round(sum(rets) / len(rets), 2) if rets else None,
+        "sum_return_pct": round(total_return, 2) if rets else None,
+    }
+
+    return {
+        "mode": "C",
+        "scope": "universe",
+        "symbol": None,
+        "start": start,
+        "end": end,
+        "universe_size": len(sym_set),
+        "picks": picks_chronological,
+        "summary": summary,
+        "by_symbol": by_symbol_list,
+        "by_quarter": by_quarter_list,
+        "by_month": by_month_list,
+        "assumptions": _assumptions(hold_days, top_n, capital),
     }
