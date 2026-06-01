@@ -100,6 +100,14 @@ class BacktestRequest(BaseModel):
     hold_days: int = Field(default=90, ge=1, le=180)
     top_n: int = Field(default=3, ge=1, le=10)
     capital: float = Field(default=100000.0, gt=0)
+    overrides: Optional[dict[str, float]] = Field(
+        default=None,
+        description=(
+            "Backtest-only threshold overrides for the 5 high-control gates. "
+            "Keys: hr_parabolic_30d_max_pct, hr_extended_vs_ma50_max, "
+            "lt_obv_90d_slope_min, cs_atr_pct_max, vd_dryup_ratio, br_volume_mult."
+        ),
+    )
 
 
 @app.post("/api/backtest")
@@ -118,6 +126,7 @@ def post_backtest(req: BacktestRequest) -> dict:
             hold_days=req.hold_days,
             top_n=req.top_n,
             capital=req.capital,
+            overrides=req.overrides,
         )
     except Exception as e:
         logging.getLogger("backtest").exception("backtest crashed")

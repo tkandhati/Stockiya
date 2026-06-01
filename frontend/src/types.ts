@@ -229,6 +229,11 @@ export interface PicksResponse {
 // Backtest / Simulation
 // --------------------------------------------------------------------------
 
+export interface ThresholdDeviation {
+  value: number
+  canonical: number
+}
+
 export interface BacktestAssumptions {
   hold_days: number
   top_n: number
@@ -239,6 +244,17 @@ export interface BacktestAssumptions {
   t2_pct: number
   costs_modeled: boolean
   survivorship_note: string
+  thresholds?: Record<string, number>
+  thresholds_deviated?: Record<string, ThresholdDeviation>
+}
+
+export interface BacktestOverrides {
+  hr_parabolic_30d_max_pct?: number
+  hr_extended_vs_ma50_max?: number
+  lt_obv_90d_slope_min?: number
+  cs_atr_pct_max?: number
+  vd_dryup_ratio?: number
+  br_volume_mult?: number
 }
 
 export interface BacktestGateRow {
@@ -409,6 +425,7 @@ export interface UniverseScanResponse {
   by_symbol: UniverseBucket[]
   by_quarter: UniverseBucket[]
   by_month: UniverseBucket[]
+  funnel?: BacktestFunnelRow[]
   assumptions: BacktestAssumptions
   error?: string
 }
@@ -456,6 +473,7 @@ export interface BacktestRequest {
   hold_days?: number
   top_n?: number
   capital?: number
+  overrides?: BacktestOverrides
 }
 
 // --------------------------------------------------------------------------

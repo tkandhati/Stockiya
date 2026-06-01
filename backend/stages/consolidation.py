@@ -52,6 +52,9 @@ def run(ctx: PipelineContext) -> StageResult:
             fix_point="backend/stages/consolidation.py: ingest must produce >=151 bars",
         )
 
+    overrides: dict = getattr(ctx, "overrides", {}) or {}
+    atr_max = float(overrides.get("cs_atr_pct_max", ATR_PCT_MAX))
+
     close = df["Close"]
     last_close = float(close.iloc[-1])
 
@@ -76,10 +79,10 @@ def run(ctx: PipelineContext) -> StageResult:
 
     if atrp is None:
         failures.append("ATR unavailable")
-    elif atrp > ATR_PCT_MAX:
-        failures.append(f"ATR/price {atrp:.2f}% > {ATR_PCT_MAX:.1f}% (range too wide)")
+    elif atrp > atr_max:
+        failures.append(f"ATR/price {atrp:.2f}% > {atr_max:.1f}% (range too wide)")
     else:
-        evidence.append(f"ATR/price {atrp:.2f}% <= {ATR_PCT_MAX:.1f}% (tight)")
+        evidence.append(f"ATR/price {atrp:.2f}% <= {atr_max:.1f}% (tight)")
 
     if days_band < MIN_DAYS_IN_BAND:
         failures.append(
@@ -107,8 +110,8 @@ def run(ctx: PipelineContext) -> StageResult:
     passed = len(failures) == 0
     margin = 0.0
     if passed and atrp is not None and ma150 is not None:
-        # Tightness margin: how far below ATR_PCT_MAX, normalised to [0, 1]
-        margin += max(0.0, (ATR_PCT_MAX - atrp) / ATR_PCT_MAX)
+        # Tightness margin: how far below the (possibly overridden) max
+        margin += max(0.0, (atr_max - atrp) / atr_max)
         # Above-MA margin: how far above 150d MA, capped at 10 % = full margin
         margin += min(1.0, max(0.0, (last_close / ma150 - 1) / 0.10))
         # Duration margin: 0.0 at MIN_DAYS_IN_BAND, 1.0 at MARGIN_FULL_CREDIT_DAYS+

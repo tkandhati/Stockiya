@@ -14,6 +14,7 @@ import { fmtINR, fmtPct, runBacktest } from '../api'
 import { Disclaimer } from '../components/Disclaimer'
 import { RegimeBanner } from '../components/RegimeBanner'
 import type {
+  BacktestOverrides,
   BacktestResponse,
   BacktestSelected,
   BacktestSymbolBlock,
@@ -43,9 +44,107 @@ import type {
  */
 
 type TabId = 'historical' | 'symbol'
+type WindowKey = '3M' | '6M' | '1Y' | '2Y'
 
 const MIN_AS_OF = '2022-01-01'
 const TODAY_ISO = new Date().toISOString().slice(0, 10)
+
+const WINDOW_DAYS: Record<WindowKey, number> = {
+  '3M': 92,
+  '6M': 183,
+  '1Y': 365,
+  '2Y': 730,
+}
+const WINDOW_LABEL: Record<WindowKey, string> = {
+  '3M': '3 months',
+  '6M': '6 months',
+  '1Y': '1 year',
+  '2Y': '2 years',
+}
+
+// The 5 high-control thresholds we expose for backtest-only sensitivity tuning.
+// Canonical = PRINCIPLES.md values. Off-canonical runs get an amber badge.
+type OverrideKey = keyof BacktestOverrides
+
+interface ThresholdSpec {
+  key: OverrideKey
+  gate: string
+  label: string
+  unit: string
+  canonical: number
+  min: number
+  max: number
+  step: number
+  desc: string
+}
+
+const THRESHOLD_SPECS: ThresholdSpec[] = [
+  {
+    key: 'vd_dryup_ratio',
+    gate: 'VD',
+    label: 'VD dry-up ratio',
+    unit: '× of 50d avg',
+    canonical: 0.5,
+    min: 0.3,
+    max: 0.95,
+    step: 0.05,
+    desc:
+      "Requires the prior 5-day avg volume to be below this fraction of the 50d avg. Lower = stricter dry-up. Canonical 0.50.",
+  },
+  {
+    key: 'cs_atr_pct_max',
+    gate: 'CS',
+    label: 'CS ATR % max',
+    unit: '%',
+    canonical: 4.0,
+    min: 2.0,
+    max: 10.0,
+    step: 0.5,
+    desc:
+      'Maximum daily true-range as % of close. Lower = demands tighter base. Canonical 4.0% (Minervini VCP).',
+  },
+  {
+    key: 'lt_obv_90d_slope_min',
+    gate: 'LT',
+    label: 'LT OBV 90d slope min',
+    unit: '%',
+    canonical: 3.0,
+    min: 0.0,
+    max: 10.0,
+    step: 0.5,
+    desc:
+      'Minimum OBV slope over the trailing 90 days. Higher = demands stronger accumulation. Canonical +3.0%.',
+  },
+  {
+    key: 'br_volume_mult',
+    gate: 'BR',
+    label: 'BR volume multiplier',
+    unit: '× adv(50)',
+    canonical: 1.5,
+    min: 1.0,
+    max: 3.0,
+    step: 0.1,
+    desc:
+      "Today's volume must be ≥ this × the 50d avg. Lower = accepts quieter breakouts. Canonical 1.5×.",
+  },
+  {
+    key: 'hr_parabolic_30d_max_pct',
+    gate: 'HR',
+    label: 'HR parabolic 30d max',
+    unit: '%',
+    canonical: 25.0,
+    min: 10.0,
+    max: 60.0,
+    step: 5.0,
+    desc:
+      'Reject if 30-day return exceeds this. Lower = more aggressive distribution-detection. Canonical 25%.',
+  },
+]
+
+const CANONICAL: Record<OverrideKey, number> = THRESHOLD_SPECS.reduce(
+  (acc, s) => ({ ...acc, [s.key]: s.canonical }),
+  {} as Record<OverrideKey, number>,
+)
 
 function lastTradingDayBefore(today: string): string {
   // Default to "yesterday or last Friday". Yahoo gives EOD bars; today's
@@ -93,6 +192,30 @@ function TabButton({
   )
 }
 
+function DeviationBanner({
+  deviated,
+}: {
+  deviated: Record<string, { value: number; canonical: number }>
+}) {
+  const items = Object.entries(deviated)
+  return (
+    <div className="mt-4 rounded-lg border border-amber-400 bg-amber-100 px-4 py-3 text-xs text-amber-950">
+      <strong>Exploratory — gate thresholds deviated from canonical.</strong>
+      <ul className="mt-1 list-inside list-disc">
+        {items.map(([key, dev]) => (
+          <li key={key} className="font-mono">
+            {key}: {dev.value} <span className="text-amber-700">(canonical {dev.canonical})</span>
+          </li>
+        ))}
+      </ul>
+      <p className="mt-1">
+        Results are research only. Do not adjust the live strategy based on
+        what you see here (PRINCIPLES Section 8).
+      </p>
+    </div>
+  )
+}
+
 function OutsideUniverseBanner({ symbol }: { symbol: string }) {
   return (
     <div className="mt-4 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-xs text-amber-900">
@@ -107,19 +230,31 @@ function OutsideUniverseBanner({ symbol }: { symbol: string }) {
 
 export function BacktestPage() {
   const lastDay = lastTradingDayBefore(TODAY_ISO)
-  const oneYearAgo = (() => {
-    const d = new Date(lastDay)
-    d.setFullYear(d.getFullYear() - 1)
-    return d.toISOString().slice(0, 10)
-  })()
   const [tab, setTab] = useState<TabId>('historical')
-  const [start, setStart] = useState<string>(oneYearAgo)
-  const [end, setEnd] = useState<string>(lastDay)
+  const [windowKey, setWindowKey] = useState<WindowKey>('1Y')
   const [symbolsRaw, setSymbolsRaw] = useState<string>('')
-  const [holdDays, setHoldDays] = useState<number>(90)
-  const [topN, setTopN] = useState<number>(3)
-  const [capital, setCapital] = useState<number>(100000)
   const [expanded, setExpanded] = useState<string | null>(null)
+  const [advOpen, setAdvOpen] = useState<boolean>(false)
+  const [overrides, setOverrides] = useState<Record<OverrideKey, number>>(() => ({
+    ...CANONICAL,
+  }))
+  const overridesDeviated = useMemo(() => {
+    const out: Partial<Record<OverrideKey, number>> = {}
+    let any = false
+    for (const s of THRESHOLD_SPECS) {
+      if (overrides[s.key] !== s.canonical) {
+        out[s.key] = overrides[s.key]
+        any = true
+      }
+    }
+    return { any, payload: out }
+  }, [overrides])
+
+  // Fixed defaults — hidden from the user per the simplified UI.
+  // hold_days = 90 matches PRINCIPLES.md. top_n + capital are display-only knobs.
+  const HOLD_DAYS = 90
+  const TOP_N = 3
+  const CAPITAL = 100000
 
   const mut = useMutation({ mutationFn: runBacktest })
 
@@ -130,58 +265,47 @@ export function BacktestPage() {
       .filter(Boolean)
   }, [symbolsRaw])
 
-  const windowDays = useMemo(() => {
-    const a = new Date(start)
-    const b = new Date(end)
-    return Math.floor((b.getTime() - a.getTime()) / (86400 * 1000))
-  }, [start, end])
-  const isSingleDay = windowDays === 0
-  const windowTooSmall = !isSingleDay && windowDays < holdDays
+  // Derive start from windowKey: end - WINDOW_DAYS[windowKey]
+  const { start, end } = useMemo(() => {
+    const endD = new Date(lastDay)
+    const startD = new Date(endD)
+    startD.setDate(startD.getDate() - WINDOW_DAYS[windowKey])
+    // Clamp to MIN_AS_OF
+    const minD = new Date(MIN_AS_OF)
+    if (startD < minD) startD.setTime(minD.getTime())
+    return {
+      start: startD.toISOString().slice(0, 10),
+      end: endD.toISOString().slice(0, 10),
+    }
+  }, [windowKey, lastDay])
 
-  // Symbol-check tab requires exactly one symbol; universe scan doesn't.
   const symbolMissing = tab === 'symbol' && symbols.length === 0
   const symbolTooMany = tab === 'symbol' && symbols.length > 1
 
-  // top_n / capital are only meaningful when multiple symbols compete for slots.
-  const showTopN = tab === 'historical'
-  const showCapital = tab === 'historical'
-
-  // When user switches tabs, reset symbol input + sensible date defaults
   const switchTo = (next: TabId) => {
     if (next === tab) return
     setTab(next)
     setSymbolsRaw('')
     setExpanded(null)
-    if (next === 'historical') {
-      setStart(oneYearAgo)
-      setEnd(lastDay)
-    } else {
-      // Symbol check: default to a 1-year window also; user may shorten
-      setStart(oneYearAgo)
-      setEnd(lastDay)
-    }
   }
 
-  const canRun =
-    !mut.isPending &&
-    !!start &&
-    !!end &&
-    !windowTooSmall &&
-    !symbolMissing &&
-    !symbolTooMany
+  const canRun = !mut.isPending && !symbolMissing && !symbolTooMany
 
   const onRun = () => {
     if (!canRun) return
     setExpanded(null)
     mut.mutate({
       as_of: start,
-      end: end === start ? undefined : end,
+      end,
       symbols: symbols.length ? symbols : undefined,
-      hold_days: holdDays,
-      top_n: topN,
-      capital,
+      hold_days: HOLD_DAYS,
+      top_n: TOP_N,
+      capital: CAPITAL,
+      overrides: overridesDeviated.any ? (overridesDeviated.payload as BacktestOverrides) : undefined,
     })
   }
+
+  const resetOverrides = () => setOverrides({ ...CANONICAL })
 
   const resp = mut.data
 
@@ -247,44 +371,35 @@ export function BacktestPage() {
           </div>
         )}
 
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-12">
-          <label className="md:col-span-3">
+        <div className="space-y-4">
+          {/* Window preset buttons */}
+          <div>
             <span className="block text-xs font-semibold uppercase tracking-wide text-slate-600">
-              Start <span className="text-rose-600">*</span>
+              Window
             </span>
-            <input
-              type="date"
-              required
-              min={MIN_AS_OF}
-              max={lastDay}
-              value={start}
-              onChange={(e) => setStart(e.target.value)}
-              className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 font-mono text-sm"
-            />
-            <span className="mt-1 block text-[11px] text-slate-500">
-              {MIN_AS_OF} or later
-            </span>
-          </label>
+            <div className="mt-2 flex flex-wrap gap-2">
+              {(Object.keys(WINDOW_DAYS) as WindowKey[]).map((k) => (
+                <button
+                  type="button"
+                  key={k}
+                  onClick={() => setWindowKey(k)}
+                  className={`rounded-lg border px-3 py-1.5 text-xs font-semibold transition ${
+                    windowKey === k
+                      ? 'border-indigo-600 bg-indigo-600 text-white shadow'
+                      : 'border-slate-300 bg-white text-slate-700 hover:border-slate-400'
+                  }`}
+                >
+                  {WINDOW_LABEL[k]}
+                </button>
+              ))}
+            </div>
+            <p className="mt-1 font-mono text-[11px] text-slate-500">
+              {start} → {end}
+            </p>
+          </div>
 
-          <label className="md:col-span-3">
-            <span className="block text-xs font-semibold uppercase tracking-wide text-slate-600">
-              End <span className="text-rose-600">*</span>
-            </span>
-            <input
-              type="date"
-              required
-              min={start}
-              max={lastDay}
-              value={end}
-              onChange={(e) => setEnd(e.target.value)}
-              className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 font-mono text-sm"
-            />
-            <span className="mt-1 block text-[11px] text-slate-500">
-              {isSingleDay ? 'Single day — focused view' : `Window: ${windowDays}d`}
-            </span>
-          </label>
-
-          <label className={tab === 'symbol' ? 'md:col-span-4' : 'md:col-span-3'}>
+          {/* Symbol field */}
+          <label className="block">
             <span className="block text-xs font-semibold uppercase tracking-wide text-slate-600">
               {tab === 'symbol' ? (
                 <>Symbol <span className="text-rose-600">*</span></>
@@ -321,87 +436,81 @@ export function BacktestPage() {
                   : `Filtering to ${symbols.length} symbol${symbols.length === 1 ? '' : 's'}`)}
             </span>
           </label>
+        </div>
 
-          <label className="md:col-span-2">
-            <span className="block text-xs font-semibold uppercase tracking-wide text-slate-600">
-              Hold days
-              <span
-                className="ml-1 cursor-help text-slate-400"
-                title="How long each picked stock is held in the forward simulation. PRINCIPLES default = 90. For a range scan, the window must be at least this long."
-              >
-                ⓘ
-              </span>
-            </span>
-            <input
-              type="number"
-              min={1}
-              max={180}
-              value={holdDays}
-              onChange={(e) => setHoldDays(Number(e.target.value))}
-              className={`mt-1 w-full rounded-md border px-3 py-2 font-mono text-sm ${
-                windowTooSmall ? 'border-rose-400 bg-rose-50' : 'border-slate-300'
-              }`}
-            />
-            {!isSingleDay && (
-              <span
-                className={`mt-1 block text-[11px] ${
-                  windowTooSmall ? 'text-rose-700' : 'text-slate-500'
-                }`}
-              >
-                {windowTooSmall ? 'Window < hold — widen window or shrink hold' : 'OK'}
+        {/* Advanced section — sensitivity tuning. Off-canonical = amber badge. */}
+        <div className="mt-5 border-t border-slate-200 pt-4">
+          <button
+            type="button"
+            onClick={() => setAdvOpen((v) => !v)}
+            className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-slate-700 hover:text-slate-900"
+          >
+            <span>{advOpen ? '▾' : '▸'}</span>
+            Advanced — gate threshold tuning (exploratory)
+            {overridesDeviated.any && (
+              <span className="ml-2 rounded bg-amber-200 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-amber-900">
+                deviated
               </span>
             )}
-          </label>
-
-          {showTopN && (
-            <label className="md:col-span-1">
-              <span className="block text-xs font-semibold uppercase tracking-wide text-slate-600">
-                Top N
-                <span
-                  className="ml-1 cursor-help text-slate-400"
-                  title="Daily slot cap. If more than N stocks pass all gates on the same day, only the top N (by confirmation score) get picked — same as live."
+          </button>
+          {advOpen && (
+            <div className="mt-3 space-y-4 rounded-lg border border-amber-200 bg-amber-50/50 p-4">
+              <p className="text-xs text-amber-900">
+                <strong>Exploratory only.</strong> Adjusting these answers
+                "what if I loosened/tightened this gate?" — the canonical
+                strategy uses the values marked ◆. PRINCIPLES.md forbids
+                hand-tuning live based on backtest results; treat any
+                deviated result as research, not a strategy change.
+              </p>
+              {THRESHOLD_SPECS.map((s) => {
+                const v = overrides[s.key]
+                const isDev = v !== s.canonical
+                return (
+                  <div key={s.key} className="text-xs">
+                    <div className="flex items-baseline justify-between gap-3">
+                      <label className="font-semibold text-slate-800">
+                        [{s.gate}] {s.label}
+                      </label>
+                      <div className="flex items-center gap-2 font-mono">
+                        <span
+                          className={`${isDev ? 'text-amber-900' : 'text-slate-700'}`}
+                        >
+                          {v.toFixed(s.step < 1 ? 2 : 1)} {s.unit}
+                        </span>
+                        <span className="text-slate-400">◆ {s.canonical}</span>
+                      </div>
+                    </div>
+                    <input
+                      type="range"
+                      min={s.min}
+                      max={s.max}
+                      step={s.step}
+                      value={v}
+                      onChange={(e) =>
+                        setOverrides((prev) => ({ ...prev, [s.key]: Number(e.target.value) }))
+                      }
+                      className="mt-1 w-full"
+                    />
+                    <p className="mt-0.5 text-[11px] text-slate-600">{s.desc}</p>
+                  </div>
+                )
+              })}
+              {overridesDeviated.any && (
+                <button
+                  type="button"
+                  onClick={resetOverrides}
+                  className="rounded border border-slate-300 bg-white px-3 py-1 text-[11px] font-semibold text-slate-700 hover:border-slate-400"
                 >
-                  ⓘ
-                </span>
-              </span>
-              <input
-                type="number"
-                min={1}
-                max={10}
-                value={topN}
-                onChange={(e) => setTopN(Number(e.target.value))}
-                className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 font-mono text-sm"
-              />
-            </label>
-          )}
-
-          {showCapital && (
-            <label className="md:col-span-1">
-              <span className="block text-xs font-semibold uppercase tracking-wide text-slate-600">
-                Capital ₹
-                <span
-                  className="ml-1 cursor-help text-slate-400"
-                  title="Affects share count + displayed ₹ returns. Does NOT affect which stocks get picked or whether they win/lose."
-                >
-                  ⓘ
-                </span>
-              </span>
-              <input
-                type="number"
-                min={1000}
-                step={1000}
-                value={capital}
-                onChange={(e) => setCapital(Number(e.target.value))}
-                className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 font-mono text-sm"
-              />
-            </label>
+                  Reset to canonical
+                </button>
+              )}
+            </div>
           )}
         </div>
 
-        <div className="mt-4 flex items-center justify-between">
+        <div className="mt-5 flex flex-wrap items-center justify-between gap-3">
           <p className="text-xs text-slate-500">
-            Defaults filled in. Only the date is required — leave the rest
-            blank and we'll assume sensible values (echoed in the result).
+            Hold = 90 days · Top-N = 3 · Capital = ₹1L (defaults; not user-tunable).
           </p>
           <button
             type="submit"
@@ -430,6 +539,13 @@ export function BacktestPage() {
       {resp && !resp.error && (
         <>
           {resp.regime && <RegimeBanner regime={resp.regime} />}
+          {/* Deviated-threshold advisory */}
+          {resp.assumptions?.thresholds_deviated &&
+            Object.keys(resp.assumptions.thresholds_deviated).length > 0 && (
+              <DeviationBanner
+                deviated={resp.assumptions.thresholds_deviated}
+              />
+            )}
           {/* Outside-universe advisory */}
           {(resp as { scope?: string }).scope === 'symbol' &&
             resp.symbol &&
@@ -890,8 +1006,9 @@ function ModeB({
 }) {
   return (
     <div className="mt-6 space-y-6">
-      <Funnel resp={resp} />
       <SelectedPicks resp={resp} expanded={expanded} onExpand={onExpand} />
+      {/* Per-gate funnel at the bottom for diagnostic clarity */}
+      <Funnel resp={resp} />
     </div>
   )
 }
@@ -1127,39 +1244,6 @@ function ModeC({ resp }: { resp: BacktestResponse }) {
         </p>
       </div>
 
-      {/* Counts table */}
-      <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-        <h3 className="text-sm font-semibold text-slate-800">Per-gate hit count</h3>
-        <table className="mt-3 w-full text-xs">
-          <thead className="border-b text-left text-slate-600">
-            <tr>
-              <th className="py-1.5 font-medium">Gate</th>
-              <th className="py-1.5 font-medium">Evaluated</th>
-              <th className="py-1.5 font-medium">Passed</th>
-              <th className="py-1.5 font-medium">Failed</th>
-              <th className="py-1.5 font-medium">Pass rate</th>
-            </tr>
-          </thead>
-          <tbody>
-            {SCAN_GATES.filter((g) => counts[g]).map((g) => {
-              const c = counts[g]
-              const rate = c.eval > 0 ? Math.round((c.pass / c.eval) * 100) : 0
-              return (
-                <tr key={g} className="border-b border-slate-100">
-                  <td className="py-1.5 font-mono">
-                    [{g}] {GATE_LABEL[g]}
-                  </td>
-                  <td className="py-1.5 font-mono">{c.eval}</td>
-                  <td className="py-1.5 font-mono text-emerald-700">{c.pass}</td>
-                  <td className="py-1.5 font-mono text-rose-700">{c.fail}</td>
-                  <td className="py-1.5 font-mono">{rate}%</td>
-                </tr>
-              )
-            })}
-          </tbody>
-        </table>
-      </div>
-
       {/* Timeline strip */}
       <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
         <h3 className="text-sm font-semibold text-slate-800">Daily gate status</h3>
@@ -1202,6 +1286,43 @@ function ModeC({ resp }: { resp: BacktestResponse }) {
       {focusedDay && (
         <DayDetailPanel day={focusedDay} fullPass={focusedPass} />
       )}
+
+      {/* Per-gate funnel at the bottom for diagnostic clarity */}
+      <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+        <h3 className="text-sm font-semibold text-slate-800">Per-gate hit count</h3>
+        <p className="mt-0.5 text-xs text-slate-600">
+          Across all {resp.trading_days} trading days scanned, how often each
+          gate fired. Sharp drop = the chokepoint.
+        </p>
+        <table className="mt-3 w-full text-xs">
+          <thead className="border-b text-left text-slate-600">
+            <tr>
+              <th className="py-1.5 font-medium">Gate</th>
+              <th className="py-1.5 font-medium">Evaluated</th>
+              <th className="py-1.5 font-medium">Passed</th>
+              <th className="py-1.5 font-medium">Failed</th>
+              <th className="py-1.5 font-medium">Pass rate</th>
+            </tr>
+          </thead>
+          <tbody>
+            {SCAN_GATES.filter((g) => counts[g]).map((g) => {
+              const c = counts[g]
+              const rate = c.eval > 0 ? Math.round((c.pass / c.eval) * 100) : 0
+              return (
+                <tr key={g} className="border-b border-slate-100">
+                  <td className="py-1.5 font-mono">
+                    [{g}] {GATE_LABEL[g]}
+                  </td>
+                  <td className="py-1.5 font-mono">{c.eval}</td>
+                  <td className="py-1.5 font-mono text-emerald-700">{c.pass}</td>
+                  <td className="py-1.5 font-mono text-rose-700">{c.fail}</td>
+                  <td className="py-1.5 font-mono">{rate}%</td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
     </div>
   )
 }
@@ -1559,7 +1680,10 @@ function ModeCUniverse({ resp }: { resp: BacktestResponse }) {
   const bySymbol = (resp.by_symbol ?? []) as UniverseBucket[]
   const byQuarter = (resp.by_quarter ?? []) as UniverseBucket[]
   const byMonth = (resp.by_month ?? []) as UniverseBucket[]
+  const funnel = resp.funnel ?? []
   const [expandedRow, setExpandedRow] = useState<number | null>(null)
+
+  const zeroPicks = (summary?.total_picks ?? 0) === 0
 
   return (
     <div className="mt-6 space-y-6">
@@ -1574,6 +1698,24 @@ function ModeCUniverse({ resp }: { resp: BacktestResponse }) {
           order, with what would have happened over the {resp.assumptions.hold_days}-day hold.
         </p>
       </div>
+
+      {/* Zero-picks explainer (only when scan returned 0 picks) */}
+      {zeroPicks && (
+        <div className="rounded-xl border border-amber-300 bg-amber-50 p-5">
+          <h3 className="text-sm font-semibold text-amber-900">
+            Zero picks in this window — see the gate funnel at the bottom
+          </h3>
+          <p className="mt-1 text-xs text-amber-900/90">
+            Each gate's per-symbol-per-day pass count is shown at the bottom
+            of this page. A sharp drop tells you which gate is the chokepoint.
+            If [VD] or [BR] is the cliff, the strategy is doing its strict
+            job (quality over quantity). If [LT] or [CS] is the cliff, the
+            universe lacked accumulation setups this window. Try the
+            <strong> Advanced</strong> sliders above to see what one threshold
+            change does.
+          </p>
+        </div>
+      )}
 
       {/* Summary stats */}
       {summary && <UniverseSummaryPanel s={summary} />}
@@ -1693,9 +1835,67 @@ function ModeCUniverse({ resp }: { resp: BacktestResponse }) {
       {byMonth.length > 0 && (
         <BreakdownTable title="By month" rows={byMonth} keyLabel="Month" />
       )}
+
+      {/* Per-gate funnel — always at the bottom for diagnostic clarity */}
+      {funnel.length > 0 && <UniverseFunnel rows={funnel} />}
     </div>
   )
 }
+
+function UniverseFunnel({ rows }: { rows: import('../types').BacktestFunnelRow[] }) {
+  const max = Math.max(...rows.map((r) => r.eval), 1)
+  return (
+    <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+      <h3 className="text-sm font-semibold text-slate-800">
+        Where the universe drops out (per gate)
+      </h3>
+      <p className="mt-0.5 text-xs text-slate-600">
+        Counts are symbol-days across the entire scan. Each gate's bar shows
+        how many symbol-days <strong>passed</strong>. A sharp drop tells you
+        which gate is the bottleneck.
+      </p>
+      <div className="mt-3 space-y-2">
+        {rows.map((r) => {
+          const passW = (r.pass / max) * 100
+          return (
+            <div key={r.stage_id}>
+              <div className="flex items-baseline justify-between gap-3 text-xs">
+                <div className="font-mono">
+                  [{r.stage_id}]{' '}
+                  <span className="font-sans font-semibold text-slate-800">
+                    {r.label}
+                  </span>
+                </div>
+                <div className="font-mono text-slate-700">
+                  eval {r.eval.toLocaleString()} · pass{' '}
+                  <strong>{r.pass.toLocaleString()}</strong> · fail{' '}
+                  {r.fail.toLocaleString()}
+                </div>
+              </div>
+              <div className="mt-1 flex items-center gap-2">
+                <div className="h-3 flex-1 rounded bg-slate-100">
+                  <div
+                    className="h-3 rounded bg-emerald-500/80"
+                    style={{ width: `${passW}%` }}
+                  />
+                </div>
+                <div className="w-16 text-right font-mono text-[11px] text-slate-500">
+                  {r.eval > 0 ? Math.round((r.pass / r.eval) * 100) : 0}%
+                </div>
+              </div>
+              {r.top_reason && r.fail > 0 && (
+                <div className="ml-1 mt-0.5 font-mono text-[10px] text-rose-700">
+                  ↳ top fail: {r.top_reason}
+                </div>
+              )}
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
 
 function UniverseSummaryPanel({ s }: { s: UniverseSummary }) {
   return (

@@ -36,7 +36,8 @@ DIVERGENCE_LOOKBACK: int = 20          # tunable
 
 def run(ctx: PipelineContext) -> StageResult:
     df = ctx.ohlcv
-    min_bars = max(ADV_LONG_WINDOW, DIVERGENCE_LOOKBACK + 2)
+    # +1 so we can exclude today's bar from the dry-up windows below.
+    min_bars = max(ADV_LONG_WINDOW + 1, DIVERGENCE_LOOKBACK + 2)
     if df is None or df.empty or len(df) < min_bars:
         return StageResult(
             stage_id=stage_id, passed=False,
@@ -44,9 +45,18 @@ def run(ctx: PipelineContext) -> StageResult:
             fix_point="backend/stages/volume.py: ingest must produce enough bars",
         )
 
-    vol = df["Volume"]
-    adv_recent = adv(vol, ADV_RECENT_WINDOW)
-    adv_long = adv(vol, ADV_LONG_WINDOW)
+    # SETUP vs TRIGGER separation.
+    # [VD] describes the quiet days BEFORE the breakout (supply dried up).
+    # [BR] describes the breakout day itself (heavy volume).
+    # If we include today's bar in the dry-up window, today's breakout volume
+    # mathematically prevents [VD] from firing — the gates cannibalise each
+    # other. So we evaluate the dry-up on the PRIOR bars only.
+    prior_vol = df["Volume"].iloc[:-1]
+    overrides: dict = getattr(ctx, "overrides", {}) or {}
+    dryup_max = float(overrides.get("vd_dryup_ratio", VOLUME_DRYUP_RATIO_MAX))
+
+    adv_recent = adv(prior_vol, ADV_RECENT_WINDOW)
+    adv_long = adv(prior_vol, ADV_LONG_WINDOW)
 
     div = obv_bullish_divergence(df, lookback=DIVERGENCE_LOOKBACK)
 
@@ -72,18 +82,18 @@ def run(ctx: PipelineContext) -> StageResult:
     evidence: list[str] = []
     failures: list[str] = []
 
-    # ---- Check 1: volume dry-up ----
+    # ---- Check 1: volume dry-up (evaluated on prior bars, not today) ----
     if ratio is None:
         failures.append("volume ratio unavailable")
-    elif ratio >= VOLUME_DRYUP_RATIO_MAX:
+    elif ratio >= dryup_max:
         failures.append(
-            f"5d/50d vol ratio {ratio*100:.0f}% >= {VOLUME_DRYUP_RATIO_MAX*100:.0f}% "
+            f"prior 5d/50d vol ratio {ratio*100:.0f}% >= {dryup_max*100:.0f}% "
             f"(no dry-up; institutions not yet quiet)"
         )
     else:
         evidence.append(
-            f"5d/50d vol ratio {ratio*100:.0f}% < {VOLUME_DRYUP_RATIO_MAX*100:.0f}% "
-            f"(supply exhausted)"
+            f"prior 5d/50d vol ratio {ratio*100:.0f}% < {dryup_max*100:.0f}% "
+            f"(supply exhausted before breakout)"
         )
 
     # ---- Check 2: bullish OBV-price divergence ----
@@ -97,7 +107,7 @@ def run(ctx: PipelineContext) -> StageResult:
     margin = 0.0
     if passed and ratio is not None:
         dryup_margin = max(
-            0.0, (VOLUME_DRYUP_RATIO_MAX - ratio) / VOLUME_DRYUP_RATIO_MAX
+            0.0, (dryup_max - ratio) / dryup_max
         )
         # Classic divergence is the stronger form; flat-price is partial credit.
         div_margin = (

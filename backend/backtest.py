@@ -385,6 +385,7 @@ def run_backtest(
     capital: float = 100000.0,
     max_workers: int = 10,
     end: Optional[str] = None,
+    overrides: Optional[dict] = None,
 ) -> dict:
     """Run the pipeline at a historical date and walk each result forward.
 
@@ -468,6 +469,7 @@ def run_backtest(
                 hold_days=hold_days,
                 capital=capital,
                 in_universe=in_universe_map.get(symbols[0], True),
+                overrides=overrides,
             )
         return scan_universe(
             start=as_of,
@@ -477,6 +479,7 @@ def run_backtest(
             capital=capital,
             symbols=symbols if symbols and symbols != list(UNIVERSE) else None,
             max_workers=max_workers,
+            overrides=overrides,
         )
 
     # ---- Regime check at as_of ----
@@ -500,7 +503,7 @@ def run_backtest(
 
         # Run the live chain with today_iso = as_of. ingest.py and the rest
         # of the chain are responsible for the ≤ as_of slicing.
-        result = run_pipeline(sym, PER_TICKER_CHAIN, as_of)
+        result = run_pipeline(sym, PER_TICKER_CHAIN, as_of, overrides=overrides)
 
         entry_info = _resolve_entry(forward_bars)
         if entry_info is None:
@@ -537,9 +540,11 @@ def run_backtest(
         return _assemble_mode_a(
             per_symbol, as_of, hold_days, top_n, capital, regime_dict,
             in_universe_map=in_universe_map,
+            overrides=overrides,
         )
     return _assemble_mode_b(
         per_symbol, selected, as_of, hold_days, top_n, capital, regime_dict,
+        overrides=overrides,
     )
 
 
@@ -632,6 +637,7 @@ def _build_per_symbol_block(entry: dict, capital: float) -> dict:
 def _assemble_mode_a(
     per_symbol, as_of, hold_days, top_n, capital, regime,
     in_universe_map: Optional[dict[str, bool]] = None,
+    overrides: Optional[dict] = None,
 ) -> dict:
     in_universe_map = in_universe_map or {}
     blocks = [_build_per_symbol_block(e, capital) for e in per_symbol]
@@ -641,12 +647,15 @@ def _assemble_mode_a(
         "mode": "A",
         "as_of": as_of,
         "regime": regime,
-        "assumptions": _assumptions(hold_days, top_n, capital),
+        "assumptions": _assumptions(hold_days, top_n, capital, overrides),
         "symbols": blocks,
     }
 
 
-def _assemble_mode_b(per_symbol, selected, as_of, hold_days, top_n, capital, regime) -> dict:
+def _assemble_mode_b(
+    per_symbol, selected, as_of, hold_days, top_n, capital, regime,
+    overrides: Optional[dict] = None,
+) -> dict:
     # Funnel counts per gate
     funnel = {sid: {"eval": 0, "pass": 0, "fail": 0, "top_reason": ""} for sid in _GATE_ORDER}
     fail_reasons: dict[str, dict[str, int]] = {sid: {} for sid in _GATE_ORDER}
@@ -711,7 +720,7 @@ def _assemble_mode_b(per_symbol, selected, as_of, hold_days, top_n, capital, reg
         "mode": "B",
         "as_of": as_of,
         "regime": regime,
-        "assumptions": _assumptions(hold_days, top_n, capital),
+        "assumptions": _assumptions(hold_days, top_n, capital, overrides),
         "funnel": [
             {"stage_id": sid, "label": _GATE_LABEL[sid], **funnel[sid]}
             for sid in _GATE_ORDER
@@ -721,7 +730,29 @@ def _assemble_mode_b(per_symbol, selected, as_of, hold_days, top_n, capital, reg
     }
 
 
-def _assumptions(hold_days: int, top_n: int, capital: float) -> dict:
+_CANONICAL_OVERRIDES = {
+    "hr_parabolic_30d_max_pct": 25.0,
+    "hr_extended_vs_ma50_max": 1.25,
+    "lt_obv_90d_slope_min": 3.0,
+    "cs_atr_pct_max": 4.0,
+    "vd_dryup_ratio": 0.50,
+    "br_volume_mult": 1.5,
+}
+
+
+def _assumptions(
+    hold_days: int,
+    top_n: int,
+    capital: float,
+    overrides: Optional[dict] = None,
+) -> dict:
+    eff: dict = {}
+    deviated: dict = {}
+    for k, canonical in _CANONICAL_OVERRIDES.items():
+        val = (overrides or {}).get(k, canonical)
+        eff[k] = val
+        if val != canonical:
+            deviated[k] = {"value": val, "canonical": canonical}
     return {
         "hold_days": hold_days,
         "top_n": top_n,
@@ -732,6 +763,8 @@ def _assumptions(hold_days: int, top_n: int, capital: float) -> dict:
         "t2_pct": int(T2_PCT * 100),
         "costs_modeled": False,
         "survivorship_note": "Universe = today's Nifty 100; historical drift not corrected",
+        "thresholds": eff,
+        "thresholds_deviated": deviated,
     }
 
 
@@ -754,7 +787,12 @@ _SCAN_CHAIN: list = [_hr.run, _lt.run, _cs.run, _vd.run, _br.run]
 _SCAN_GATE_IDS: list[str] = ["HR", "LT", "CS", "VD", "BR"]
 
 
-def _build_ctx_for_scan(symbol: str, as_of: _date, sliced: pd.DataFrame) -> PipelineContext:
+def _build_ctx_for_scan(
+    symbol: str,
+    as_of: _date,
+    sliced: pd.DataFrame,
+    overrides: Optional[dict] = None,
+) -> PipelineContext:
     """Construct a PipelineContext as if [I] Ingest had run on the sliced
     OHLCV. Reuses ingest's snapshot recompute helper so the snapshot fields
     seen by downstream gates match what live-mode produces.
@@ -763,6 +801,7 @@ def _build_ctx_for_scan(symbol: str, as_of: _date, sliced: pd.DataFrame) -> Pipe
         symbol=symbol,
         trace_id=str(uuid.uuid4()),
         today_iso=as_of.isoformat(),
+        overrides=dict(overrides) if overrides else {},
     )
     ctx.ohlcv = sliced
     seed_snap = {
@@ -782,6 +821,7 @@ def scan_symbol(
     hold_days: int = DEFAULT_HOLD_DAYS,
     capital: float = 100000.0,
     in_universe: Optional[bool] = None,
+    overrides: Optional[dict] = None,
 ) -> dict:
     """Walk every trading day in [start, end] and record each gate's verdict.
 
@@ -868,7 +908,7 @@ def scan_symbol(
             })
             continue
 
-        ctx = _build_ctx_for_scan(symbol, as_of, sliced)
+        ctx = _build_ctx_for_scan(symbol, as_of, sliced, overrides=overrides)
         day_gates: dict[str, Optional[bool]] = {
             "U": True, "I": True,
             "HR": None, "LT": None, "CS": None, "VD": None, "BR": None,
@@ -939,7 +979,7 @@ def scan_symbol(
         "pass_dates_by_gate": pass_dates_by_gate,
         "full_passes": full_passes,
         "vol_ratio_series": vol_ratio_series,
-        "assumptions": _assumptions(hold_days, DEFAULT_TOP_N, capital),
+        "assumptions": _assumptions(hold_days, DEFAULT_TOP_N, capital, overrides),
     }
 
 
@@ -1008,6 +1048,7 @@ def scan_universe(
     capital: float = 100000.0,
     symbols: Optional[list[str]] = None,
     max_workers: int = 10,
+    overrides: Optional[dict] = None,
 ) -> dict:
     """Walk every trading day in [start, end] and collect the picks the live
     strategy would have alerted, with each pick's forward outcome.
@@ -1064,16 +1105,22 @@ def scan_universe(
     if not trading_days:
         return {"error": f"no trading days between {start} and {end}"}
 
+    # Per-gate aggregate funnel — so even zero-pick scans tell the user
+    # WHICH gate is the chokepoint instead of just "no picks today".
+    funnel_counts = {sid: {"eval": 0, "pass": 0, "fail": 0} for sid in _SCAN_GATE_IDS}
+    fail_reason_top: dict[str, dict[str, int]] = {sid: {} for sid in _SCAN_GATE_IDS}
+
     # ---- Per-day: run the gate chain on every symbol, rank, take top_n ----
-    def _run_one_day_one_symbol(sym: str, as_of: _date) -> Optional[PipelineResult]:
+    def _run_one_day_one_symbol(sym: str, as_of: _date) -> tuple[Optional[PipelineResult], dict[str, StageResult]]:
         df = cache.get(sym)
         if df is None:
-            return None
+            return None, {}
         sliced = _slice_to_as_of(df, as_of)
         if len(sliced) < MIN_BARS:
-            return None
-        ctx = _build_ctx_for_scan(sym, as_of, sliced)
+            return None, {}
+        ctx = _build_ctx_for_scan(sym, as_of, sliced, overrides=overrides)
         passed = True
+        evaluated: dict[str, StageResult] = {}
         for stage_fn in _SCAN_CHAIN:
             try:
                 sr = stage_fn(ctx)
@@ -1083,11 +1130,12 @@ def scan_universe(
                     passed=False, reason=f"crash: {e}",
                 )
             ctx.stage_results[sr.stage_id] = sr
+            evaluated[sr.stage_id] = sr
             if not sr.passed:
                 passed = False
                 break
         if not passed:
-            return None
+            return None, evaluated
         # Build a PipelineResult so rank_survivors can score it
         return PipelineResult(
             symbol=sym,
@@ -1101,7 +1149,7 @@ def scan_universe(
             snapshot=ctx.snapshot,
             signals=None,
             ohlcv=ctx.ohlcv,
-        )
+        ), evaluated
 
     picks_chronological: list[dict] = []
     regime_halt_days = 0
@@ -1122,9 +1170,18 @@ def scan_universe(
             futures = [pool.submit(_run_one_day_one_symbol, s, as_of) for s in sym_set]
             for fut in as_completed(futures):
                 try:
-                    r = fut.result()
+                    r, evaluated = fut.result()
                 except Exception:
-                    r = None
+                    r, evaluated = None, {}
+                # Aggregate funnel counts regardless of whether the symbol survived
+                for sid, sr in evaluated.items():
+                    funnel_counts[sid]["eval"] += 1
+                    if sr.passed:
+                        funnel_counts[sid]["pass"] += 1
+                    else:
+                        funnel_counts[sid]["fail"] += 1
+                        key = (sr.reason or "").split(";")[0].strip()[:60] or "(no reason)"
+                        fail_reason_top[sid][key] = fail_reason_top[sid].get(key, 0) + 1
                 if r is not None:
                     survivors.append(r)
 
@@ -1230,6 +1287,26 @@ def scan_universe(
         "sum_return_pct": round(total_return, 2) if rets else None,
     }
 
+    # Build funnel rows with top failure reason per gate
+    funnel_rows = []
+    for sid in _SCAN_GATE_IDS:
+        c = funnel_counts[sid]
+        reasons = fail_reason_top[sid]
+        top_reason = ""
+        if reasons:
+            t = sorted(reasons.items(), key=lambda x: -x[1])[0]
+            top_reason = f"{t[1]}× {t[0]}"
+        funnel_rows.append({
+            "stage_id": sid,
+            "label": {
+                "HR": "Hard rejects", "LT": "Long-term flow",
+                "CS": "Consolidation", "VD": "Volume/Divergence",
+                "BR": "Breakout",
+            }[sid],
+            "eval": c["eval"], "pass": c["pass"], "fail": c["fail"],
+            "top_reason": top_reason,
+        })
+
     return {
         "mode": "C",
         "scope": "universe",
@@ -1242,5 +1319,6 @@ def scan_universe(
         "by_symbol": by_symbol_list,
         "by_quarter": by_quarter_list,
         "by_month": by_month_list,
-        "assumptions": _assumptions(hold_days, top_n, capital),
+        "funnel": funnel_rows,
+        "assumptions": _assumptions(hold_days, top_n, capital, overrides),
     }

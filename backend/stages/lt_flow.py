@@ -45,6 +45,9 @@ def run(ctx: PipelineContext) -> StageResult:
             fix_point="backend/stages/lt_flow.py: ingest must produce enough bars",
         )
 
+    overrides: dict = getattr(ctx, "overrides", {}) or {}
+    obv_slope_min = float(overrides.get("lt_obv_90d_slope_min", OBV_90D_SLOPE_MIN))
+
     close = df["Close"]
     volume = df["Volume"]
 
@@ -64,13 +67,13 @@ def run(ctx: PipelineContext) -> StageResult:
 
     if obv90 is None:
         failures.append("OBV-90d slope unavailable")
-    elif obv90 < OBV_90D_SLOPE_MIN:
+    elif obv90 < obv_slope_min:
         failures.append(
-            f"OBV-90d slope {obv90:+.1f}% < {OBV_90D_SLOPE_MIN:.1f}% "
+            f"OBV-90d slope {obv90:+.1f}% < {obv_slope_min:.1f}% "
             "(insufficient long-term flow)"
         )
     else:
-        evidence.append(f"OBV-90d slope {obv90:+.1f}% >= {OBV_90D_SLOPE_MIN:.1f}%")
+        evidence.append(f"OBV-90d slope {obv90:+.1f}% >= {obv_slope_min:.1f}%")
 
     if ud90 is None:
         failures.append("up/down vol ratio 90d unavailable")
@@ -96,7 +99,7 @@ def run(ctx: PipelineContext) -> StageResult:
     margin = 0.0
     if passed and obv90 is not None and ud90 is not None and ma_slope is not None:
         # Normalize each into [0, 1]; "strong" long-term flow gets full credit.
-        obv_margin = min(1.0, max(0.0, (obv90 - OBV_90D_SLOPE_MIN) / 10.0))
+        obv_margin = min(1.0, max(0.0, (obv90 - obv_slope_min) / 10.0))
         ud_margin = min(1.0, max(0.0, (ud90 - UPDOWN_90D_MIN) / 0.4))
         ma_margin = min(1.0, max(0.0, (ma_slope - MA150_SLOPE_MIN) / 5.0))
         margin = (obv_margin + ud_margin + ma_margin) / 3.0

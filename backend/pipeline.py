@@ -102,6 +102,9 @@ class PipelineContext:
     account_value: float = 100000.0         # for [PS] Position Sizer; default 1 lakh
     confirmation_score: float = 0.0         # filled by [RK]
     confirmation_components: dict = field(default_factory=dict)  # margin + bonuses, filled by [RK]
+    # Backtest-only: per-request overrides for high-control gate thresholds.
+    # Stages read `ctx.overrides.get("<key>", CANONICAL_DEFAULT)`. Empty in live.
+    overrides: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -151,18 +154,27 @@ def _stage_result_dict(r: StageResult) -> dict:
 # Public orchestrator — runs a chain of stage callables on one ticker.
 # --------------------------------------------------------------------------- #
 
-def run_pipeline(symbol: str, stages: list, today_iso: Optional[str] = None) -> PipelineResult:
+def run_pipeline(
+    symbol: str,
+    stages: list,
+    today_iso: Optional[str] = None,
+    overrides: Optional[dict] = None,
+) -> PipelineResult:
     """Run the configured stages on one symbol. Stages are callables with the
     signature `(ctx: PipelineContext) -> StageResult`.
 
     Gate stages whose result.passed is False short-circuit the rest of the
     chain; their failure is still traced.
+
+    `overrides` (backtest only) maps tunable-threshold keys to user-supplied
+    values; live callers pass None and gates use their canonical defaults.
     """
     today_iso = today_iso or datetime.now(IST).date().isoformat()
     ctx = PipelineContext(
         symbol=symbol,
         trace_id=str(uuid.uuid4()),
         today_iso=today_iso,
+        overrides=dict(overrides) if overrides else {},
     )
 
     # Clean any previous trace for this (date, symbol) so a re-run is idempotent.

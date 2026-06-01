@@ -44,6 +44,9 @@ def run(ctx: PipelineContext) -> StageResult:
             fix_point="backend/stages/breakout.py: ingest must produce enough bars",
         )
 
+    overrides: dict = getattr(ctx, "overrides", {}) or {}
+    vol_mult_min = float(overrides.get("br_volume_mult", VOLUME_BREAKOUT_MULT))
+
     last = df.iloc[-1]
     close = float(last["Close"])
     high = float(last["High"])
@@ -94,14 +97,14 @@ def run(ctx: PipelineContext) -> StageResult:
     # ---- Check 2: volume confirm ----
     if vol_ratio is None:
         failures.append("volume confirmation unavailable")
-    elif vol_ratio < VOLUME_BREAKOUT_MULT:
+    elif vol_ratio < vol_mult_min:
         failures.append(
-            f"volume {vol_ratio:.2f}x adv(50) < {VOLUME_BREAKOUT_MULT:.1f}x "
+            f"volume {vol_ratio:.2f}x adv(50) < {vol_mult_min:.1f}x "
             f"(insufficient participation)"
         )
     else:
         evidence.append(
-            f"volume {vol_ratio:.2f}x adv(50) >= {VOLUME_BREAKOUT_MULT:.1f}x"
+            f"volume {vol_ratio:.2f}x adv(50) >= {vol_mult_min:.1f}x"
         )
 
     # ---- Check 3: upper-third close ----
@@ -126,7 +129,7 @@ def run(ctx: PipelineContext) -> StageResult:
         break_margin = min(1.0, max(0.0, (close / resistance - 1) / 0.05))
         # Volume margin: 3 x adv(50) = full credit
         vol_margin = min(
-            1.0, max(0.0, (vol_ratio - VOLUME_BREAKOUT_MULT) / 1.5)
+            1.0, max(0.0, (vol_ratio - vol_mult_min) / 1.5)
         )
         # Upper-third margin: scaled into [0, 1]
         ut_margin = max(

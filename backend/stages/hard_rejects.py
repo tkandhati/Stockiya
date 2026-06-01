@@ -51,6 +51,10 @@ def run(ctx: PipelineContext) -> StageResult:
             fix_point="backend/stages/hard_rejects.py: ingest must produce enough bars",
         )
 
+    overrides: dict = getattr(ctx, "overrides", {}) or {}
+    parabolic_max = float(overrides.get("hr_parabolic_30d_max_pct", PARABOLIC_30D_MAX_PCT))
+    extended_max = float(overrides.get("hr_extended_vs_ma50_max", EXTENDED_VS_MA50_MAX))
+
     close = df["Close"]
     last_close = float(close.iloc[-1])
     close_30d_ago = float(close.iloc[-(PARABOLIC_LOOKBACK_BARS + 1)])
@@ -71,28 +75,28 @@ def run(ctx: PipelineContext) -> StageResult:
     failures: list[str] = []
     evidence: list[str] = []
 
-    if ret_30d_pct > PARABOLIC_30D_MAX_PCT:
+    if ret_30d_pct > parabolic_max:
         failures.append(
-            f"30d return {ret_30d_pct:+.1f}% > {PARABOLIC_30D_MAX_PCT:.0f}% "
+            f"30d return {ret_30d_pct:+.1f}% > {parabolic_max:.0f}% "
             f"(parabolic — institutions likely distributing to retail)"
         )
     else:
         evidence.append(
-            f"30d return {ret_30d_pct:+.1f}% <= {PARABOLIC_30D_MAX_PCT:.0f}% "
+            f"30d return {ret_30d_pct:+.1f}% <= {parabolic_max:.0f}% "
             f"(no parabolic move)"
         )
 
     if extended_ratio is None:
         failures.append("50d MA unavailable")
-    elif extended_ratio > EXTENDED_VS_MA50_MAX:
+    elif extended_ratio > extended_max:
         failures.append(
             f"close {(extended_ratio - 1) * 100:+.1f}% above 50d MA "
-            f"(> {(EXTENDED_VS_MA50_MAX - 1) * 100:.0f}% — extended, late-stage)"
+            f"(> {(extended_max - 1) * 100:.0f}% — extended, late-stage)"
         )
     else:
         evidence.append(
             f"close {(extended_ratio - 1) * 100:+.1f}% above 50d MA "
-            f"(<= {(EXTENDED_VS_MA50_MAX - 1) * 100:.0f}% — not extended)"
+            f"(<= {(extended_max - 1) * 100:.0f}% — not extended)"
         )
 
     passed = len(failures) == 0
