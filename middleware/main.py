@@ -85,7 +85,14 @@ def _startup_self_heal() -> None:
 
 
 class BacktestRequest(BaseModel):
-    as_of: str = Field(..., description="YYYY-MM-DD past trading date")
+    as_of: str = Field(..., description="YYYY-MM-DD past trading date (or scan start)")
+    end: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional YYYY-MM-DD. If set and exactly one symbol is given, "
+            "switches to Mode C — gate timeline scan from as_of to end."
+        ),
+    )
     symbols: Optional[list[str]] = Field(
         default=None,
         description="Optional. 1-2 symbols → Mode A (explain). Blank → Mode B (universe).",
@@ -106,6 +113,7 @@ def post_backtest(req: BacktestRequest) -> dict:
     try:
         return run_backtest(
             as_of=req.as_of,
+            end=req.end,
             symbols=req.symbols,
             hold_days=req.hold_days,
             top_n=req.top_n,

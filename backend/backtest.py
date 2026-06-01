@@ -29,6 +29,7 @@ Honest defaults (declared, see PRINCIPLES.md and the design conversation):
 from __future__ import annotations
 
 import logging
+import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date as _date, timedelta as _td
 from typing import Optional
@@ -36,9 +37,15 @@ from typing import Optional
 import pandas as pd
 
 from .fetch import fetch_ohlcv
-from .pipeline import PipelineResult, run_pipeline
+from .pipeline import PipelineContext, PipelineResult, StageResult, run_pipeline
 from .stages import PER_TICKER_CHAIN
+from .stages import breakout as _br
+from .stages import consolidation as _cs
+from .stages import hard_rejects as _hr
+from .stages import lt_flow as _lt
+from .stages import volume as _vd
 from .stages.hypothesis import build_pick_payload
+from .stages.ingest import MIN_BARS, _recompute_snapshot_from_ohlcv
 from .stages.rank import rank_survivors
 from .stages.regime import check_regime
 from .universe import UNIVERSE
@@ -63,6 +70,46 @@ DAY_45_TIGHTEN_PCT = 0.04   # day 45+: stop = entry - 4%
 DAY_45_MILESTONE = 45
 DAY_90_HARD_EXIT = 90
 DAY_180_FINAL_EXIT = 180
+
+
+def _normalize_symbol(raw: str) -> Optional[str]:
+    """Map a user-typed symbol to its canonical Universe form.
+
+    Accepts:
+      "infy", "INFY", "INFY.NS"          → "INFY.NS"
+      "bajaj-auto", "BAJAJ-AUTO"          → "BAJAJ-AUTO.NS"
+      "bajajauto"                         → "BAJAJ-AUTO.NS" (best-effort)
+      "m&m"                               → "M&M.NS"
+
+    Returns None if no plausible match exists in UNIVERSE. The caller is
+    responsible for surfacing the not-found message to the user.
+    """
+    if not raw:
+        return None
+    s = raw.strip().upper()
+    if not s:
+        return None
+
+    # Already in canonical form?
+    if s in UNIVERSE:
+        return s
+    # Add .NS suffix?
+    if not s.endswith(".NS") and f"{s}.NS" in UNIVERSE:
+        return f"{s}.NS"
+    # Try dropping any trailing exchange tag and re-suffixing
+    base = s.rsplit(".", 1)[0]
+    if f"{base}.NS" in UNIVERSE:
+        return f"{base}.NS"
+
+    # Best-effort: collapse non-alphanumeric in both sides and try again
+    def _collapse(x: str) -> str:
+        return "".join(c for c in x if c.isalnum())
+    collapsed = _collapse(base)
+    for sym in UNIVERSE:
+        sym_base = sym.split(".", 1)[0]
+        if _collapse(sym_base) == collapsed:
+            return sym
+    return None
 
 
 def _slice_to_as_of(df: pd.DataFrame, as_of: _date) -> pd.DataFrame:
@@ -302,6 +349,7 @@ def run_backtest(
     top_n: int = DEFAULT_TOP_N,
     capital: float = 100000.0,
     max_workers: int = 10,
+    end: Optional[str] = None,
 ) -> dict:
     """Run the pipeline at a historical date and walk each result forward.
 
@@ -328,19 +376,48 @@ def run_backtest(
         return {"error": "as_of must be a past date (no peeking at today/future)"}
 
     # ---- Resolve symbol set + mode ----
+    unresolved: list[str] = []
     if symbols:
-        symbols = [s.strip().upper() for s in symbols if s and s.strip()]
-        # Universe membership check — same constraint live picks have
-        unknown = [s for s in symbols if s not in UNIVERSE]
-        if unknown:
-            log.warning("symbols not in UNIVERSE: %s", unknown)
-        symbols = [s for s in symbols if s in UNIVERSE]
+        raw_in = [s for s in symbols if s and s.strip()]
+        resolved: list[str] = []
+        for raw in raw_in:
+            norm = _normalize_symbol(raw)
+            if norm is None:
+                unresolved.append(raw)
+            else:
+                resolved.append(norm)
+        # de-duplicate preserving order
+        seen: set[str] = set()
+        symbols = [s for s in resolved if not (s in seen or seen.add(s))]
         if not symbols:
-            return {"error": "no valid symbols (must be in Nifty 100 universe)"}
+            return {
+                "error": (
+                    f"Symbol(s) not found in Nifty 100: {', '.join(unresolved)}. "
+                    f"Try the canonical form (e.g. INFY.NS, BAJAJ-AUTO.NS, M&M.NS)."
+                ),
+                "unresolved": unresolved,
+            }
         mode = "A" if len(symbols) <= 2 else "B"
     else:
         symbols = list(UNIVERSE)
         mode = "B"
+
+    # ---- Mode C — scan range for a single symbol ----
+    if end and end != as_of:
+        if len(symbols) != 1:
+            return {
+                "error": (
+                    "Scan mode (date range) requires exactly one symbol. "
+                    "Pass a single symbol or remove the end date."
+                ),
+            }
+        return scan_symbol(
+            symbol=symbols[0],
+            start=as_of,
+            end=end,
+            hold_days=hold_days,
+            capital=capital,
+        )
 
     # ---- Regime check at as_of ----
     regime = check_regime(as_of=as_of)
@@ -588,4 +665,204 @@ def _assumptions(hold_days: int, top_n: int, capital: float) -> dict:
         "t2_pct": int(T2_PCT * 100),
         "costs_modeled": False,
         "survivorship_note": "Universe = today's Nifty 100; historical drift not corrected",
+    }
+
+
+# --------------------------------------------------------------------------- #
+# Mode C — Gate Timeline scan (single symbol, date range)
+# --------------------------------------------------------------------------- #
+#
+# Why this exists: the [VD] gate (and [BR]) fire on roughly 2-5 % of days for
+# any single Nifty 100 symbol, so a one-day sample almost always shows a
+# rejection. The scan walks every trading day in a window and surfaces the
+# rare days where each gate fires — turning "I never see VD pass" into
+# "VD passed on these 11 days; here's the trace and forward outcome."
+#
+# Performance note: we fetch the full OHLCV window ONCE upfront. For each
+# as-of day we slice locally and run the gate functions directly against
+# the in-memory frame. That skips ~N yfinance round-trips and brings a
+# 1-year scan from minutes down to ~15 seconds.
+
+_SCAN_CHAIN: list = [_hr.run, _lt.run, _cs.run, _vd.run, _br.run]
+_SCAN_GATE_IDS: list[str] = ["HR", "LT", "CS", "VD", "BR"]
+
+
+def _build_ctx_for_scan(symbol: str, as_of: _date, sliced: pd.DataFrame) -> PipelineContext:
+    """Construct a PipelineContext as if [I] Ingest had run on the sliced
+    OHLCV. Reuses ingest's snapshot recompute helper so the snapshot fields
+    seen by downstream gates match what live-mode produces.
+    """
+    ctx = PipelineContext(
+        symbol=symbol,
+        trace_id=str(uuid.uuid4()),
+        today_iso=as_of.isoformat(),
+    )
+    ctx.ohlcv = sliced
+    seed_snap = {
+        "symbol": symbol, "company": symbol, "sector": None, "industry": None,
+        "current": float(sliced["Close"].iloc[-1]),
+    }
+    snap = _recompute_snapshot_from_ohlcv(seed_snap, sliced)
+    snap["current"] = float(sliced["Close"].iloc[-1])
+    ctx.snapshot = snap
+    return ctx
+
+
+def scan_symbol(
+    symbol: str,
+    start: str,
+    end: str,
+    hold_days: int = DEFAULT_HOLD_DAYS,
+    capital: float = 100000.0,
+) -> dict:
+    """Walk every trading day in [start, end] and record each gate's verdict.
+
+    Returns:
+        {
+          "mode": "C",
+          "symbol": str,
+          "start": str, "end": str,
+          "trading_days": int,
+          "counts": {gate_id: {eval, pass, fail}, ...},
+          "timeline": [{date, gates: {U, I, HR, LT, CS, VD, BR}, killed_at}],
+          "pass_dates_by_gate": {gate_id: [iso_date, ...]},
+          "full_passes": [{as_of, forward}],
+          "assumptions": {...},
+        }
+    """
+    # ---- Validate inputs ----
+    norm = _normalize_symbol(symbol)
+    if norm is None:
+        return {"error": f"symbol '{symbol}' not in Nifty 100 universe"}
+    symbol = norm
+
+    try:
+        start_d = _date.fromisoformat(start)
+        end_d = _date.fromisoformat(end)
+    except ValueError:
+        return {"error": "invalid date(s); expected YYYY-MM-DD"}
+
+    if start_d < MIN_AS_OF:
+        return {
+            "error": (
+                f"start {start} is before {MIN_AS_OF.isoformat()} — universe "
+                "drift too large to defend without point-in-time data"
+            ),
+        }
+    if start_d >= end_d:
+        return {"error": "start must be strictly before end"}
+    if end_d >= _date.today():
+        return {"error": "end must be a past date"}
+
+    # ---- Fetch one wide window: history + scan range + forward buffer ----
+    fetch_end = end_d + _td(days=int(hold_days * 1.6) + 5)
+    lookback = DEFAULT_LOOKBACK_DAYS + (end_d - start_d).days + int(hold_days * 1.6) + 10
+    full = fetch_ohlcv(symbol, end=fetch_end.isoformat(), lookback_days=lookback)
+    if full is None or full.empty:
+        return {"error": f"no OHLCV data for {symbol}"}
+
+    # ---- Trading days strictly inside [start, end] ----
+    idx = full.index.normalize()
+    if getattr(idx, "tz", None) is not None:
+        idx = idx.tz_localize(None)
+    in_range_mask = (idx >= pd.Timestamp(start_d)) & (idx <= pd.Timestamp(end_d))
+    range_bars = full[in_range_mask]
+    if range_bars.empty:
+        return {"error": f"no trading days between {start} and {end}"}
+
+    timeline: list[dict] = []
+    counts = {sid: {"eval": 0, "pass": 0, "fail": 0} for sid in _SCAN_GATE_IDS}
+    pass_dates_by_gate: dict[str, list[str]] = {sid: [] for sid in _SCAN_GATE_IDS}
+    full_passes: list[dict] = []
+
+    # We also surface where the gate fired with one click of context — the
+    # 5d/50d volume ratio and OBV sparkline over the scan range. Captured
+    # cheaply during the walk.
+    vol_ratio_series: list[dict] = []
+
+    for ts in range_bars.index:
+        as_of = ts.date()
+        as_of_iso = as_of.isoformat()
+        sliced = _slice_to_as_of(full, as_of)
+        if len(sliced) < MIN_BARS:
+            # Treat as "not enough history" — surface in timeline but skip stages
+            timeline.append({
+                "date": as_of_iso,
+                "gates": {"U": True, "I": False, "HR": None, "LT": None,
+                          "CS": None, "VD": None, "BR": None},
+                "killed_at": "I",
+                "note": f"only {len(sliced)} bars (<{MIN_BARS})",
+            })
+            continue
+
+        ctx = _build_ctx_for_scan(symbol, as_of, sliced)
+        day_gates: dict[str, Optional[bool]] = {
+            "U": True, "I": True,
+            "HR": None, "LT": None, "CS": None, "VD": None, "BR": None,
+        }
+        killed_at: Optional[str] = None
+        passed_all = True
+        per_stage_features: dict[str, dict] = {}
+
+        for stage_fn in _SCAN_CHAIN:
+            try:
+                sr = stage_fn(ctx)
+            except Exception as e:
+                sr = StageResult(
+                    stage_id=getattr(stage_fn, "stage_id", "?"),
+                    passed=False, reason=f"crash: {e}",
+                )
+            ctx.stage_results[sr.stage_id] = sr
+            day_gates[sr.stage_id] = sr.passed
+            counts[sr.stage_id]["eval"] += 1
+            counts[sr.stage_id]["pass" if sr.passed else "fail"] += 1
+            per_stage_features[sr.stage_id] = dict(sr.features or {})
+            if sr.passed:
+                pass_dates_by_gate[sr.stage_id].append(as_of_iso)
+            else:
+                killed_at = sr.stage_id
+                passed_all = False
+                break
+
+        # capture 5d/50d ratio for the sparkline (whether or not VD ran)
+        vd_feat = per_stage_features.get("VD") or {}
+        vol_ratio_series.append({
+            "date": as_of_iso,
+            "ratio_5_50": vd_feat.get("vol_ratio_5_50"),
+            "vd_passed": day_gates.get("VD"),
+        })
+
+        timeline.append({
+            "date": as_of_iso,
+            "gates": day_gates,
+            "killed_at": killed_at,
+            "features": {
+                # Small bag of features useful in the pass-list tooltip
+                "vol_ratio_5_50": vd_feat.get("vol_ratio_5_50"),
+                "divergence_form": (vd_feat.get("divergence") or {}).get("form"),
+            },
+        })
+
+        if passed_all:
+            forward_bars = _bars_after(full, as_of)
+            forward = None
+            entry_info = _resolve_entry(forward_bars)
+            if entry_info:
+                entry_px, entry_date = entry_info
+                forward = forward_walk(forward_bars, entry_px, hold_days=hold_days)
+                forward["entry_date"] = entry_date
+            full_passes.append({"as_of": as_of_iso, "forward": forward})
+
+    return {
+        "mode": "C",
+        "symbol": symbol,
+        "start": start,
+        "end": end,
+        "trading_days": len(timeline),
+        "counts": counts,
+        "timeline": timeline,
+        "pass_dates_by_gate": pass_dates_by_gate,
+        "full_passes": full_passes,
+        "vol_ratio_series": vol_ratio_series,
+        "assumptions": _assumptions(hold_days, DEFAULT_TOP_N, capital),
     }

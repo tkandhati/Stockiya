@@ -316,20 +316,78 @@ export interface BacktestSummary {
   sum_return_pct: number | null
 }
 
-export interface BacktestResponse {
-  mode: 'A' | 'B'
+export type ScanGateId = 'U' | 'I' | 'HR' | 'LT' | 'CS' | 'VD' | 'BR'
+
+export interface ScanDay {
+  date: string
+  gates: Record<ScanGateId, boolean | null>
+  killed_at?: string | null
+  note?: string
+  features?: {
+    vol_ratio_5_50?: number | null
+    divergence_form?: string | null
+  }
+}
+
+export interface ScanCounts {
+  [gateId: string]: { eval: number; pass: number; fail: number }
+}
+
+export interface ScanFullPass {
   as_of: string
-  regime: Regime
+  forward: ForwardWalk | null
+}
+
+export interface ScanResponse {
+  mode: 'C'
+  symbol: string
+  start: string
+  end: string
+  trading_days: number
+  counts: ScanCounts
+  timeline: ScanDay[]
+  pass_dates_by_gate: Record<string, string[]>
+  full_passes: ScanFullPass[]
+  vol_ratio_series: Array<{
+    date: string
+    ratio_5_50: number | null
+    vd_passed: boolean | null
+  }>
   assumptions: BacktestAssumptions
+  error?: string
+}
+
+export interface BacktestResponse {
+  mode: 'A' | 'B' | 'C'
+  as_of?: string
+  regime?: Regime
+  assumptions: BacktestAssumptions
+  // Mode A/B fields:
   symbols?: BacktestSymbolBlock[]
   funnel?: BacktestFunnelRow[]
   selected?: BacktestSelected[]
   summary?: BacktestSummary
+  // Mode C fields:
+  symbol?: string
+  start?: string
+  end?: string
+  trading_days?: number
+  counts?: ScanCounts
+  timeline?: ScanDay[]
+  pass_dates_by_gate?: Record<string, string[]>
+  full_passes?: ScanFullPass[]
+  vol_ratio_series?: Array<{
+    date: string
+    ratio_5_50: number | null
+    vd_passed: boolean | null
+  }>
   error?: string
+  unresolved?: string[]
 }
 
 export interface BacktestRequest {
   as_of: string
+  end?: string
   symbols?: string[]
   hold_days?: number
   top_n?: number
