@@ -1929,6 +1929,28 @@ function FeedbackDownload({
   resp: BacktestResponse
 }) {
   const downloadJsonl = () => {
+    const priceHistorySchema = {
+      date: 'ISO trading day',
+      open: 'open price',
+      high: 'high price',
+      low: 'low price',
+      close: 'close price',
+      volume: 'volume (shares)',
+      ma50: '50-day SMA of close',
+      ma150: '150-day SMA of close (Weinstein floor)',
+      ma200: '200-day SMA of close',
+      atr14_pct: 'ATR(14) / close × 100 — volatility',
+      adv5: '5-day avg volume',
+      adv50: '50-day avg volume',
+      vol_ratio_5_50: 'adv5 / adv50 — recent vs long volume',
+      obv: 'On-Balance Volume (cumulative)',
+      obv_30d_slope_pct: 'OBV % change over trailing 30 days',
+      pct_above_ma150: '(close / ma150 − 1) × 100',
+      ret_5d_pct: '5-day return %',
+      ret_30d_pct: '30-day return %',
+      rolling_high_20d: 'highest high over prior 20 bars (BR resistance)',
+      up_down: '+1 / -1 / 0 — today close direction vs prior',
+    }
     const meta = {
       schema: 'backtest-feedback-1',
       generated_at: new Date().toISOString(),
@@ -1938,6 +1960,7 @@ function FeedbackDownload({
       thresholds_deviated: resp.assumptions?.thresholds_deviated ?? {},
       hold_days: resp.assumptions?.hold_days,
       total_picks: picks.length,
+      price_history_schema: priceHistorySchema,
     }
 
     const lines: string[] = []
@@ -1977,6 +2000,7 @@ function FeedbackDownload({
             hit_stop_day: p.forward?.hit_stop_day ?? null,
           },
           misses: p.misses ?? null,
+          price_history: p.price_history ?? [],
         }),
       )
     }

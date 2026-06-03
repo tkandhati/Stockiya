@@ -406,6 +406,29 @@ export interface PickMisses {
   t2_delta_days?: number
 }
 
+export interface PriceBar {
+  date: string
+  open: number | null
+  high: number | null
+  low: number | null
+  close: number | null
+  volume: number | null
+  ma50?: number | null
+  ma150?: number | null
+  ma200?: number | null
+  atr14_pct?: number | null
+  adv5?: number | null
+  adv50?: number | null
+  vol_ratio_5_50?: number | null
+  obv?: number | null
+  obv_30d_slope_pct?: number | null
+  pct_above_ma150?: number | null
+  ret_5d_pct?: number | null
+  ret_30d_pct?: number | null
+  rolling_high_20d?: number | null
+  up_down?: number
+}
+
 export interface UniversePick {
   as_of: string
   entry_date: string | null
@@ -426,6 +449,7 @@ export interface UniversePick {
   forward: ForwardWalk | null
   gate_inputs?: Record<string, Record<string, unknown>>
   misses?: PickMisses
+  price_history?: PriceBar[]
 }
 
 export interface UniverseSummary {

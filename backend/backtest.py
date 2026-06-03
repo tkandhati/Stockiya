@@ -1036,6 +1036,143 @@ def _quarter_key(iso: str) -> str:
     return f"{d.year}-Q{q}"
 
 
+def _safe_round(x, digits: int = 2):
+    """Round but return None for NaN/inf/missing."""
+    if x is None:
+        return None
+    try:
+        f = float(x)
+    except (TypeError, ValueError):
+        return None
+    if f != f or f in (float("inf"), float("-inf")):
+        return None
+    return round(f, digits)
+
+
+# Documents the indicator columns embedded in each price_history row.
+# Used to populate the JSONL meta record so the file is self-describing.
+PRICE_HISTORY_SCHEMA = {
+    "date": "ISO trading day",
+    "open": "open price",
+    "high": "high price",
+    "low": "low price",
+    "close": "close price",
+    "volume": "volume (shares)",
+    "ma50": "50-day SMA of close",
+    "ma150": "150-day SMA of close (Weinstein floor)",
+    "ma200": "200-day SMA of close",
+    "atr14_pct": "ATR(14) / close × 100 — volatility",
+    "adv5": "5-day avg volume",
+    "adv50": "50-day avg volume",
+    "vol_ratio_5_50": "adv5 / adv50 — recent vs long volume",
+    "obv": "On-Balance Volume (cumulative)",
+    "obv_30d_slope_pct": "OBV % change over trailing 30 days",
+    "pct_above_ma150": "(close / ma150 − 1) × 100",
+    "ret_5d_pct": "5-day return %",
+    "ret_30d_pct": "30-day return %",
+    "rolling_high_20d": "highest high over prior 20 bars (BR resistance)",
+    "up_down": "+1 / -1 / 0 — today's close direction vs prior",
+}
+
+
+def _price_history_for_feedback(
+    df: pd.DataFrame,
+    start_iso: Optional[str],
+    scan_end: _date,
+) -> list[dict]:
+    """Slice OHLCV + per-bar indicators from `start_iso` through `scan_end`.
+
+    Each bar carries the indicators the gates actually use, so the file is
+    self-contained for ML training — setup, hold, and post-exit drift, with
+    full indicator context. Indicators are computed on the FULL df (so the
+    rolling windows are populated even at the start of the slice), then we
+    slice to the requested window.
+
+    Empty list if start_iso is None or df is None.
+    """
+    if df is None or df.empty or not start_iso:
+        return []
+
+    close = df["Close"]
+    high = df["High"]
+    low = df["Low"]
+    volume = df["Volume"]
+
+    # ---- Moving averages on close ----
+    ma50 = close.rolling(50).mean()
+    ma150 = close.rolling(150).mean()
+    ma200 = close.rolling(200).mean()
+
+    # ---- ATR(14) ----
+    prev_close = close.shift(1)
+    tr1 = high - low
+    tr2 = (high - prev_close).abs()
+    tr3 = (low - prev_close).abs()
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    atr14 = tr.rolling(14).mean()
+    atr14_pct = (atr14 / close) * 100
+
+    # ---- Volume averages ----
+    adv5 = volume.rolling(5).mean()
+    adv50 = volume.rolling(50).mean()
+    vol_ratio_5_50 = adv5 / adv50
+
+    # ---- OBV (cumulative) and 30d slope ----
+    diff = close.diff().fillna(0)
+    direction = diff.apply(lambda x: 1 if x > 0 else (-1 if x < 0 else 0))
+    obv_series = (volume * direction).cumsum()
+    # 30-day slope as percent change vs OBV 30 bars ago, scaled to magnitude
+    obv_30_ago = obv_series.shift(30)
+    obv_30d_slope_pct = ((obv_series - obv_30_ago) / obv_30_ago.abs().replace(0, pd.NA)) * 100
+
+    # ---- Returns ----
+    ret_5d_pct = (close / close.shift(5) - 1) * 100
+    ret_30d_pct = (close / close.shift(30) - 1) * 100
+
+    # ---- 20d rolling high (BR resistance) — exclude today by shifting ----
+    rolling_high_20d = high.shift(1).rolling(20).max()
+
+    # ---- Position relative to 150d MA ----
+    pct_above_ma150 = (close / ma150 - 1) * 100
+
+    # ---- Slice to feedback window ----
+    idx = df.index.normalize()
+    if getattr(idx, "tz", None) is not None:
+        idx = idx.tz_localize(None)
+    start_ts = pd.Timestamp(start_iso)
+    end_ts = pd.Timestamp(scan_end)
+    mask = (idx >= start_ts) & (idx <= end_ts)
+
+    out: list[dict] = []
+    for ts in df[mask].index:
+        try:
+            out.append({
+                "date": ts.strftime("%Y-%m-%d"),
+                "open": _safe_round(df.at[ts, "Open"], 2),
+                "high": _safe_round(df.at[ts, "High"], 2),
+                "low": _safe_round(df.at[ts, "Low"], 2),
+                "close": _safe_round(close.at[ts], 2),
+                "volume": int(volume.at[ts]) if pd.notna(volume.at[ts]) else None,
+                "ma50": _safe_round(ma50.at[ts], 2),
+                "ma150": _safe_round(ma150.at[ts], 2),
+                "ma200": _safe_round(ma200.at[ts], 2),
+                "atr14_pct": _safe_round(atr14_pct.at[ts], 2),
+                "adv5": int(adv5.at[ts]) if pd.notna(adv5.at[ts]) else None,
+                "adv50": int(adv50.at[ts]) if pd.notna(adv50.at[ts]) else None,
+                "vol_ratio_5_50": _safe_round(vol_ratio_5_50.at[ts], 3),
+                "obv": int(obv_series.at[ts]) if pd.notna(obv_series.at[ts]) else None,
+                "obv_30d_slope_pct": _safe_round(obv_30d_slope_pct.at[ts], 2),
+                "pct_above_ma150": _safe_round(pct_above_ma150.at[ts], 2),
+                "ret_5d_pct": _safe_round(ret_5d_pct.at[ts], 2),
+                "ret_30d_pct": _safe_round(ret_30d_pct.at[ts], 2),
+                "rolling_high_20d": _safe_round(rolling_high_20d.at[ts], 2),
+                "up_down": int(direction.at[ts]) if pd.notna(direction.at[ts]) else 0,
+            })
+        except (KeyError, ValueError, TypeError):
+            continue
+    return out
+
+
 def _bar_n_back(df: pd.DataFrame, as_of: _date, n: int) -> Optional[str]:
     """Return the iso date of the bar n trading bars before as_of (inclusive).
     Used to surface the setup-window dates so the user can visually verify
@@ -1363,9 +1500,14 @@ def scan_universe(
             exit_date_iso = None
             if forward and forward.get("daily_path"):
                 eday = forward.get("exit_day") or len(forward["daily_path"])
-                idx = max(0, eday - 1)
-                if idx < len(forward["daily_path"]):
-                    exit_date_iso = forward["daily_path"][idx].get("date")
+                idx_off = max(0, eday - 1)
+                if idx_off < len(forward["daily_path"]):
+                    exit_date_iso = forward["daily_path"][idx_off].get("date")
+            # Full price history for ML training context — setup → exit → drift
+            history_start = (windows or {}).get("lt_lookback_start") if windows else None
+            # Extend the history window 90d past scan end so post-exit drift is captured
+            history_end_d = end_d + _td(days=90)
+            price_history = _price_history_for_feedback(df, history_start, history_end_d) if df is not None else []
 
             plan_dict = _strategy_plan(pick)
             picks_chronological.append({
@@ -1388,6 +1530,7 @@ def scan_universe(
                 "forward": forward,
                 "gate_inputs": _gate_inputs(pick),
                 "misses": _misses(plan_dict, forward),
+                "price_history": price_history,
             })
 
     # ---- Aggregates ----
