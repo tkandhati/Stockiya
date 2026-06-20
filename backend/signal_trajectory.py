@@ -28,7 +28,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, Optional
 
-from .indicators import obv, obv_slope_pct, sma_slope_pct, up_down_vol_ratio
+from .indicators import (
+    obv,
+    obv_slope_pct,
+    sma_slope_pct,
+    up_down_vol_ratio,
+    volume_spike_event,
+)
 from .yahoo import history_ohlcv
 
 SignalState = Literal["strong", "stable", "weakening", "flipped", "unknown"]
@@ -121,10 +127,16 @@ def _current_features(symbol: str) -> dict:
     close = df["Close"]
     volume = df["Volume"]
     obv_series = obv(close, volume)
+    event = volume_spike_event(df)
     return {
         "obv_90d_slope_pct": obv_slope_pct(obv_series, 90),
         "up_down_vol_ratio_90d": up_down_vol_ratio(close, volume, 90),
         "ma150_slope_pct": sma_slope_pct(close, 150, 50),
+        "volume_event_kind": event.kind,
+        "volume_event_direction": event.direction,
+        "volume_event_score": event.score,
+        "volume_event_label": event.label,
+        "volume_event_detail": event.detail,
     }
 
 
@@ -233,6 +245,22 @@ def compute_trajectory(symbol: str, entry_date_iso: str) -> TrajectoryReport:
         entry_value=e, current_value=c, state=state,
         description=_fmt_pct_delta("150d MA slope", e, c),
     ))
+
+    # 4. Fast distribution/climax warning from the latest volume spike.
+    # This is an early exit layer: it does not wait for 90-day indicators to
+    # fully roll over when today's tape shows heavy selling pressure.
+    event_direction = current.get("volume_event_direction")
+    event_kind = current.get("volume_event_kind")
+    event_score = current.get("volume_event_score")
+    if event_direction == "bearish" and event_kind in ("bearish_distribution", "climax_warning"):
+        indicators.append(IndicatorDelta(
+            name="volume_spike_event",
+            label="Latest volume event",
+            entry_value=None,
+            current_value=event_score,
+            state="flipped",
+            description=current.get("volume_event_detail") or "Bearish volume event.",
+        ))
 
     overall = _aggregate(indicators)
     flipped_any = any(i.state == "flipped" for i in indicators)

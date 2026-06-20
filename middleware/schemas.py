@@ -59,6 +59,25 @@ class GatesEvidenceDTO(BaseModel):
     BR: list[str] = []
 
 
+class VolumeEventDTO(BaseModel):
+    kind: str = "neutral"
+    direction: Literal["bullish", "bearish", "neutral"] = "neutral"
+    score: float = 0.0
+    label: str = ""
+    detail: str = ""
+    is_spike: bool = False
+    vol_ratio_50: Optional[float] = None
+    quiet_ratio_5_50: Optional[float] = None
+    close_location: Optional[float] = None
+    price_change_pct: Optional[float] = None
+    break_pct: Optional[float] = None
+    breakdown_pct: Optional[float] = None
+    close_vs_ma50_pct: Optional[float] = None
+    ret_30d_pct: Optional[float] = None
+    obv_20d_slope_pct: Optional[float] = None
+    base_days: int = 0
+
+
 class Pick(BaseModel):
     symbol: str
     rank: Optional[int] = None
@@ -73,6 +92,7 @@ class Pick(BaseModel):
     exit_schedule: ExitScheduleDTO
     distribution_flip_exit: str = ""
     gates_evidence: GatesEvidenceDTO
+    volume_event: Optional[VolumeEventDTO] = None
 
     # Legacy aliases — populated by build_pick_payload for transition-period
     # frontends that still expect the old field names.
@@ -118,6 +138,45 @@ class NearMiss(BaseModel):
     failed_gate: NearMissGate
 
 
+class EarlyVolumeSignal(BaseModel):
+    symbol: str
+    company: str
+    direction: Literal["bullish", "bearish", "neutral"]
+    kind: str
+    score: float
+    label: str
+    detail: str
+    event: VolumeEventDTO
+    stage_reached: Optional[str] = None
+    failed_gate: Optional[NearMissGate] = None
+    selected: bool = False
+
+
+class BRSubCheckDTO(BaseModel):
+    name: str
+    label: str
+    current: Optional[float] = None
+    threshold: Optional[float] = None
+    passed: bool
+    gap_pct: Optional[float] = None
+    gap_detail: str = ""
+
+
+class ReadyToBreak(BaseModel):
+    symbol: str
+    company: str
+    lt_score: float = 0.0
+    cs_score: float = 0.0
+    vd_score: float = 0.0
+    setup_strength: float = 0.0
+    br_checks: list[BRSubCheckDTO] = []
+    br_passing: int = 0
+    br_total: int = 0
+    br_reason: str = ""
+    closeness_score: float = 0.0
+    last_close: Optional[float] = None
+
+
 class PicksResponse(BaseModel):
     date: str
     generated_at: str
@@ -127,6 +186,8 @@ class PicksResponse(BaseModel):
     message: Optional[str] = None
     picks: list[Pick] = []
     near_misses: list[NearMiss] = []
+    early_signals: list[EarlyVolumeSignal] = []
+    ready_to_break: list[ReadyToBreak] = []
 
 
 # --------------------------------------------------------------------------- #
@@ -192,6 +253,7 @@ class AccumulationDTO(BaseModel):
     pocket_pivot_count_30d: int = 0
     volume_dry_up: bool = False
     canslim_breakout: bool = False
+    volume_event: Optional[VolumeEventDTO] = None
 
     # Block + Bulk deals (NSE institutional trade records)
     block_deal_buy_count_30d: int = 0

@@ -51,6 +51,25 @@ export interface GatesEvidence {
   BR?: string[]
 }
 
+export interface VolumeEvent {
+  kind: string
+  direction: 'bullish' | 'bearish' | 'neutral'
+  score: number
+  label: string
+  detail: string
+  is_spike: boolean
+  vol_ratio_50?: number | null
+  quiet_ratio_5_50?: number | null
+  close_location?: number | null
+  price_change_pct?: number | null
+  break_pct?: number | null
+  breakdown_pct?: number | null
+  close_vs_ma50_pct?: number | null
+  ret_30d_pct?: number | null
+  obv_20d_slope_pct?: number | null
+  base_days?: number
+}
+
 // --------------------------------------------------------------------------
 // Pick — new + legacy fields all coexist; new shape is canonical.
 // --------------------------------------------------------------------------
@@ -69,6 +88,7 @@ export interface Pick {
   exit_schedule?: ExitSchedule
   distribution_flip_exit?: string
   gates_evidence?: GatesEvidence
+  volume_event?: VolumeEvent | null
 
   // ---- Legacy aliases (still populated by build_pick_payload) ----
   best_buy_at?: number
@@ -214,6 +234,45 @@ export interface NearMiss {
   failed_gate: NearMissGate
 }
 
+export interface EarlyVolumeSignal {
+  symbol: string
+  company: string
+  direction: 'bullish' | 'bearish' | 'neutral'
+  kind: string
+  score: number
+  label: string
+  detail: string
+  event: VolumeEvent
+  stage_reached?: string | null
+  failed_gate?: NearMissGate | null
+  selected: boolean
+}
+
+export interface BRSubCheck {
+  name: string
+  label: string
+  current?: number | null
+  threshold?: number | null
+  passed: boolean
+  gap_pct?: number | null
+  gap_detail: string
+}
+
+export interface ReadyToBreak {
+  symbol: string
+  company: string
+  lt_score: number
+  cs_score: number
+  vd_score: number
+  setup_strength: number
+  br_checks: BRSubCheck[]
+  br_passing: number
+  br_total: number
+  br_reason: string
+  closeness_score: number
+  last_close?: number | null
+}
+
 export interface PicksResponse {
   date: string
   generated_at: string
@@ -223,6 +282,8 @@ export interface PicksResponse {
   message?: string
   picks: Pick[]
   near_misses?: NearMiss[]
+  early_signals?: EarlyVolumeSignal[]
+  ready_to_break?: ReadyToBreak[]
 }
 
 // --------------------------------------------------------------------------
@@ -626,6 +687,7 @@ export interface Accumulation {
   pocket_pivot_count_30d: number
   volume_dry_up: boolean
   canslim_breakout: boolean
+  volume_event?: VolumeEvent | null
 
   // Block + Bulk deals
   block_deal_buy_count_30d: number

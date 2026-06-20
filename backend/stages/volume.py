@@ -1,17 +1,21 @@
 """[VD] Volume + Divergence gate.
 
-Two checks; BOTH must pass:
+Two checks; at least ONE must pass (relaxed for Nifty 100, where genuine
+volume dry-up below 50% of ADV50 is rare on always-liquid large-caps):
 
-  1. Volume Dry-Up (Minervini):   adv(5) / adv(50) < 0.50
-     5-day average volume is less than half the 50-day average — supply
-     exhausted near support.
+  1. Volume Dry-Up (Minervini):   adv(5) / adv(50) < 0.70
+     5-day average volume materially below the 50-day average — supply
+     thinning near support.
 
   2. Bullish OBV-price divergence over the last 20 bars:
        classic     = price made a lower low while OBV made a higher low
        flat-price  = price held +/-2 % while OBV climbed >= 2 %
 
+Both checks still contribute to the margin score, so stocks that fire both
+rank higher than stocks that fire only one.
+
 Fix points:
-    VOLUME_DRYUP_RATIO_MAX  : max recent/long ADV ratio (default 0.50)
+    VOLUME_DRYUP_RATIO_MAX  : max recent/long ADV ratio (default 0.70)
     ADV_RECENT_WINDOW       : recent-volume window (default 5)
     ADV_LONG_WINDOW         : long-volume window (default 50)
     DIVERGENCE_LOOKBACK     : bars for divergence detection (default 20)
@@ -28,7 +32,7 @@ stage_id = "VD"
 # Tunable thresholds
 # --------------------------------------------------------------------------- #
 
-VOLUME_DRYUP_RATIO_MAX: float = 0.50   # tunable
+VOLUME_DRYUP_RATIO_MAX: float = 0.70   # tunable
 ADV_RECENT_WINDOW: int = 5             # tunable
 ADV_LONG_WINDOW: int = 50              # tunable
 DIVERGENCE_LOOKBACK: int = 20          # tunable
@@ -80,36 +84,40 @@ def run(ctx: PipelineContext) -> StageResult:
     }
 
     evidence: list[str] = []
-    failures: list[str] = []
+    near_misses: list[str] = []
 
     # ---- Check 1: volume dry-up (evaluated on prior bars, not today) ----
-    if ratio is None:
-        failures.append("volume ratio unavailable")
-    elif ratio >= dryup_max:
-        failures.append(
-            f"prior 5d/50d vol ratio {ratio*100:.0f}% >= {dryup_max*100:.0f}% "
-            f"(no dry-up; institutions not yet quiet)"
-        )
-    else:
+    dryup_pass = ratio is not None and ratio < dryup_max
+    if dryup_pass:
         evidence.append(
             f"prior 5d/50d vol ratio {ratio*100:.0f}% < {dryup_max*100:.0f}% "
-            f"(supply exhausted before breakout)"
+            f"(supply thinning before breakout)"
+        )
+    elif ratio is None:
+        near_misses.append("volume ratio unavailable")
+    else:
+        near_misses.append(
+            f"prior 5d/50d vol ratio {ratio*100:.0f}% >= {dryup_max*100:.0f}% "
+            f"(no dry-up)"
         )
 
     # ---- Check 2: bullish OBV-price divergence ----
-    if not div.is_bullish:
-        failures.append(f"no bullish OBV-price divergence ({div.detail})")
-    else:
+    div_pass = bool(div.is_bullish)
+    if div_pass:
         evidence.append(f"bullish OBV divergence ({div.form}): {div.detail}")
+    else:
+        near_misses.append(f"no bullish OBV-price divergence ({div.detail})")
 
     # ---- Decision + margin for ranker ----
-    passed = len(failures) == 0
+    # OR semantics: pass if either check fires. Margin still averages both
+    # so stocks hitting both rank above stocks hitting only one.
+    passed = dryup_pass or div_pass
     margin = 0.0
-    if passed and ratio is not None:
-        dryup_margin = max(
-            0.0, (dryup_max - ratio) / dryup_max
+    if passed:
+        dryup_margin = (
+            max(0.0, (dryup_max - ratio) / dryup_max)
+            if ratio is not None else 0.0
         )
-        # Classic divergence is the stronger form; flat-price is partial credit.
         div_margin = (
             1.0 if div.form == "classic"
             else (0.5 if div.form == "flat-price" else 0.0)
@@ -121,7 +129,10 @@ def run(ctx: PipelineContext) -> StageResult:
         passed=passed,
         score=round(margin, 4) if passed else 0.0,
         features=features,
-        evidence=evidence if passed else failures,
+        evidence=evidence if passed else near_misses,
         fix_point="backend/stages/volume.py — constants at top",
-        reason=("passed both checks" if passed else "; ".join(failures)),
+        reason=(
+            "passed (dry-up OR bullish divergence)" if passed
+            else "; ".join(near_misses)
+        ),
     )

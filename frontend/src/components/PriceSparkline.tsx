@@ -46,7 +46,10 @@ export function PriceSparkline({ data }: { data: Point[] }) {
                 border: '1px solid #e2e8f0',
                 fontSize: 12,
               }}
-              formatter={(v: number) => [`₹${v.toFixed(2)}`, 'Close']}
+              formatter={(value) => {
+                const n = typeof value === 'number' ? value : Number(value ?? 0)
+                return [`INR ${n.toFixed(2)}`, 'Close']
+              }}
             />
             <Line
               type="monotone"

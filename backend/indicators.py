@@ -12,10 +12,20 @@ VWAP narrative engine is deliberately not carried forward.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import Literal, Optional
 
 import numpy as np
 import pandas as pd
+
+VolumeEventDirection = Literal["bullish", "bearish", "neutral"]
+VolumeEventKind = Literal[
+    "bullish_ignition",
+    "early_accumulation",
+    "support_absorption",
+    "bearish_distribution",
+    "climax_warning",
+    "neutral",
+]
 
 
 # --------------------------------------------------------------------------- #
@@ -183,6 +193,53 @@ class DivergenceResult:
     detail: str
 
 
+@dataclass
+class VolumeSpikeEvent:
+    """Contextual interpretation of a single-session volume spike.
+
+    A large volume bar is not automatically bullish or bearish. The close
+    location, prior quietness, support/resistance posture, extension from the
+    50-day average, and OBV slope decide whether it is early accumulation,
+    breakout ignition, absorption, distribution, or a late-stage climax.
+    """
+    kind: VolumeEventKind
+    direction: VolumeEventDirection
+    score: float
+    label: str
+    detail: str
+    is_spike: bool
+    vol_ratio_50: Optional[float]
+    quiet_ratio_5_50: Optional[float]
+    close_location: Optional[float]
+    price_change_pct: Optional[float]
+    break_pct: Optional[float]
+    breakdown_pct: Optional[float]
+    close_vs_ma50_pct: Optional[float]
+    ret_30d_pct: Optional[float]
+    obv_20d_slope_pct: Optional[float]
+    base_days: int
+
+    def as_dict(self) -> dict:
+        return {
+            "kind": self.kind,
+            "direction": self.direction,
+            "score": self.score,
+            "label": self.label,
+            "detail": self.detail,
+            "is_spike": self.is_spike,
+            "vol_ratio_50": self.vol_ratio_50,
+            "quiet_ratio_5_50": self.quiet_ratio_5_50,
+            "close_location": self.close_location,
+            "price_change_pct": self.price_change_pct,
+            "break_pct": self.break_pct,
+            "breakdown_pct": self.breakdown_pct,
+            "close_vs_ma50_pct": self.close_vs_ma50_pct,
+            "ret_30d_pct": self.ret_30d_pct,
+            "obv_20d_slope_pct": self.obv_20d_slope_pct,
+            "base_days": self.base_days,
+        }
+
+
 def obv_bullish_divergence(df: pd.DataFrame, lookback: int = 20) -> DivergenceResult:
     """Bullish OBV-price divergence over the last `lookback` bars.
 
@@ -258,3 +315,238 @@ def in_range_for(close: pd.Series, min_days: int, max_days: int, band_pct: float
     """True if the in-band streak length falls in [min_days, max_days]."""
     d = days_within_band(close, band_pct)
     return min_days <= d <= max_days
+
+
+# --------------------------------------------------------------------------- #
+# Early volume-spike event classifier
+# --------------------------------------------------------------------------- #
+
+def volume_spike_event(
+    df: pd.DataFrame,
+    *,
+    early_spike_mult: float = 1.8,
+    ignition_spike_mult: float = 2.5,
+    quiet_ratio_max: float = 0.75,
+    resistance_lookback: int = 20,
+    support_lookback: int = 20,
+    extension_vs_ma50_warn_pct: float = 18.0,
+) -> VolumeSpikeEvent:
+    """Classify the latest EOD bar as a contextual volume event.
+
+    The live buy pipeline waits for a full breakout. This helper is earlier:
+    it can flag a watchlist-style accumulation/ignition bar before every hard
+    gate has cleared, while also catching high-volume distribution bars for
+    exits and avoid-list warnings.
+    """
+    neutral = VolumeSpikeEvent(
+        kind="neutral",
+        direction="neutral",
+        score=0.0,
+        label="No volume event",
+        detail="No abnormal volume event on the latest closed bar.",
+        is_spike=False,
+        vol_ratio_50=None,
+        quiet_ratio_5_50=None,
+        close_location=None,
+        price_change_pct=None,
+        break_pct=None,
+        breakdown_pct=None,
+        close_vs_ma50_pct=None,
+        ret_30d_pct=None,
+        obv_20d_slope_pct=None,
+        base_days=0,
+    )
+    if df is None or df.empty or len(df) < 60:
+        neutral.detail = "Insufficient bars for volume-event classification."
+        return neutral
+
+    required = {"Open", "High", "Low", "Close", "Volume"}
+    if not required.issubset(set(df.columns)):
+        neutral.detail = "OHLCV columns unavailable for volume-event classification."
+        return neutral
+
+    close = df["Close"].dropna()
+    high = df["High"].dropna()
+    low = df["Low"].dropna()
+    volume = df["Volume"].dropna()
+    if len(close) < 60 or len(volume) < 60:
+        neutral.detail = "Insufficient clean OHLCV rows for volume-event classification."
+        return neutral
+
+    last = df.iloc[-1]
+    last_close = float(last["Close"])
+    prev_close = float(close.iloc[-2])
+    last_vol = float(last["Volume"])
+    adv50 = adv(volume, 50)
+    if not adv50 or adv50 <= 0 or last_close <= 0 or prev_close <= 0:
+        neutral.detail = "Volume or price baseline unavailable for event classification."
+        return neutral
+
+    vol_ratio = last_vol / adv50
+    prior_volume = volume.iloc[:-1]
+    prior_adv5 = adv(prior_volume, 5)
+    prior_adv50 = adv(prior_volume, 50)
+    quiet_ratio = (
+        prior_adv5 / prior_adv50
+        if prior_adv5 is not None and prior_adv50 is not None and prior_adv50 > 0
+        else None
+    )
+    close_location = last_bar_upper_third_ratio(df)
+    price_change_pct = (last_close / prev_close - 1) * 100
+
+    resistance = rolling_high(high, resistance_lookback, exclude_today=True)
+    support = rolling_low(low, support_lookback, exclude_today=True)
+    break_pct = (
+        (last_close / resistance - 1) * 100
+        if resistance is not None and resistance > 0
+        else None
+    )
+    breakdown_pct = (
+        (last_close / support - 1) * 100
+        if support is not None and support > 0
+        else None
+    )
+    ma50 = sma(close, 50)
+    close_vs_ma50 = (
+        (last_close / ma50 - 1) * 100
+        if ma50 is not None and ma50 > 0
+        else None
+    )
+    ret30 = (
+        (last_close / float(close.iloc[-31]) - 1) * 100
+        if len(close) >= 31 and float(close.iloc[-31]) > 0
+        else None
+    )
+    obv20 = obv_slope_pct(obv(close, volume), 20)
+    base = days_within_band(close, 0.10)
+
+    def _round(x: Optional[float], digits: int = 3) -> Optional[float]:
+        return round(float(x), digits) if x is not None else None
+
+    is_spike = vol_ratio >= early_spike_mult
+    if not is_spike:
+        return VolumeSpikeEvent(
+            kind="neutral",
+            direction="neutral",
+            score=0.0,
+            label="No volume event",
+            detail=f"Latest volume is {vol_ratio:.2f}x ADV50, below early spike threshold.",
+            is_spike=False,
+            vol_ratio_50=_round(vol_ratio),
+            quiet_ratio_5_50=_round(quiet_ratio),
+            close_location=_round(close_location),
+            price_change_pct=_round(price_change_pct, 2),
+            break_pct=_round(break_pct, 2),
+            breakdown_pct=_round(breakdown_pct, 2),
+            close_vs_ma50_pct=_round(close_vs_ma50, 2),
+            ret_30d_pct=_round(ret30, 2),
+            obv_20d_slope_pct=_round(obv20, 2),
+            base_days=base,
+        )
+
+    quiet_before = quiet_ratio is not None and quiet_ratio <= quiet_ratio_max
+    strong_close = close_location is not None and close_location >= 0.67
+    constructive_close = close_location is not None and close_location >= 0.55
+    weak_close = close_location is not None and close_location <= 0.33
+    near_resistance = break_pct is not None and break_pct >= -2.0
+    breakout = break_pct is not None and break_pct > 0
+    support_break = breakdown_pct is not None and breakdown_pct < 0
+    extended = (
+        (close_vs_ma50 is not None and close_vs_ma50 >= extension_vs_ma50_warn_pct)
+        or (ret30 is not None and ret30 >= 25.0)
+    )
+    obv_supportive = obv20 is None or obv20 >= -2.0
+    obv_negative = obv20 is not None and obv20 <= -5.0
+    volume_strength = min(1.0, max(0.0, (vol_ratio - early_spike_mult) / 2.5))
+
+    if (
+        vol_ratio >= ignition_spike_mult
+        and strong_close
+        and breakout
+        and not extended
+        and obv_supportive
+    ):
+        score = min(1.0, 0.65 + 0.35 * volume_strength)
+        label = "Bullish volume ignition"
+        detail = (
+            f"{vol_ratio:.2f}x ADV50 with upper-third close and "
+            f"{break_pct:+.1f}% break above {resistance_lookback}d resistance."
+        )
+        kind: VolumeEventKind = "bullish_ignition"
+        direction: VolumeEventDirection = "bullish"
+    elif (
+        is_spike
+        and constructive_close
+        and quiet_before
+        and near_resistance
+        and not extended
+        and obv_supportive
+    ):
+        score = min(0.85, 0.45 + 0.35 * volume_strength + (0.05 if breakout else 0.0))
+        label = "Early accumulation spike"
+        detail = (
+            f"{vol_ratio:.2f}x ADV50 after quiet prior volume "
+            f"({quiet_ratio:.2f}x), near {resistance_lookback}d resistance."
+        )
+        kind = "early_accumulation"
+        direction = "bullish"
+    elif is_spike and price_change_pct < 0 and strong_close and not support_break:
+        score = min(0.75, 0.40 + 0.35 * volume_strength)
+        label = "Support absorption"
+        detail = (
+            f"{vol_ratio:.2f}x ADV50 on a down day, but buyers closed the candle "
+            "near the high. Watch for follow-through."
+        )
+        kind = "support_absorption"
+        direction = "bullish"
+    elif (
+        is_spike
+        and (weak_close or price_change_pct <= -2.0)
+        and (support_break or extended or obv_negative)
+    ):
+        score = min(1.0, 0.60 + 0.40 * volume_strength)
+        label = "Bearish distribution spike"
+        reason = "support break" if support_break else "extended move" if extended else "OBV rollover"
+        detail = (
+            f"{vol_ratio:.2f}x ADV50 with weak close/down move; context: {reason}. "
+            "Treat as exit/avoid warning."
+        )
+        kind = "bearish_distribution"
+        direction = "bearish"
+    elif vol_ratio >= ignition_spike_mult and extended and not strong_close:
+        score = min(0.85, 0.50 + 0.35 * volume_strength)
+        label = "Climax volume warning"
+        detail = (
+            f"{vol_ratio:.2f}x ADV50 after an extended move "
+            f"({close_vs_ma50 or 0:+.1f}% vs 50d MA). Do not chase without reset."
+        )
+        kind = "climax_warning"
+        direction = "bearish"
+    else:
+        score = min(0.35, 0.15 + 0.20 * volume_strength)
+        label = "Unconfirmed volume spike"
+        detail = (
+            f"{vol_ratio:.2f}x ADV50, but price context is mixed. "
+            "Needs follow-through before acting."
+        )
+        kind = "neutral"
+        direction = "neutral"
+
+    return VolumeSpikeEvent(
+        kind=kind,
+        direction=direction,
+        score=round(score, 4),
+        label=label,
+        detail=detail,
+        is_spike=True,
+        vol_ratio_50=_round(vol_ratio),
+        quiet_ratio_5_50=_round(quiet_ratio),
+        close_location=_round(close_location),
+        price_change_pct=_round(price_change_pct, 2),
+        break_pct=_round(break_pct, 2),
+        breakdown_pct=_round(breakdown_pct, 2),
+        close_vs_ma50_pct=_round(close_vs_ma50, 2),
+        ret_30d_pct=_round(ret30, 2),
+        obv_20d_slope_pct=_round(obv20, 2),
+        base_days=base,
+    )

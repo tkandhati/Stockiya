@@ -5,6 +5,7 @@ import {
   Layers,
   ShieldCheck,
   Target,
+  TrendingDown,
   TrendingUp,
 } from 'lucide-react'
 import type { Pick } from '../types'
@@ -22,6 +23,7 @@ export function PickCard({ pick }: { pick: Pick }) {
   const plan = pick.price_plan
   const conf = pick.confirmation
   const ev = pick.gates_evidence || {}
+  const volEvent = pick.volume_event
 
   const entry = plan?.entry ?? pick.best_buy_at ?? pick.current_price ?? 0
   const stop = plan?.stop ?? pick.stop_loss ?? 0
@@ -84,6 +86,30 @@ export function PickCard({ pick }: { pick: Pick }) {
         <p className="mt-3 text-sm font-medium leading-snug text-slate-900">
           {pick.headline}
         </p>
+      )}
+
+      {volEvent && volEvent.kind !== 'neutral' && (
+        <div
+          className={`mt-3 flex items-start gap-2 rounded-lg border px-3 py-2 text-xs ${
+            volEvent.direction === 'bullish'
+              ? 'border-emerald-200 bg-emerald-50 text-emerald-900'
+              : volEvent.direction === 'bearish'
+              ? 'border-rose-200 bg-rose-50 text-rose-900'
+              : 'border-slate-200 bg-slate-50 text-slate-700'
+          }`}
+        >
+          {volEvent.direction === 'bearish' ? (
+            <TrendingDown className="mt-0.5 h-3.5 w-3.5 flex-shrink-0" />
+          ) : (
+            <TrendingUp className="mt-0.5 h-3.5 w-3.5 flex-shrink-0" />
+          )}
+          <div>
+            <div className="font-semibold">{volEvent.label}</div>
+            <div className="mt-0.5 leading-snug opacity-85">
+              {volEvent.detail}
+            </div>
+          </div>
+        </div>
       )}
 
       {/* 4. Price plan grid */}

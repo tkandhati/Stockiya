@@ -4,7 +4,7 @@ Proves institutions stepped in today. All three checks must pass on the
 last EOD bar:
 
   1. Close > rolling 20d high of prior bars             (resistance break)
-  2. Today's volume >= 1.5 x adv(50)                    (volume confirms)
+  2. Today's volume >= 1.3 x adv(50)                    (volume confirms)
   3. (close - low) / (high - low) >= 0.67               (upper-third close)
 
 Together: a strong close through prior resistance on heavy volume with no
@@ -29,7 +29,7 @@ stage_id = "BR"
 # --------------------------------------------------------------------------- #
 
 RESISTANCE_LOOKBACK: int = 20          # tunable
-VOLUME_BREAKOUT_MULT: float = 1.5      # tunable
+VOLUME_BREAKOUT_MULT: float = 1.3      # tunable
 UPPER_THIRD_RATIO_MIN: float = 0.67    # tunable
 ADV_WINDOW: int = 50                   # tunable
 

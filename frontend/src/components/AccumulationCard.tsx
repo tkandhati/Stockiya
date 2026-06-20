@@ -167,6 +167,64 @@ export function AccumulationCard({ accum }: { accum: Accumulation }) {
         {accum.one_liner}
       </p>
 
+      {accum.volume_event && accum.volume_event.kind !== 'neutral' && (
+        <div
+          className={`mt-4 rounded-xl border p-4 ${
+            accum.volume_event.direction === 'bullish'
+              ? 'border-emerald-200 bg-emerald-50/70 text-emerald-950'
+              : accum.volume_event.direction === 'bearish'
+              ? 'border-rose-200 bg-rose-50/70 text-rose-950'
+              : 'border-slate-200 bg-slate-50 text-slate-800'
+          }`}
+        >
+          <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider">
+            {accum.volume_event.direction === 'bearish' ? (
+              <TrendingDown className="h-4 w-4" />
+            ) : (
+              <TrendingUp className="h-4 w-4" />
+            )}
+            <span>Early volume indication - {accum.volume_event.label}</span>
+          </div>
+          <p className="mt-1.5 text-sm leading-relaxed">
+            {accum.volume_event.detail}
+          </p>
+          <div className="mt-3 grid grid-cols-2 gap-2 text-[11px] md:grid-cols-4">
+            <EventMetric
+              label="Volume"
+              value={
+                accum.volume_event.vol_ratio_50 == null
+                  ? '-'
+                  : `${accum.volume_event.vol_ratio_50.toFixed(2)}x ADV50`
+              }
+            />
+            <EventMetric
+              label="Prior quiet"
+              value={
+                accum.volume_event.quiet_ratio_5_50 == null
+                  ? '-'
+                  : `${accum.volume_event.quiet_ratio_5_50.toFixed(2)}x`
+              }
+            />
+            <EventMetric
+              label="Close location"
+              value={
+                accum.volume_event.close_location == null
+                  ? '-'
+                  : `${Math.round(accum.volume_event.close_location * 100)}%`
+              }
+            />
+            <EventMetric
+              label="OBV 20d"
+              value={
+                accum.volume_event.obv_20d_slope_pct == null
+                  ? '-'
+                  : `${accum.volume_event.obv_20d_slope_pct >= 0 ? '+' : ''}${accum.volume_event.obv_20d_slope_pct.toFixed(1)}%`
+              }
+            />
+          </div>
+        </div>
+      )}
+
       {/* Pattern flags */}
       {(accum.pocket_pivot_count_30d > 0 ||
         accum.volume_dry_up ||
@@ -514,6 +572,15 @@ function Metric({
     <div>
       <dt className="text-xs uppercase tracking-wide text-slate-500">{label}</dt>
       <dd className={`mt-0.5 font-medium tabular-nums ${color}`}>{value}</dd>
+    </div>
+  )
+}
+
+function EventMetric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-lg border border-white/70 bg-white/60 px-2 py-1">
+      <dt className="text-[10px] uppercase tracking-wide opacity-70">{label}</dt>
+      <dd className="font-mono font-semibold">{value}</dd>
     </div>
   )
 }

@@ -250,6 +250,7 @@ def stock_detail(symbol: str) -> StockDetail:
         pocket_pivot_count_30d=accum.pocket_pivot_count_30d,
         volume_dry_up=accum.volume_dry_up,
         canslim_breakout=accum.canslim_breakout,
+        volume_event=accum.volume_event.as_dict() if accum.volume_event else None,
         block_deal_buy_count_30d=accum.block_deal_buy_count_30d,
         block_deal_sell_count_30d=accum.block_deal_sell_count_30d,
         block_deal_net_qty_ratio=accum.block_deal_net_qty_ratio,

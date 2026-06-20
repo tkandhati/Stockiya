@@ -31,7 +31,7 @@ from typing import Optional
 
 import pandas as pd
 
-from ..indicators import ma_stack_aligned, obv, obv_slope_pct
+from ..indicators import ma_stack_aligned, obv, obv_slope_pct, volume_spike_event
 from ..pipeline import PipelineResult
 
 
@@ -158,6 +158,15 @@ def rank_survivors(
         # 5. Top RS rank (proxy: vs other survivors)
         if idx in top_rs_indices:
             bonuses_fired.append("Top RS-rank vs survivors")
+
+        # 6. Contextual volume ignition / early accumulation.
+        # Survivors already cleared the breakout gate; this bonus separates
+        # ordinary breakouts from the sudden volume-regime shifts the user
+        # wants surfaced earlier and more visibly.
+        if df is not None:
+            event = volume_spike_event(df)
+            if event.kind in ("bullish_ignition", "early_accumulation"):
+                bonuses_fired.append(f"{event.label} ({event.vol_ratio_50:.2f}x ADV50)")
 
         bonus_count = len(bonuses_fired)
         confirmation = margin + BONUS_WEIGHT * bonus_count

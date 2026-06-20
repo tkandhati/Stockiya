@@ -26,8 +26,10 @@ from zoneinfo import ZoneInfo
 
 from collections import defaultdict
 
+from .indicators import volume_spike_event
 from .pipeline import PipelineResult, append_final_trace, run_pipeline
 from .stages import PER_TICKER_CHAIN
+from .stages import breakout as _br_stage
 from .stages.hypothesis import build_pick_payload
 from .stages.rank import rank_survivors
 from .stages.regime import check_regime
@@ -99,6 +101,198 @@ def _collect_near_misses(results: list[PipelineResult], n: int = 5) -> list[dict
         return (-row["passed_count"], -last_idx)
 
     rows.sort(key=_sort_key)
+    return rows[:n]
+
+
+def _collect_early_volume_signals(results: list[PipelineResult], n: int = 8) -> list[dict]:
+    """Surface contextual volume spikes before the full buy chain completes.
+
+    This is intentionally not a buy list. Bullish rows mean "watch for
+    follow-through"; bearish rows mean "distribution/exit-risk warning".
+    """
+    rows: list[dict] = []
+    for r in results:
+        if r.ohlcv is None or r.ohlcv.empty:
+            continue
+        event = volume_spike_event(r.ohlcv)
+        if event.kind == "neutral":
+            continue
+
+        evaluated = [
+            sid for sid in _GATE_ORDER
+            if sid in r.stage_results
+        ]
+        failed_sid = None
+        failed_reason = ""
+        for sid in _GATE_ORDER:
+            sr = r.stage_results.get(sid)
+            if sr is not None and not sr.passed:
+                failed_sid = sid
+                failed_reason = sr.reason or ""
+                break
+
+        rows.append({
+            "symbol": r.symbol,
+            "company": (r.snapshot or {}).get("company") or r.symbol,
+            "direction": event.direction,
+            "kind": event.kind,
+            "score": event.score,
+            "label": event.label,
+            "detail": event.detail,
+            "event": event.as_dict(),
+            "stage_reached": evaluated[-1] if evaluated else None,
+            "failed_gate": (
+                {
+                    "stage_id": failed_sid,
+                    "label": _GATE_LABEL.get(failed_sid, failed_sid) if failed_sid else "",
+                    "reason": failed_reason,
+                }
+                if failed_sid else None
+            ),
+            "selected": r.selected,
+        })
+
+    # Prefer actionable bullish early indications, then high-risk bearish
+    # warnings, then sort within each by confidence score.
+    priority = {
+        "bullish_ignition": 0,
+        "early_accumulation": 1,
+        "support_absorption": 2,
+        "bearish_distribution": 3,
+        "climax_warning": 4,
+    }
+    rows.sort(key=lambda row: (priority.get(row["kind"], 9), -float(row["score"] or 0)))
+    return rows[:n]
+
+
+def _br_sub_check_breakdown(features: dict) -> list[dict]:
+    """Decompose a failed [BR] result into per-sub-check status and gap.
+
+    Each sub-check returns the live measurement, the threshold from the
+    breakout module's current constants (so Tier-1 relaxations are honored),
+    a pass/fail flag, the gap to threshold in percent, and a ready-to-render
+    `gap_detail` string.
+    """
+    checks: list[dict] = []
+
+    close = features.get("close")
+    resistance = features.get("resistance_20d")
+    vol_ratio = features.get("vol_ratio_today_50d")
+    upper_third = features.get("upper_third_ratio")
+
+    if close is not None and resistance is not None and resistance > 0:
+        passed = close > resistance
+        gap_pct = (resistance - close) / resistance * 100  # +ve = under
+        checks.append({
+            "name": "resistance_break",
+            "label": f"Close > {_br_stage.RESISTANCE_LOOKBACK}d high",
+            "current": round(float(close), 2),
+            "threshold": round(float(resistance), 2),
+            "passed": passed,
+            "gap_pct": round(gap_pct, 2),
+            "gap_detail": (
+                f"close {close:.2f} vs {_br_stage.RESISTANCE_LOOKBACK}d high "
+                f"{resistance:.2f} — needs +{gap_pct:.2f}% to clear"
+                if not passed
+                else f"close {close:.2f} > {resistance:.2f} ({-gap_pct:+.2f}%)"
+            ),
+        })
+
+    if vol_ratio is not None:
+        thr = float(_br_stage.VOLUME_BREAKOUT_MULT)
+        passed = vol_ratio >= thr
+        gap = thr - vol_ratio
+        checks.append({
+            "name": "volume_confirm",
+            "label": f"Volume >= {thr:.1f}x ADV50",
+            "current": round(float(vol_ratio), 3),
+            "threshold": thr,
+            "passed": passed,
+            "gap_pct": round((gap / thr) * 100, 2) if thr > 0 else 0.0,
+            "gap_detail": (
+                f"volume {vol_ratio:.2f}x ADV50 — needs {thr:.1f}x (short {gap:.2f}x)"
+                if not passed
+                else f"volume {vol_ratio:.2f}x ADV50 (>= {thr:.1f}x)"
+            ),
+        })
+
+    if upper_third is not None:
+        thr = float(_br_stage.UPPER_THIRD_RATIO_MIN)
+        passed = upper_third >= thr
+        gap = thr - upper_third
+        checks.append({
+            "name": "upper_third_close",
+            "label": f"Close in top {int((1 - thr) * 100)}% of candle",
+            "current": round(float(upper_third), 3),
+            "threshold": thr,
+            "passed": passed,
+            "gap_pct": round(gap * 100, 2),
+            "gap_detail": (
+                f"closed at {upper_third*100:.0f}% of candle — needs {int(thr*100)}%"
+                if not passed
+                else f"closed at {upper_third*100:.0f}% of candle (>= {int(thr*100)}%)"
+            ),
+        })
+
+    return checks
+
+
+def _collect_ready_to_break(results: list[PipelineResult], n: int = 10) -> list[dict]:
+    """Stocks that cleared LT+CS+VD but didn't fire BR today.
+
+    The institutional setup is intact (long-term flow, tight base, dry-up or
+    divergence); only the breakout bar hasn't printed yet. Each row exposes
+    per-BR-sub-check status and the gap to threshold so the user can see
+    what would have to happen for the alert to fire.
+    """
+    rows: list[dict] = []
+    for r in results:
+        if r.selected:
+            continue
+        sr_lt = r.stage_results.get("LT")
+        sr_cs = r.stage_results.get("CS")
+        sr_vd = r.stage_results.get("VD")
+        sr_br = r.stage_results.get("BR")
+        if not (sr_lt and sr_lt.passed
+                and sr_cs and sr_cs.passed
+                and sr_vd and sr_vd.passed):
+            continue
+        if sr_br is None or sr_br.passed:
+            continue
+
+        checks = _br_sub_check_breakdown(sr_br.features or {})
+        passing = sum(1 for c in checks if c["passed"])
+        total = len(checks)
+
+        lt_score = float(sr_lt.score or 0)
+        cs_score = float(sr_cs.score or 0)
+        vd_score = float(sr_vd.score or 0)
+        setup_strength = (lt_score + cs_score + vd_score) / 3.0
+        closeness = (passing / max(1, total)) * 0.7 + setup_strength * 0.3
+
+        rows.append({
+            "symbol": r.symbol,
+            "company": (r.snapshot or {}).get("company") or r.symbol,
+            "lt_score": round(lt_score, 4),
+            "cs_score": round(cs_score, 4),
+            "vd_score": round(vd_score, 4),
+            "setup_strength": round(setup_strength, 4),
+            "br_checks": checks,
+            "br_passing": passing,
+            "br_total": total,
+            "br_reason": sr_br.reason or "",
+            "closeness_score": round(closeness, 4),
+            "last_close": (sr_br.features or {}).get("close"),
+        })
+
+    rows.sort(key=lambda x: (
+        -x["br_passing"],
+        sum(
+            c["gap_pct"] for c in x["br_checks"]
+            if not c["passed"] and c.get("gap_pct") is not None
+        ),
+        -x["setup_strength"],
+    ))
     return rows[:n]
 
 
@@ -212,6 +406,18 @@ def run_universe(
         log.info("  [Phase 2/4] No survivors — 0 picks today.")
         log.info("             (Run: python -m backend.trace_audit  for the near-miss list.)")
 
+    early_signals = _collect_early_volume_signals(results, n=8)
+    if early_signals:
+        log.info("  [Phase 2/4] Early volume signals: %d", len(early_signals))
+
+    ready_to_break = _collect_ready_to_break(results, n=10)
+    if ready_to_break:
+        log.info("  [Phase 2/4] Ready-to-break watchlist: %d", len(ready_to_break))
+        for row in ready_to_break[:5]:
+            log.info("    %-15s  %d/%d BR sub-checks  closeness=%.2f",
+                     row["symbol"], row["br_passing"], row["br_total"],
+                     row["closeness_score"])
+
     # ---- Phase 3: build pick payloads for selected ----
     log.info("  [Phase 3/4] Building pick payloads + position sizing ...")
     pick_payloads: list[dict] = []
@@ -255,6 +461,8 @@ def run_universe(
         regime=regime.as_dict(),
         message=message,
         near_misses=near_misses,
+        early_signals=early_signals,
+        ready_to_break=ready_to_break,
     )
     path = write_picks_file(response)
     log.info("  [Phase 4/4] Wrote %s  (%d pick%s)",

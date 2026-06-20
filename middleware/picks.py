@@ -11,6 +11,7 @@ import logging
 import os
 
 from backend.orchestrator import run_universe
+from backend.stages.render import PICKS_SCHEMA_VERSION
 
 from .picks_cache import ist_today_iso, read_picks, write_picks
 from .schemas import PicksResponse
@@ -31,6 +32,6 @@ def get_or_generate_picks() -> PicksResponse:
     """Read the cached picks for today, or run the pipeline if missing."""
     today = ist_today_iso()
     cached = read_picks(today)
-    if cached:
+    if cached and int(cached.get("schema_version") or 0) >= PICKS_SCHEMA_VERSION:
         return PicksResponse(**cached)
     return generate_picks()

@@ -4,8 +4,8 @@ Identifies stocks in a tight base above their 150-day moving average — the
 institutional accumulation footprint from PRINCIPLES Section 2.
 
 Three checks; all must pass:
-  1. ATR(14) / Close <= 4 %                          (range is tight)
-  2. days_within_band(close, +/-10 %) >= 25          (base mature; min 5 weeks)
+  1. ATR(14) / Close <= 5.5 %                        (range is tight)
+  2. days_within_band(close, +/-12 %) >= 15          (base mature; min ~3 weeks)
   3. Close > 150d MA                                 (above the long-term floor)
 
 NOTE: There is NO upper cap on consolidation duration. Long bases are
@@ -36,9 +36,9 @@ stage_id = "CS"
 # Tunable thresholds
 # --------------------------------------------------------------------------- #
 
-ATR_PCT_MAX: float = 4.0                  # tunable
-MIN_DAYS_IN_BAND: int = 25                # tunable (~5 weeks; the floor)
-BAND_PCT: float = 0.10                    # tunable
+ATR_PCT_MAX: float = 5.5                  # tunable; Nifty 100 names typically run 4-5% ATR
+MIN_DAYS_IN_BAND: int = 15                # tunable (~3 weeks; relaxed for liquid large-caps)
+BAND_PCT: float = 0.12                    # tunable; ±12% accommodates large-cap oscillation
 MA_PERIOD: int = 150                      # tunable
 MARGIN_FULL_CREDIT_DAYS: int = 90         # tunable; >=90 days in band = full margin
 

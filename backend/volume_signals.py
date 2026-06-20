@@ -33,6 +33,8 @@ from typing import Literal, Optional
 import numpy as np
 import pandas as pd
 
+from .indicators import VolumeSpikeEvent, volume_spike_event
+
 
 Verdict = Literal["accumulating", "neutral", "distributing", "unknown"]
 SignalState = Literal["bullish", "neutral", "bearish"]
@@ -99,6 +101,7 @@ class AccumulationSignals:
     pocket_pivot_count_30d: int = 0
     volume_dry_up: bool = False
     canslim_breakout: bool = False
+    volume_event: Optional[VolumeSpikeEvent] = None
 
     # --- Block + bulk deals (NSE EOD institutional trade records) ---
     block_deal_buy_count_30d: int = 0
@@ -147,6 +150,7 @@ def compute(history: pd.DataFrame, symbol: Optional[str] = None) -> Accumulation
     vols = df["Volume"]
 
     signals: list[StrategySignal] = []
+    volume_event = volume_spike_event(df)
 
     # ---------- 1. Volume trend (recent vs 30/90 day average) ----------
     vol_10 = float(vols.tail(10).mean())
@@ -385,6 +389,16 @@ def compute(history: pd.DataFrame, symbol: Optional[str] = None) -> Accumulation
             "Classic O'Neil breakout — price punching through resistance on heavy buying.",
         ))
 
+    # ---------- 9b. Contextual volume spike event ----------
+    if volume_event.kind != "neutral":
+        signals.append(StrategySignal(
+            "Volume Spike Event",
+            "bullish" if volume_event.direction == "bullish" else "bearish",
+            volume_event.score,
+            volume_event.label,
+            volume_event.detail,
+        ))
+
     # ---------- 10. VWAP posture (60d rolling) ----------
     price_vs_vwap = None
     vwap_60 = None
@@ -472,6 +486,11 @@ def compute(history: pd.DataFrame, symbol: Optional[str] = None) -> Accumulation
             bonus += min(0.10, price_vs_vwap / 100)
         else:
             bonus += max(-0.10, price_vs_vwap / 100)
+    if volume_event.kind != "neutral":
+        if volume_event.direction == "bullish":
+            bonus += 0.15 * volume_event.score
+        elif volume_event.direction == "bearish":
+            bonus -= 0.25 * volume_event.score
 
     parabolic_pen = 0.0
     if price_change_30d_pct is not None and price_change_30d_pct > 25:
@@ -788,6 +807,7 @@ def compute(history: pd.DataFrame, symbol: Optional[str] = None) -> Accumulation
         pocket_pivot_count_30d=pp_count,
         volume_dry_up=vdu,
         canslim_breakout=canslim,
+        volume_event=volume_event,
         # Block + bulk deals
         block_deal_buy_count_30d=block_deal_buy,
         block_deal_sell_count_30d=block_deal_sell,

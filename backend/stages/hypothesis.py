@@ -23,6 +23,7 @@ from __future__ import annotations
 
 from typing import Optional
 
+from ..indicators import volume_spike_event
 from ..pipeline import PipelineResult
 from ..position_sizer import size_position
 
@@ -96,6 +97,7 @@ def build_pick_payload(
     plan = size_position(account_value=account_value, entry=entry)
 
     headline = _build_headline(result)
+    vol_event = volume_spike_event(result.ohlcv).as_dict() if result.ohlcv is not None else None
 
     upside_pct = (plan.t2 / entry - 1) * 100 if entry > 0 else 0.0
     downside_pct = (plan.stop / entry - 1) * 100 if entry > 0 else 0.0
@@ -154,6 +156,7 @@ def build_pick_payload(
         "exit_schedule": exit_schedule,
         "distribution_flip_exit": distribution_flip_note,
         "gates_evidence": _gate_evidence(result),
+        "volume_event": vol_event,
 
         # ---- Legacy aliases (so existing frontend keeps rendering) ----
         "best_buy_at": round(entry, 2),

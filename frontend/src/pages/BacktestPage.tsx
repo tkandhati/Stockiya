@@ -1078,13 +1078,14 @@ function SelectedPicks({
 }) {
   const selected = resp.selected ?? []
   const s = resp.summary
+  const nPicks = s && 'n_picks' in s ? s.n_picks : selected.length
   return (
     <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
       <header className="flex flex-wrap items-baseline justify-between gap-3">
         <h2 className="text-sm font-semibold text-slate-800">
           Selected picks (top {resp.assumptions.top_n})
         </h2>
-        {s && s.n_picks > 0 && (
+        {s && nPicks > 0 && (
           <div className="text-xs text-slate-700">
             Hit-rate{' '}
             <strong>
