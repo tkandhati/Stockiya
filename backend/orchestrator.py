@@ -27,7 +27,14 @@ from zoneinfo import ZoneInfo
 from collections import defaultdict
 
 from .indicators import volume_spike_event
-from .pipeline import PipelineResult, append_final_trace, run_pipeline
+from .pipeline import (
+    COMPOSITE_TAU,
+    COMPOSITE_WEIGHTS,
+    PipelineResult,
+    append_final_trace,
+    hard_gates_passed,
+    run_pipeline,
+)
 from .stages import PER_TICKER_CHAIN
 from .stages import breakout as _br_stage
 from .stages.hypothesis import build_pick_payload
@@ -387,9 +394,27 @@ def run_universe(
             except Exception:
                 log.exception("pipeline crashed for %s", futures[fut])
 
-    survivors = [r for r in results if r.passed_gates]
-    log.info("  [Phase 1/4] Done. %d processed, %d cleared ALL gates.",
-             len(results), len(survivors))
+    # ---- Soft-gate composite selection (v3 spine) ----
+    # A survivor must: (a) clear all hard gates that ran, and (b) score
+    # composite S = Σ wᵢ·mᵢ  >=  τ. That's it. The old "all-AND-gates"
+    # requirement is replaced by a weighted linear detector — the LLR-optimal
+    # thing to do with multiple noisy measurements of one latent (Wyckoff
+    # accumulation). Setting τ=0 admits everything; the config controls it.
+    hard_survivors = [r for r in results if hard_gates_passed(r.stage_results)]
+    survivors = [r for r in hard_survivors if r.composite_score >= COMPOSITE_TAU]
+
+    log.info(
+        "  [Phase 1/4] Done. %d processed | %d cleared hard gates | "
+        "%d passed composite S>=%.2f",
+        len(results), len(hard_survivors), len(survivors), COMPOSITE_TAU,
+    )
+    if hard_survivors:
+        composites = sorted(
+            (r.composite_score for r in hard_survivors), reverse=True
+        )
+        top5 = ", ".join(f"{c:.3f}" for c in composites[:5])
+        log.info("  [Phase 1/4] Composite S — top 5: %s  (median %.3f, threshold %.2f)",
+                 top5, composites[len(composites) // 2], COMPOSITE_TAU)
     _log_gate_breakdown(results)
 
     # ---- Phase 2: rank + select ----

@@ -5,6 +5,10 @@
 >
 > Companion to PRINCIPLES.md (the *why*). This is the *how*.
 
+> **Spine: Wyckoff-VPA (2026-07).** The stage list, thresholds, and ranking
+> below have been updated to match the current design. See PRINCIPLES.md for
+> the spec.
+
 ---
 
 ## 1. Daily cadence — when does what run
@@ -15,11 +19,14 @@
 ├────────────────────────────────────────────────────────────────────────┤
 │  16:00      NSE close. Wait 30 min for late prints / corrections.      │
 │  16:30      backend/nightly.py kicks off the run.                      │
-│  16:30–35   [RG] Regime gate. NIFTY 100 50d-MA check.                  │
+│  16:30–35   [RG] Regime gate. NIFTY 100 50d-MA + ATR20% vol clock.     │
 │             FAIL → write empty picks file. End run.                    │
-│  16:35–17:10  Per-ticker pipeline, parallel by thread, over Nifty 100. │
+│  16:35–17:10  Per-ticker pipeline (U → I → HR → WY → VSA → AVWAP),     │
+│               parallel by thread, over Nifty 100.                      │
 │  17:10–12   [RK] Rank survivors, [PS] size, [H] hypothesis, [R] render.│
 │  17:12      data/picks_<date>.json written. /api/picks now serves it.  │
+│  17:15      [EX] Exit-watch scans every open pick in portfolio.csv;    │
+│             fires early-exit alerts into positions_view.               │
 │  21:00      [O] Outcome tracker. Checks every open pick at T+90/T+180. │
 │  Friday 17:30  weekly snapshot of all open picks' Friday close.        │
 ├────────────────────────────────────────────────────────────────────────┤
@@ -57,17 +64,18 @@ Each stage is one file in `backend/stages/` with signature `run(ctx) -> StageRes
 
 | Stage | File | Algorithm | Math summary |
 |---|---|---|---|
-| **[RG] Regime** | `stages/regime.py` | Index trend filter | `close(^CNX100) > sma(^CNX100, 50)` |
+| **[RG] Regime** | `stages/regime.py` | Index trend + vol clock | `close(^CNX100) > sma(^CNX100, 50)`; ATR20% sets per-day volatility multiplier for downstream thresholds |
 | **[U] Universe** | `stages/universe.py` | Membership check | `symbol ∈ NIFTY100` |
-| **[I] Ingest** | `stages/ingest.py` | Fetch OHLCV + slice to as-of date | Pulls 1y daily; if `ctx.today_iso` is a past date, slices bars to that date (no lookahead) and overrides snapshot.current with the as-of close |
-| **[LT] Long-term flow** | `stages/lt_flow.py` | 3+ months of institutional accumulation | `obv_slope_90d >= +3%` AND `up_down_vol(90) >= 1.1` AND `sma_slope(150, lookback=50) >= 0` |
-| **[CS] Consolidation** | `stages/consolidation.py` | ATR tightness + duration + trend filter | `atr_pct(14) ≤ 4 %` **AND** `days_within_band(close, ±10 %) ≥ 25` (no upper cap; longer bases score higher in ranker) **AND** `close > sma(150)` |
-| **[VD] Volume / Divergence** | `stages/volume.py` | Dry-up + bullish OBV–price divergence | `adv(5) / adv(50) < 0.50` **AND** divergence detector (split-window swing-low: price LL while OBV HL, or price flat ±2 % while OBV +≥2 %) |
-| **[BR] Breakout** | `stages/breakout.py` | Resistance break + volume confirm + candle close | `close > rolling_high(20, exclude_today=True)` **AND** `today_volume ≥ 1.5 × adv(50)` **AND** `(close − low) / (high − low) ≥ 0.67` |
-| **[RK] Rank** | `stages/rank.py` | Confirmation-strength score | `margin_z_score_past_gates + 0.5 × bonus_signal_count`, sorted desc, top 3 |
-| **[PS] Position Sizer** | `position_sizer.py` | Risk-of-account share count | `entry = close`, `stop = entry × 0.92`, `shares = floor(account × 0.01 / (entry − stop))`, `T1 = entry × 1.08`, `T2 = entry × 1.16` |
+| **[I] Ingest** | `stages/ingest.py` | Fetch 180 daily bars + as-of slice | Pulls 180d daily; if `ctx.today_iso` is a past date, slices bars to that date (no lookahead) and overrides snapshot.current with the as-of close |
+| **[HR] Hard rejects** | `stages/hard_rejects.py` | Safety gate | `ret_30d ≤ +25 %` **AND** `close ≤ 1.15 × sma(50)` **AND** no auditor-exit / SEBI flag / promoter-pledge > 50 % |
+| **[WY] Wyckoff phase** | `stages/wyckoff.py` *(new)* | Phase A→D classifier, scored | Detects Phase C (spring: narrow-range low-vol undercut of Phase-A low) or Phase D (SOS: wide-range up-close ≥ 1.5×ADV50, above 150d MA). Score = phase confidence × phase-preference weight (C=1.0, D=0.9). Replaces the retired [LT]+[CS]+[VD] AND-chain. |
+| **[VSA] Bar confirmation** | `stages/vsa.py` *(new)* | Trigger — any of three | **SOS bar**: `close ≥ rolling_high(20)` AND `vol ≥ vol_mult × ADV50` AND `(close-low)/(high-low) ≥ 0.67`; **pocket pivot**: today up-day AND `vol > max(down-day vol in prior 10)`; **no-supply test**: down-day inside Phase-C low AND `vol < 0.60 × ADV10` AND close in upper half. `vol_mult` is 1.5 in normal regime, 2.0 in high-vol. |
+| **[AVWAP] VWAP hold** | `stages/avwap.py` *(new)* | Anchored-VWAP structural score | Anchor = lowest close in last 90 sessions. Score = fraction of last 20 bars with `close ≥ AVWAP`, times `sign(slope(AVWAP, 20))`. |
+| **[RK] Rank** | `stages/rank.py` | Confirmation-strength score | `wy_score + avwap_score + vsa_margin + 0.5 × bonus_signal_count`, sorted desc, top N (default 3) |
+| **[PS] Position Sizer** | `position_sizer.py` | Risk-of-account share count, ATR-adaptive stop | `entry = close`, `stop = entry − max(0.08 × entry, 2 × ATR20)`, `R = entry − stop`, `shares = floor(account × 0.01 / R)`, `T1 = entry + R`, `T2 = entry + 2R` |
 | **[H] Hypothesis** | `stages/hypothesis.py` | Template-built rationale + adaptive exits | Entry/stop/T1/T2 + 3-scenario exit (target-hit, distribution-flip, time-stop) + day-45/90/180 milestones |
 | **[R] Render** | `stages/render.py` | JSON write | Atomic write to `data/picks_<date>.json` |
+| **[EX] Exit-watch** | `stages/exit_watch.py` *(new)* | Volume-based early-exit scan on open picks | Fires if any: OBV-20d neg divergence at new 20d high; churning bar (vol top-20% of 50d, spread bottom-20%, close near open); ≥ 3 distribution days in 15 sessions; two consecutive closes < AVWAP; climax-vol + reversal |
 | **[O] Outcome** | `stages/outcome.py` | T+90 / T+180 return logger | Reads open picks from `portfolio.csv`, fetches close at horizon, writes return to `outcomes.jsonl` |
 
 All raw indicator math lives in `backend/indicators.py` as pure functions (no I/O, lookahead-safe). Stages import it; nothing recomputes.
@@ -93,28 +101,32 @@ Trace `schema_version: 2` (new gates spine). Old `schema_version: 1` rows are st
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│ Rank #1   HDFCBANK.NS    confirmation 4.8 (4 of 5 bonuses fired) │
+│ Rank #1   HDFCBANK.NS   confirmation 3.4  (Phase-D SOS + pocket)│
 ├──────────────────────────────────────────────────────────────────┤
 │ Entry            ₹ 1,813.50                                      │
-│ Stop  (−8 %)     ₹ 1,668.42         Shares to buy:  68           │
-│ T1    (+8 %)     ₹ 1,958.58         → sell 50 %, stop → BE       │
-│ T2    (+16 %)    ₹ 2,103.66         → sell remaining 50 %        │
+│ Stop  (2×ATR)    ₹ 1,668.42   R = ₹145.08   Shares to buy:  68  │
+│ T1    (+1R)      ₹ 1,958.58   → sell 50 %, stop → BE            │
+│ T2    (+2R)      ₹ 2,103.66   → sell remaining 50 %             │
 │                                                                  │
-│ Why this passed all 4 gates:                                     │
-│   ✓ Regime ON   (NIFTY 100 +2.1 % vs 50d MA)                    │
-│   ✓ Consolidation   ATR/price 3.2 %, 31 days in band, > 150d MA │
-│   ✓ Volume/Divergence   5d vol = 38 % of 50d, OBV +6.8 % HL    │
-│   ✓ Breakout   close +1.9 % over 20d high, vol 1.7× avg, 78 % UT│
+│ Volume evidence:                                                 │
+│   ✓ Regime ON   (NIFTY 100 +2.1 % vs 50d MA, vol clock: normal) │
+│   ✓ [WY]  Phase D — SOS: wide-range up-close, vol 1.7× ADV50    │
+│   ✓ [VSA] Pocket-pivot fired: today up-day, vol > any prior-10  │
+│   ✓ [AVWAP] Close ₹1,813 > anchored VWAP ₹1,742 (holding 18/20) │
 │                                                                  │
 │ Bonus confirmations:                                             │
 │   ✓ MA stack 50 > 150 > 200                                      │
 │   ✓ OBV-90d slope +8.4 %                                         │
+│   ✓ CMF-60d +0.19                                                │
 │   ✓ NSE block-deal net-buying last 30d                           │
-│   ✓ Pocket-pivot today                                           │
+│   ✓ Sector-relative volume 1.8× auto-sector median               │
 │   · RS rank 41 (top-30 not cleared)                              │
 │                                                                  │
+│ Exit-watch (checked daily):                                      │
+│   OBV divergence • churning bar • ≥3 dist-days • AVWAP break     │
+│                                                                  │
 │ Time stops:                                                       │
-│   Day 45 → tighten stop to ₹ 1,740 if T1 not hit                │
+│   Day 45 → tighten stop to entry − 0.5R if T1 not hit           │
 │   Day 90 → exit at market if T1 not hit                          │
 │   Day 180 → unconditional exit on remaining shares               │
 └──────────────────────────────────────────────────────────────────┘
@@ -133,6 +145,7 @@ If zero tickers cleared all four gates on a regime-on day, the page shows *"Noth
 | Interval | Job | Module |
 |---|---|---|
 | Once daily, post-EOD (16:30 IST) | Full pipeline | `backend/nightly.py` |
+| Once daily, post-EOD (17:15 IST) | Exit-watch scan on every open pick | `backend/stages/exit_watch.py` |
 | On middleware boot | Backfill: walk every missing trading day since the last picks file (capped at 30) | `backend/catchup.py` |
 | Once daily, late evening | Outcome check on all open picks (T+90 / T+180) | `backend/stages/outcome.py` |
 | Once weekly (Friday close) | Snapshot all open picks' Friday close; update T1/T2/stop status | `backend/weekly.py` |
@@ -147,9 +160,13 @@ API serving and UI fetches are **stateless reads** of the JSON files produced ab
 
 | Want to change… | Edit |
 |---|---|
-| The four gate thresholds (4 %, 1.5×, 0.67, etc.) | Top-of-file `# tunable` constants in each `backend/stages/*.py` |
-| Account-risk percent or stop percent | `backend/position_sizer.py` |
-| T1 / T2 multiples or ladder ratio | `backend/stages/hypothesis.py` |
+| Wyckoff phase thresholds (vol multiples, range %, phase-preference weights) | `backend/stages/wyckoff.py` — top-of-file `# tunable` constants |
+| VSA trigger thresholds (SOS vol mult, pocket-pivot lookback, no-supply vol %) | `backend/stages/vsa.py` — top-of-file `# tunable` constants |
+| AVWAP anchor window, hold-fraction threshold | `backend/stages/avwap.py` — top-of-file `# tunable` constants |
+| Exit-watch rules (OBV window, dist-day count, churning bounds) | `backend/stages/exit_watch.py` |
+| Regime vol-clock multipliers (normal/high VIX bands) | `backend/stages/regime.py` |
+| Account-risk percent or ATR-stop multiple | `backend/position_sizer.py` |
+| T1 / T2 R-multiples | `backend/stages/hypothesis.py` |
 | Day-45 / 90 / 180 milestones | `backend/stages/hypothesis.py` |
 | Bonus-signal list for ranking | `backend/stages/rank.py:BONUS_CHECKS` |
 | Universe (add / remove tickers) | `backend/universe.py:UNIVERSE` |

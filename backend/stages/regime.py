@@ -21,7 +21,6 @@ from typing import Optional
 import pandas as pd
 
 from ..indicators import sma
-from ..yahoo import history_ohlcv
 
 
 # --------------------------------------------------------------------------- #
@@ -126,6 +125,8 @@ def check_regime(as_of: Optional[str] = None) -> RegimeStatus:
 
     checks: list[RegimeIndexCheck] = []
     all_pass = True
+
+    from ..yahoo import history_ohlcv
 
     for sym in REGIME_TICKERS:
         try:

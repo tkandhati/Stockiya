@@ -19,6 +19,7 @@ import pandas as pd
 
 from ..fetch import fetch_ohlcv, fetch_snapshot
 from ..pipeline import PipelineContext, StageResult
+from ..snapshot_calc import build_snapshot_from_ohlcv
 
 stage_id = "I"
 
@@ -40,60 +41,24 @@ def _slice_to_as_of(ohlcv: pd.DataFrame, as_of: _date) -> pd.DataFrame:
         return ohlcv[[ts.date() <= as_of for ts in ohlcv.index]]
 
 
-def _recompute_snapshot_from_ohlcv(snap: dict, ohlcv: "pd.DataFrame") -> dict:
-    """Replace today-leaking fields (ma50, ma200, 52w high/low, return_*) with
-    values computed from the as-of-sliced OHLCV. Display fields (company,
-    sector, industry) and the now-overridden `current` are preserved.
+def _recompute_snapshot_from_ohlcv(snap: dict, ohlcv: pd.DataFrame) -> dict:
+    """Replace today-leaking numeric fields with values from the as-of-sliced
+    OHLCV. Display fields (company, sector, industry, exchange) are preserved
+    from the input snap via `overrides`. Used only in backtest mode so the
+    downstream stages and UI see point-in-time values instead of live ones.
 
-    Used only in backtest mode so the downstream stages and any UI rendering
-    see point-in-time snapshot values instead of live ones.
+    Routes through the shared `build_snapshot_from_ohlcv` helper so live and
+    backtest snapshots emit identical shape and use identical math.
     """
-    snap = dict(snap)
-    closes = ohlcv["Close"].dropna()
-    vols = ohlcv["Volume"].dropna() if "Volume" in ohlcv.columns else None
-
-    def _f(x):
-        try:
-            f = float(x)
-        except (TypeError, ValueError):
-            return None
-        if f != f or f in (float("inf"), float("-inf")):
-            return None
-        return f
-
-    snap["ma50"] = _f(closes.tail(50).mean()) if len(closes) >= 50 else None
-    snap["ma200"] = _f(closes.tail(200).mean()) if len(closes) >= 200 else None
-
-    # 52-week window = last ~252 bars or whatever we have if less
-    last_252 = closes.tail(252) if len(closes) > 252 else closes
-    snap["fifty_two_w_high"] = _f(last_252.max()) if not last_252.empty else None
-    snap["fifty_two_w_low"] = _f(last_252.min()) if not last_252.empty else None
-
-    if len(closes) >= 65:
-        r3 = (closes.iloc[-1] / closes.iloc[-65] - 1) * 100
-        snap["return_3m_pct"] = round(r3, 2) if r3 == r3 else None
-    else:
-        snap["return_3m_pct"] = None
-
-    if len(last_252) >= 2:
-        r1 = (last_252.iloc[-1] / last_252.iloc[0] - 1) * 100
-        snap["return_1y_pct"] = round(r1, 2) if r1 == r1 else None
-    else:
-        snap["return_1y_pct"] = None
-
-    if vols is not None and not vols.empty:
-        snap["vol_today"] = _f(vols.iloc[-1])
-        snap["vol_avg30"] = _f(vols.tail(30).mean()) if len(vols) >= 30 else None
-
-    # day_change_pct = (today close vs prior close)
-    if len(closes) >= 2:
-        prev = _f(closes.iloc[-2])
-        cur = _f(closes.iloc[-1])
-        if prev and cur:
-            snap["day_change_pct"] = round((cur - prev) / prev * 100, 2)
-        else:
-            snap["day_change_pct"] = None
-    return snap
+    symbol = snap.get("symbol") or snap.get("company") or ""
+    overrides = {
+        "company": snap.get("company"),
+        "sector": snap.get("sector"),
+        "industry": snap.get("industry"),
+    }
+    if snap.get("exchange"):
+        overrides["exchange"] = snap["exchange"]
+    return build_snapshot_from_ohlcv(symbol, ohlcv, overrides=overrides)
 
 
 def run(ctx: PipelineContext) -> StageResult:

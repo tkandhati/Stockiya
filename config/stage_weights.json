@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "updated_at": "2026-07-04",
+  "updated_by": "seed",
+  "notes": "Seed weights derived from PRINCIPLES.md priors. Champion metric is null until the first tuner run completes on real outcomes. The tuner will only overwrite this file if the challenger's metric strictly beats the champion's; otherwise this file is unchanged.",
+
+  "hard_gate_stage_ids": ["U", "I", "HR"],
+
+  "scored_stage_weights": {
+    "ACS": 0.05,
+    "AC":  0.20,
+    "LT":  0.15,
+    "CS":  0.10,
+    "VD":  0.15,
+    "BR":  0.20,
+    "WY":  0.00,
+    "VSA": 0.00,
+    "AVWAP": 0.00
+  },
+
+  "composite_threshold_tau": 0.35,
+
+  "champion_metric": {
+    "name": "mean_return_90d_top3",
+    "value": null,
+    "n_picks_evaluated": 0,
+    "hit_rate_t1": null,
+    "sharpe_proxy": null,
+    "evaluated_at": null
+  },
+
+  "history": []
+}

@@ -163,6 +163,93 @@ def last_bar_upper_third_ratio(df: pd.DataFrame) -> Optional[float]:
 
 
 # --------------------------------------------------------------------------- #
+# Accumulation primitives — tight-range, volume dryness, ADI, slope
+#
+# Used by [ACS] tier-1 cheap screen and [AC] tier-2 full accumulation stage.
+# All functions are pure and deterministic — no I/O, no randomness. Same
+# input always yields the same output. Tuner imports these directly.
+# --------------------------------------------------------------------------- #
+
+def range_pct_window(df: pd.DataFrame, n: int) -> Optional[float]:
+    """(max High - min Low) over the last n bars, as a fraction of mean Close.
+
+    The tight-range measure for accumulation: a coiling stock stays inside a
+    narrow band. Returns None on insufficient bars or non-positive mean price.
+    """
+    if df is None or len(df) < n:
+        return None
+    window = df.iloc[-n:]
+    hi = float(window["High"].max())
+    lo = float(window["Low"].min())
+    mean_close = float(window["Close"].mean())
+    if mean_close <= 0:
+        return None
+    return (hi - lo) / mean_close
+
+
+def vol_dryness_ratio(volume: pd.Series, n: int) -> Optional[float]:
+    """mean(volume last n bars) / mean(volume prior n bars).
+
+    < 1.0 means volume is drying up in the recent window (the "quiet buying"
+    footprint — institutions absorbing without lifting the price). Returns
+    None on insufficient bars or zero prior-window mean.
+    """
+    if volume is None or len(volume) < 2 * n:
+        return None
+    recent = float(volume.iloc[-n:].mean())
+    prior = float(volume.iloc[-2 * n : -n].mean())
+    if prior <= 0:
+        return None
+    return recent / prior
+
+
+def adi(df: pd.DataFrame) -> Optional[pd.Series]:
+    """Accumulation/Distribution Line — cumulative money-flow volume series.
+
+    ADI_t = ADI_{t-1} + [((Close-Low) - (High-Close)) / (High-Low)] * Volume
+
+    A rising ADI while price is flat/falling is the "positive divergence"
+    signature of quiet accumulation. Returns None if OHLCV columns are missing.
+    Zero-range bars contribute 0 (undefined money-flow multiplier).
+    """
+    if df is None or df.empty:
+        return None
+    required = {"High", "Low", "Close", "Volume"}
+    if not required.issubset(set(df.columns)):
+        return None
+    high, low, close, vol = df["High"], df["Low"], df["Close"], df["Volume"]
+    rng = (high - low).replace(0, np.nan)
+    mfm = ((close - low) - (high - close)) / rng
+    mfm = mfm.fillna(0.0)
+    return (mfm * vol).cumsum()
+
+
+def norm_slope(y: pd.Series, n: Optional[int] = None) -> Optional[float]:
+    """Linear-regression slope of y over the last n points (or all of y if
+    n is None), normalized by mean(|y|). Returns slope-per-bar as a fraction
+    of the typical level — comparable across tickers and across series of
+    different absolute magnitudes (e.g. Close vs ADI). Returns None on <3
+    valid points or when mean(|y|) is zero.
+    """
+    if y is None:
+        return None
+    series = y.dropna()
+    if n is not None:
+        if len(series) < n:
+            return None
+        series = series.iloc[-n:]
+    if len(series) < 3:
+        return None
+    arr = series.to_numpy(dtype=float)
+    x = np.arange(len(arr), dtype=float)
+    slope = float(np.polyfit(x, arr, 1)[0])
+    denom = float(np.mean(np.abs(arr)))
+    if denom == 0:
+        return None
+    return slope / denom
+
+
+# --------------------------------------------------------------------------- #
 # OBV + slope + bullish divergence
 # --------------------------------------------------------------------------- #
 

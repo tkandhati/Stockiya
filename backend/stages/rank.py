@@ -32,7 +32,7 @@ from typing import Optional
 import pandas as pd
 
 from ..indicators import ma_stack_aligned, obv, obv_slope_pct, volume_spike_event
-from ..pipeline import PipelineResult
+from ..pipeline import COMPOSITE_WEIGHTS, PipelineResult
 
 
 # --------------------------------------------------------------------------- #
@@ -125,12 +125,18 @@ def rank_survivors(
     # ---- Per-survivor confirmation ----
     for idx, r in enumerate(survivors):
         stages = r.stage_results
-        # Gate margin sum from LT/CS/VD/BR
+        # Weighted sum of ALL soft-gate margins (composite S) — matches
+        # pipeline.compute_composite so ranker and gate use the same detector.
+        # Read weights from the live config so the tuner's monthly ratchet
+        # takes effect on the next run without touching this file.
         margin = 0.0
-        for gid in ("LT", "CS", "VD", "BR"):
+        for gid, w in COMPOSITE_WEIGHTS.items():
+            if w == 0.0:
+                continue
             sr = stages.get(gid)
-            if sr is not None:
-                margin += float(sr.score or 0.0)
+            if sr is None or not sr.passed:
+                continue
+            margin += w * float(sr.score or 0.0)
 
         bonuses_fired: list[str] = []
         df = r.ohlcv

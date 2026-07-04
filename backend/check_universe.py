@@ -23,7 +23,6 @@ from datetime import date
 from typing import Optional
 
 from .universe import UNIVERSE
-from .yahoo import history_ohlcv
 
 
 # Sleep between sequential fetches to stay below Yahoo's per-host rate limit.
@@ -43,6 +42,8 @@ def _last_bar_date(df) -> Optional[date]:
 
 def check_universe(min_bars: int = 200, stale_days: int = 7) -> dict:
     """Walk the universe and bucket each ticker by data health."""
+    from .yahoo import history_ohlcv
+
     today = date.today()
     out: dict[str, list] = {"ok": [], "low_bars": [], "stale": [], "empty": []}
     total = len(UNIVERSE)

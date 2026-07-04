@@ -20,6 +20,7 @@ import pandas as pd
 import yfinance as yf
 
 from .demo_data import DEMO_SNAPSHOTS, demo_history_6m
+from .snapshot_calc import build_snapshot_from_ohlcv
 
 log = logging.getLogger("yahoo")
 
@@ -121,59 +122,16 @@ def snapshot(symbol: str) -> dict:
 
     hist = _history_with_retry(symbol, period="1y")
 
-    current = _to_float(info.get("currentPrice")) or _to_float(info.get("regularMarketPrice"))
-    prev_close = _to_float(info.get("previousClose"))
-    if current is None and not hist.empty:
-        current = _to_float(hist["Close"].iloc[-1])
-    if prev_close is None and len(hist) >= 2:
-        prev_close = _to_float(hist["Close"].iloc[-2])
-
-    day_change_pct = None
-    if current is not None and prev_close not in (None, 0):
-        day_change_pct = round((current - prev_close) / prev_close * 100, 2)
-
-    ma50 = ma200 = None
-    return_3m = return_1y = None
-    fifty_two_high = fifty_two_low = None
-    vol_today = vol_avg30 = None
-
-    if not hist.empty:
-        closes = hist["Close"].dropna()
-        if len(closes) >= 50:
-            ma50 = _to_float(closes.tail(50).mean())
-        if len(closes) >= 200:
-            ma200 = _to_float(closes.tail(200).mean())
-        if len(closes) >= 65:
-            return_3m = _to_float((closes.iloc[-1] / closes.iloc[-65] - 1) * 100)
-            return_3m = round(return_3m, 2) if return_3m is not None else None
-        if len(closes) >= 2:
-            return_1y = _to_float((closes.iloc[-1] / closes.iloc[0] - 1) * 100)
-            return_1y = round(return_1y, 2) if return_1y is not None else None
-        fifty_two_high = _to_float(closes.max())
-        fifty_two_low = _to_float(closes.min())
-
-        vols = hist["Volume"].dropna()
-        if len(vols) >= 1:
-            vol_today = _to_float(vols.iloc[-1])
-        if len(vols) >= 30:
-            vol_avg30 = _to_float(vols.tail(30).mean())
-
-    return {
-        "symbol": symbol,
-        "company": info.get("longName") or info.get("shortName") or symbol,
+    overrides = {
+        "company": info.get("longName") or info.get("shortName"),
         "sector": info.get("sector"),
         "industry": info.get("industry"),
-        "current": current,
-        "day_change_pct": day_change_pct,
-        "fifty_two_w_high": _to_float(info.get("fiftyTwoWeekHigh")) or fifty_two_high,
-        "fifty_two_w_low": _to_float(info.get("fiftyTwoWeekLow")) or fifty_two_low,
-        "ma50": ma50,
-        "ma200": ma200,
-        "return_3m_pct": return_3m,
-        "return_1y_pct": return_1y,
-        "vol_today": vol_today,
-        "vol_avg30": vol_avg30,
+        "current": _to_float(info.get("currentPrice")) or _to_float(info.get("regularMarketPrice")),
+        "previous_close": _to_float(info.get("previousClose")),
+        "fifty_two_w_high": _to_float(info.get("fiftyTwoWeekHigh")),
+        "fifty_two_w_low": _to_float(info.get("fiftyTwoWeekLow")),
     }
+    return build_snapshot_from_ohlcv(symbol, hist, overrides=overrides)
 
 
 def history_ohlcv(

@@ -12,7 +12,7 @@ late-day pullback — the institutional fingerprint.
 
 Fix points:
     RESISTANCE_LOOKBACK     : bars for prior resistance (default 20)
-    VOLUME_BREAKOUT_MULT    : today / adv(50) min ratio (default 1.5)
+    VOLUME_BREAKOUT_MULT    : today / adv(50) min ratio (default 1.3)
     UPPER_THIRD_RATIO_MIN   : (close-low)/(high-low) min (default 0.67)
     ADV_WINDOW              : window for adv (default 50)
 """
@@ -46,6 +46,12 @@ def run(ctx: PipelineContext) -> StageResult:
 
     overrides: dict = getattr(ctx, "overrides", {}) or {}
     vol_mult_min = float(overrides.get("br_volume_mult", VOLUME_BREAKOUT_MULT))
+    resistance_break_pct_min = float(overrides.get(
+        "br_resistance_break_pct_min", 0.0
+    ))
+    upper_third_min = float(overrides.get(
+        "br_upper_third_ratio_min", UPPER_THIRD_RATIO_MIN
+    ))
 
     last = df.iloc[-1]
     close = float(last["Close"])
@@ -84,14 +90,15 @@ def run(ctx: PipelineContext) -> StageResult:
     # ---- Check 1: resistance break ----
     if resistance is None:
         failures.append("resistance unavailable")
-    elif close <= resistance:
+    elif resistance <= 0 or not ((close / resistance - 1) >= resistance_break_pct_min):
         failures.append(
-            f"close {close:.2f} <= 20d high {resistance:.2f} (no breakout)"
+            f"close {close:.2f} not >= 20d high {resistance:.2f} "
+            f"by required {resistance_break_pct_min*100:+.2f}% (no breakout)"
         )
     else:
         evidence.append(
             f"close {close:.2f} > 20d high {resistance:.2f} "
-            f"({(close/resistance-1)*100:+.2f}%)"
+            f"({(close/resistance-1)*100:+.2f}%; threshold {resistance_break_pct_min*100:+.2f}%)"
         )
 
     # ---- Check 2: volume confirm ----
@@ -110,15 +117,15 @@ def run(ctx: PipelineContext) -> StageResult:
     # ---- Check 3: upper-third close ----
     if upper_third is None:
         failures.append("candle range unavailable (high == low)")
-    elif upper_third < UPPER_THIRD_RATIO_MIN:
+    elif upper_third < upper_third_min:
         failures.append(
             f"close at {upper_third*100:.0f}% of candle "
-            f"(< {UPPER_THIRD_RATIO_MIN*100:.0f}% upper-third threshold)"
+            f"(< {upper_third_min*100:.0f}% upper-third threshold)"
         )
     else:
         evidence.append(
             f"close at {upper_third*100:.0f}% of candle "
-            f"(>= {UPPER_THIRD_RATIO_MIN*100:.0f}%)"
+            f"(>= {upper_third_min*100:.0f}%)"
         )
 
     # ---- Decision + margin ----

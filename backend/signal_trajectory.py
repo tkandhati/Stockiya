@@ -35,7 +35,6 @@ from .indicators import (
     up_down_vol_ratio,
     volume_spike_event,
 )
-from .yahoo import history_ohlcv
 
 SignalState = Literal["strong", "stable", "weakening", "flipped", "unknown"]
 
@@ -121,6 +120,8 @@ def _load_entry_features(symbol: str, entry_date_iso: str) -> dict:
 
 def _current_features(symbol: str) -> dict:
     """Recompute the LT-gate indicators from today's OHLCV."""
+    from .yahoo import history_ohlcv
+
     df = history_ohlcv(symbol)
     if df is None or df.empty or len(df) < 200:
         return {}

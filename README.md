@@ -1,8 +1,8 @@
 # Stockiya
 
-> **Don't invent. Follow the institutions. Pick one.**
+> **Don't invent. Follow the institutions. Enter early, exit early — on volume alone.**
 
-Local web app that surfaces up to **3 Indian (Nifty 100) stock picks per day** for a 3–6 month hold. Pure volume strategy — picks are stocks where **institutions are visibly accumulating over months**. Deterministic, no LLM, RL-ready.
+Local web app that surfaces up to **3 Indian (Nifty 100) stock picks per day** for a 3–6 month swing hold. Pure volume strategy: picks are stocks where **institutions are visibly building a Wyckoff accumulation base and today's tape confirms it**. Deterministic, no LLM, RL-ready.
 
 > Educational use only. **Not financial advice.**
 
@@ -10,72 +10,87 @@ Local web app that surfaces up to **3 Indian (Nifty 100) stock picks per day** f
 
 ## What it does
 
-1. **Screens Nifty 100** every day for multi-month institutional-accumulation footprints — the spot *before* price moves.
-2. **Picks 0–3 setups** that clear the volume gate. Quality over quantity — if nothing qualifies, you see *"nothing actionable today"*.
-3. **Every pick ships with** Weinstein stage, entry timing, target window, all 4 exit scenarios, and an auditable point-by-point reasoning checklist.
-4. **Every decision is traced** to `data/traces/run_<date>_<ticker>.jsonl` — the RL training dataset for tomorrow.
+1. **Screens Nifty 100** every day for Wyckoff Phase-C or Phase-D accumulation footprints — institutional buying *before* price runs.
+2. **Waits for a Volume-Spread-Analysis trigger bar** — Sign-of-Strength, pocket pivot, or no-supply test. Any one fires the entry.
+3. **Requires anchored-VWAP hold** — price above the institutional cost-basis line from the base low.
+4. **Picks 0–3 setups** that clear all three checks. Quality over quantity — if nothing qualifies, you see *"nothing actionable today"*, plus a "closer-to-passing" watchlist and near-misses so you can see what the chain is doing.
+5. **Every pick ships with** entry, ATR-adaptive stop, 1R / 2R target ladder, day-45 / 90 / 180 milestones, and an auditable point-by-point volume checklist.
+6. **Daily exit-watch** on every held pick: OBV divergence, churning, ≥3 distribution days, anchored-VWAP break, or climax reversal → early exit alert. We drop as early as we entered.
+7. **Every decision is traced** to `data/traces/run_<date>_<ticker>.jsonl` — the RL training dataset for tomorrow.
 
-Read [PRINCIPLES.md](./PRINCIPLES.md) for the investing rule-set.  
-Read [ARCHITECTURE.md](./ARCHITECTURE.md) for a full walkthrough: data loading, signal math, every strategy, final selection, and the RL instrumentation.
+Read [PRINCIPLES.md](./PRINCIPLES.md) for the investing rule-set.
+Read [ARCHITECTURE.md](./ARCHITECTURE.md) §0-§0.3 for the current-spine walkthrough.
 
 ---
 
-## Architecture — pipeline of swappable stages
+## Architecture — pipeline of swappable stages (Wyckoff-VPA spine)
 
 ```
                        ┌─ rejected ─► trace log ─► RL replay buffer
                        │
-[U] Universe ─► [I] Ingest ─► [HR] Hard Rejects ─► [LT] LongTerm Volume (50%) ─►
-[TT] Trend Template (15%) ─► [MT] MidTerm Volume (20%) ─► [DD] Direct Deals (10%) ─►
-[BR] Breakouts (5%) ─► [S] Score & Rank ─► [H] Hypothesis+Exit ─► [R] Render ─► UI
+[U] Universe ─► [I] Ingest ─► [HR] Hard Rejects ─►
+[WY] Wyckoff Phase (scored) ─► [VSA] Bar Confirmation (trigger) ─►
+[AVWAP] Anchored-VWAP Hold (scored) ─►
+[RK] Confirmation Rank ─► [PS] Position Size ─► [H] Hypothesis+Exit ─► [R] Render ─► UI
                                                                                   │
-                                                                                  └─► [O] Outcome
-                                                                                        T+90/T+180
-                                                                                        feeds RL
+                                                                                  ├─► [EX] Exit-watch (daily, on held picks)
+                                                                                  │
+                                                                                  └─► [O] Outcome (T+90/T+180 → RL reward)
 ```
 
 Every stage = one file in `backend/stages/` with the same `run(ctx) -> StageResult` signature. **Replace any file to swap that stage's logic; nothing else changes.**
 
-Weights live in `backend/pipeline.py:STAGE_WEIGHTS`. Defensible against PRINCIPLES.md line-by-line:
+Two hard gates ([HR], [VSA]) and two scored stages ([WY], [AVWAP]) feed the ranker:
 
-| Stage | Weight | Why |
+| Stage | Type | Role |
 |---|---|---|
-| LT Long-Term Volume | **50%** | PRINCIPLES §0 — the primary signal |
-| MT Mid-Term Volume  | **20%** | "Confirmation, not the decision" |
-| TT Trend Template   | **15%** | Minervini structure check |
-| DD Direct Deals     | **10%** | NSE block + bulk deals — named institutional trades |
-| BR Breakouts        | **5%**  | Pocket pivot / VDU / CAN SLIM timing |
-| | **100%** | |
+| [HR] Hard Rejects | gate | Parabolic / extended / SEBI / promoter-pledge — never override |
+| [WY] Wyckoff Phase | scored 0-1 | Confidence that the ticker is in Phase C (spring) or Phase D (SOS) |
+| [VSA] Bar Confirmation | trigger | Today: SOS bar OR pocket-pivot OR no-supply test |
+| [AVWAP] VWAP Hold | scored 0-1 | Fraction of last 20 bars closing above the anchored VWAP from the base low |
+| [RK] Rank | — | `wy_score + avwap_score + vsa_margin + 0.5 × bonus_count`, sort desc |
+| [EX] Exit-watch | daily | OBV divergence / churning / dist-days / AVWAP break / climax reversal |
+
+No weighted composites. No "must clear all five." The scored stages are continuous so a strong setup with one soft leg still qualifies.
 
 ---
 
-## The volume indicators
+## The volume vocabulary
 
-All math lives in `backend/volume_signals.py` (kept as one engine) and is exposed via `backend/signals/`. Stages read the same `AccumulationSignals` object — no recomputation, no duplication.
+All math is pure and lives in `backend/indicators.py` (primitive functions) with legacy engine helpers still in `backend/volume_signals.py`. Stages import — nothing recomputes.
 
-### Long-term lens
-- Stan Weinstein Stage (1 base / 1→2 / 2 advance / 3 top / 4 decline)
-- 30-week MA + slope
-- OBV-90d / OBV-180d slopes (Granville)
-- Chaikin Money Flow (60d)
-- Up/Down volume ratio (90d)
-- Minervini Trend Template (50 > 150 > 200, rising)
-- Base length (days within ±10% band)
-- QoQ volume growth
+### Five primitives the whole spine is built on
+- **OBV slope** (Granville) — normalized regression slope of On-Balance Volume
+- **ADI slope** (Chaikin Accumulation/Distribution Line) — money-flow-weighted volume
+- **Anchored VWAP** — `Σ(price × vol) / Σ(vol)` from an anchor date; institutional cost-basis line
+- **ADV(N) / volume ratio** — today's volume vs 50-day average, ATR-normalized
+- **ATR20 %** — 20-bar average true range as % of close; the volatility clock that normalizes every threshold
 
-### Mid-term confirmation
-- Wyckoff phase (accumulation / markup / distribution / markdown)
-- OBV-30d, CMF-21d, MFI-14
-- Up/Down (30d), 60d VWAP posture
-- Vol-trend (10d vs 30d avg)
+### Wyckoff-phase inputs ([WY])
+- Range % of last N bars (coil detector)
+- Volume-dryness ratio (recent vol vs prior vol)
+- ADI positive divergence (rising ADI while price flat = quiet buying)
+- Position vs 150d MA (Phase C-vs-D discriminator)
 
-### Breakout triggers
-- Pocket Pivot (Morales/Kacher)
-- Volume Dry-Up (Minervini)
-- CAN SLIM breakout (O'Neil)
+### VSA trigger inputs ([VSA])
+- Sign-of-Strength bar: close > 20d high, vol ≥ 1.5×–2× ADV50 (regime-adaptive), upper-third close
+- Pocket pivot (Kacher/Morales): today up-day, today vol > max down-day vol in prior 10
+- No-supply test: down-day inside base low on vol < 60 % of prior 10-day avg
 
-### Direct institutional flow
-- NSE block + bulk deal aggregates (30d net buy ratio)
+### Ranking bonuses ([RK])
+- 50d > 150d > 200d MA stack
+- OBV-90d slope ≥ +5 %
+- Chaikin Money Flow (60d) ≥ +0.15
+- NSE block + bulk deal 30d net-buy ratio
+- Sector-relative volume today vs sector median
+- Top-30 relative-strength rank vs Nifty 100
+
+### Exit-watch inputs ([EX])
+- OBV-20d negative divergence at fresh price high
+- Churning bar (top-20 % vol × bottom-20 % spread × close near open)
+- Distribution-day count over 15 sessions
+- Anchored-VWAP breakdown (two consecutive closes below)
+- Climax volume + reversal candle
 
 ---
 
@@ -86,18 +101,20 @@ backend/
 ├── pipeline.py             ← StageResult contract + run_pipeline()
 ├── orchestrator.py         ← run_universe() — entry point
 ├── stages/                 ← one file per stage (the swap points)
-│   ├── universe.py    [U]      gate
-│   ├── ingest.py      [I]      gate (fetch OHLCV + compute signals)
-│   ├── hard_rejects.py [HR]    gate (Wyckoff distribution, parabolic, etc.)
-│   ├── lt_volume.py   [LT]     50% — long-term institutional
-│   ├── trend_template.py [TT]  15% — Minervini structure
-│   ├── mt_volume.py   [MT]     20% — this-month confirmation
-│   ├── direct_deals.py [DD]    10% — NSE block + bulk deals
-│   ├── breakouts.py   [BR]     5%  — pocket pivot / VDU / CAN SLIM
-│   ├── score.py       [S]      rank + select top 3
-│   ├── hypothesis.py  [H]      template-built rationale + 4-exit plan
+│   ├── universe.py    [U]      gate — Nifty 100 membership
+│   ├── ingest.py      [I]      gate — 180 bars + as-of slice
+│   ├── hard_rejects.py [HR]    gate — parabolic / extended / SEBI / pledge
+│   ├── wyckoff.py     [WY]     scored — Phase C / Phase D confidence  *(new, in-progress)*
+│   ├── vsa.py         [VSA]    trigger — SOS / pocket-pivot / no-supply *(new, in-progress)*
+│   ├── avwap.py       [AVWAP]  scored — anchored-VWAP hold             *(new, in-progress)*
+│   ├── rank.py        [RK]     confirmation-strength ranker + bonuses
+│   ├── hypothesis.py  [H]      entry / ATR-stop / 1R / 2R / exits
 │   ├── render.py      [R]      writes data/picks_<date>.json
+│   ├── exit_watch.py  [EX]     daily volume-based early-exit scan       *(new, in-progress)*
 │   └── outcome.py     [O]      T+90 / T+180 realized return — RL reward
+│
+│   Legacy stages (retired but still on disk during the rewire):
+│   ├── lt_flow.py, consolidation.py, volume.py, breakout.py
 ├── signals/                ← facade over volume_signals.py
 ├── volume_signals.py       ← all indicator math (1100 lines, one engine)
 ├── block_deals.py          ← NSE block/bulk CSV downloader + 30d aggregator
@@ -157,11 +174,15 @@ See [WEEKLY_TRACKING.md](./WEEKLY_TRACKING.md) — what to monitor weekly, bi-we
 | Status | Item |
 |---|---|
 | ✅ done | Pipeline of swappable stages |
-| ✅ done | Per-ticker JSONL traces (RL dataset, no schema change needed) |
+| ✅ done | Per-ticker JSONL traces (RL dataset) |
 | ✅ done | NSE block + bulk deals downloader |
 | ✅ done | Outcome tracker (T+90 / T+180 writes to `outcomes.jsonl`) |
-| ⏳ next | `scripts/weekly_report.py` — auto-generate the Friday report |
-| ⏳ next | Contextual-bandit weight tuner (once ~3 months of outcomes accumulated) |
+| ✅ done | Wyckoff-VPA spec documented (PRINCIPLES.md, ARCHITECTURE.md §0-§0.3) |
+| ⏳ next | Wire `stages/wyckoff.py`, `vsa.py`, `avwap.py` into `PER_TICKER_CHAIN` (see AGENT_HANDOFF.md for step-by-step) |
+| ⏳ next | `stages/exit_watch.py` daily scan on held picks |
+| ⏳ next | ATR20-normalized thresholds + regime vol-clock in `stages/regime.py` |
+| ⏳ next | Backtest new spine vs archived gates spine over trailing 12 months |
+| ⏳ next | Contextual-bandit tuner (once ~3 months of outcomes accumulated) |
 | ⏳ next | NSE bhavcopy adapter (replaces yfinance for India-native data) |
 | ⏳ later | Offline RL (CQL/IQL) for per-stage threshold tuning |
 

@@ -3,9 +3,110 @@
 > For someone new to the codebase. Covers loading, processing, every strategy,
 > final selection, and the RL instrumentation hooks.
 
+> **⚠ Current spine (2026-07): Wyckoff-VPA.** Sections §0-§5 below describe the
+> active design. Sections §6 onward still reference the retired weighted-composite
+> and five-serial-gates spines — kept for archival context only. When they
+> disagree with §0-§5, §0-§5 wins. See PRINCIPLES.md for the source-of-truth spec.
+
 ---
 
-## 0. One-sentence summary
+## 0. One-sentence summary — current spine
+
+Stockiya fetches 180 daily bars of OHLCV for every Nifty 100 stock, detects a
+Wyckoff-Phase-C-or-D accumulation base using pure volume math, waits for a
+Volume-Spread-Analysis trigger bar (Sign-of-Strength, pocket pivot, or no-supply
+test), verifies price is holding its anchored VWAP from the base low, and
+surfaces the top 0-3 setups each day — each with an entry, ATR-adaptive stop,
+1R / 2R target ladder, and volume-based early-exit watch.
+
+**Nothing uses an LLM. Every decision traces to a number, a threshold, and a
+file you can open. Same OHLCV in → byte-identical trace out.**
+
+---
+
+## 0.1. Big picture — Wyckoff-VPA spine
+
+```
+                    ┌── UNIVERSE (Nifty 100) ──┐
+                    │                           │
+                    ▼ (parallel per ticker)     │
+        ┌──────────── PER-TICKER PIPELINE ────────┐
+        │                                          │
+   [U]   Universe            gate                  │
+   [I]   Ingest (180 bars)   gate                  │
+   [HR]  Hard rejects        gate                  │
+   [WY]  Wyckoff phase       SCORED (0-1)          │
+   [VSA] Bar confirmation    TRIGGER (binary)      │
+   [AVWAP] VWAP hold         SCORED (0-1)          │
+        │                                          │
+        │ every stage → JSONL trace                │
+        └──────────────────────────────────────────┘
+                    │
+                    ▼ (survivors gathered)
+        [RK] Confirmation ranker
+             score = wy + avwap + vsa_margin + 0.5 × bonuses
+             pick top-N (default 3)
+                    │
+                    ▼
+        [PS] Position sizer  → 1 % account risk, ATR-adaptive stop
+        [H]  Hypothesis       → entry / stop / T1 / T2 / time-stops
+        [R]  Render           → data/picks_<date>.json
+                    │
+                    ▼
+              FastAPI → React UI
+
+        ── ON HELD POSITIONS (daily) ──
+        [EX] Exit-watch       ← OBV divergence, churning, dist-days,
+                                AVWAP break, climax reversal
+                    ▼
+              early-exit alert on /api/positions
+
+        ── AT T+90 / T+180 ──
+        [O]  Outcome tracker  → outcomes.jsonl (RL reward signal)
+```
+
+**Contrast with the retired spine:** [LT], [CS], [VD] were three hard AND-gates
+that killed a ticker if any single sub-check failed. Under Wyckoff-VPA, those
+structural checks fold into **[WY]** as a *scored* margin — a weak leg is
+tolerated when the trigger and other legs compensate. Only [HR] and [VSA]
+remain binary.
+
+**Key design choices (unchanged):**
+- Every stage is one file in `backend/stages/` with the same signature
+  `run(ctx) → StageResult`. Swap a file to swap the logic.
+- Every stage result is written to a JSONL file on disk. That file becomes the
+  RL training dataset.
+- Thresholds are top-of-file `# tunable` constants, ready for a contextual
+  bandit once ≥ 90 days of outcomes accumulate.
+
+---
+
+## 0.2. Volume-only vocabulary reference
+
+The spine is built on five volume/price-structure primitives. Every stage,
+bonus signal, and exit rule uses one of them — nothing else.
+
+| Primitive | Formula | Where used |
+|---|---|---|
+| **OBV slope** | Linear-regression slope of Granville OBV over N bars, % of level | [WY] score, exit divergence, rank bonus |
+| **ADI slope** | Slope of Chaikin Accumulation/Distribution Line | [WY] score |
+| **Anchored VWAP** | `Σ(price×vol) / Σ(vol)` from anchor date, price-weighted running | [AVWAP], exit break |
+| **ADV(N) / vol ratio** | `sma(volume, N)`; today's vol / ADV50 = vol ratio | [VSA] trigger, exit churning |
+| **ATR20 %** | 20-bar avg true range as % of close — the volatility clock | Threshold normalizer everywhere |
+
+---
+
+## 0.3. Retired sections — archival reference only
+
+Everything below this line was written for the earlier weighted-composite spine
+(LT=50%, TT=15%, MT=20%, DD=10%, BR=5%) and the intermediate 5-serial-gates
+spine. It's kept for historical context and because parts of the file map
+(§11) and the API surface (§8) are still current. **When in doubt, defer to
+PRINCIPLES.md and §0.1 above.**
+
+---
+
+## 0.4. One-sentence summary (retired spine)
 
 Stockiya fetches a year of daily OHLCV data for every Nifty 100 stock, runs it
 through a deterministic scoring pipeline that measures institutional-volume

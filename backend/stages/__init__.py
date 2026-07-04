@@ -29,6 +29,8 @@ from . import (  # noqa: F401
     universe,
     ingest,
     hard_rejects,
+    accum_screen,
+    accumulation,
     lt_flow,
     consolidation,
     volume,
@@ -40,10 +42,20 @@ from . import (  # noqa: F401
     outcome,
 )
 
+# Per-ticker chain — soft-gate composite spine (v3).
+#
+# Order matters: hard gates first (U, I, HR) so they short-circuit on failure.
+# Then the two accumulation screens (ACS = cheap 45-bar range/vol check,
+# AC = 180-bar range/vol + ADI positive divergence). After that the four
+# legacy trend gates (LT / CS / VD / BR). All non-hard stages are SOFT: their
+# failure contributes zero margin to the composite but does not stop the
+# chain — the composite S = Σ wᵢ · mᵢ is the real selection surface.
 PER_TICKER_CHAIN = [
     universe.run,
     ingest.run,
     hard_rejects.run,
+    accum_screen.run,
+    accumulation.run,
     lt_flow.run,
     consolidation.run,
     volume.run,

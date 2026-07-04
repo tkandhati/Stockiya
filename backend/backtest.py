@@ -736,7 +736,9 @@ _CANONICAL_OVERRIDES = {
     "lt_obv_90d_slope_min": 3.0,
     "cs_atr_pct_max": 4.0,
     "vd_dryup_ratio": 0.50,
-    "br_volume_mult": 1.5,
+    "br_volume_mult": 1.3,
+    "br_resistance_break_pct_min": 0.0,
+    "br_upper_third_ratio_min": 0.67,
 }
 
 
@@ -945,15 +947,20 @@ def scan_symbol(
             "vd_passed": day_gates.get("VD"),
         })
 
+        if killed_at:
+            timeline_features = dict(per_stage_features.get(killed_at) or {})
+        else:
+            # Day passed all gates — keep the VD summary for the pass-list tooltip
+            timeline_features = {
+                "vol_ratio_5_50": vd_feat.get("vol_ratio_5_50"),
+                "divergence_form": (vd_feat.get("divergence") or {}).get("form"),
+            }
+
         timeline.append({
             "date": as_of_iso,
             "gates": day_gates,
             "killed_at": killed_at,
-            "features": {
-                # Small bag of features useful in the pass-list tooltip
-                "vol_ratio_5_50": vd_feat.get("vol_ratio_5_50"),
-                "divergence_form": (vd_feat.get("divergence") or {}).get("form"),
-            },
+            "features": timeline_features,
         })
 
         if passed_all:

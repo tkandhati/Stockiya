@@ -49,12 +49,12 @@ log = logging.getLogger("pipeline")
 # v1 rows from the old weighted-composite spine remain readable.
 # --------------------------------------------------------------------------- #
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3   # v3 = soft-gate composite spine (LLR detector)
 
 # --------------------------------------------------------------------------- #
-# Stage weights — DEPRECATED. Retained so the old per-ticker chain still runs
-# during the rebuild. The new spine (regime → CS → VD → BR → rank) uses hard
-# gates and a confirmation-strength ranker, not weighted composites.
+# Stage weights — legacy weighted-composite mapping. Kept for backwards
+# compatibility with old trace rows that reference these five keys. The live
+# picker no longer reads this dict; see COMPOSITE_WEIGHTS below.
 # --------------------------------------------------------------------------- #
 
 STAGE_WEIGHTS: dict[str, float] = {
@@ -65,6 +65,88 @@ STAGE_WEIGHTS: dict[str, float] = {
     "BR": 0.05,   # Breakout triggers — timing
 }
 assert abs(sum(STAGE_WEIGHTS.values()) - 1.0) < 1e-9, "weights must sum to 1.0"
+
+
+# --------------------------------------------------------------------------- #
+# Composite / soft-gate config — the LIVE control surface.
+#
+# Loaded from config/stage_weights.json at import time. If the file is missing
+# or malformed, we fall back to conservative defaults that still admit picks.
+# The tuner (scripts/tune_weights.py) is the only writer of that JSON, and it
+# uses a champion-challenger ratchet — the file is only overwritten if a new
+# candidate strictly beats the current champion on backtest metric.
+# --------------------------------------------------------------------------- #
+
+_CONFIG_PATH = _PROJECT_ROOT / "config" / "stage_weights.json"
+
+# Hard gates short-circuit the chain on failure (safety + data availability).
+# Everything else is a soft gate: if it fails, its margin contributes 0 to the
+# composite, but the chain continues and downstream stages still run.
+_DEFAULT_HARD_GATES: frozenset[str] = frozenset({"U", "I", "HR"})
+
+# Seed defaults — mirror config/stage_weights.json so behaviour is identical
+# when the JSON is unreadable. Adjust the JSON, not this dict, for live tuning.
+_DEFAULT_COMPOSITE_WEIGHTS: dict[str, float] = {
+    "ACS": 0.05, "AC":  0.20,
+    "LT":  0.15, "CS":  0.10, "VD":  0.15, "BR":  0.20,
+    "WY":  0.00, "VSA": 0.00, "AVWAP": 0.00,
+}
+_DEFAULT_TAU: float = 0.35
+
+
+def _load_weight_config() -> tuple[frozenset[str], dict[str, float], float]:
+    """Read config/stage_weights.json. Fall back to seed defaults on any error.
+
+    Returning a frozenset + immutable copy makes it safe to share across
+    threads; the orchestrator runs stages in parallel.
+    """
+    try:
+        raw = json.loads(_CONFIG_PATH.read_text(encoding="utf-8"))
+        hard = frozenset(raw.get("hard_gate_stage_ids", []) or _DEFAULT_HARD_GATES)
+        weights = {k: float(v) for k, v in (raw.get("scored_stage_weights") or {}).items()}
+        if not weights:
+            weights = dict(_DEFAULT_COMPOSITE_WEIGHTS)
+        tau = float(raw.get("composite_threshold_tau", _DEFAULT_TAU))
+        return hard, weights, tau
+    except (FileNotFoundError, json.JSONDecodeError, ValueError, OSError) as e:
+        log.warning("stage_weights.json unreadable (%s); using seed defaults", e)
+        return _DEFAULT_HARD_GATES, dict(_DEFAULT_COMPOSITE_WEIGHTS), _DEFAULT_TAU
+
+
+HARD_GATE_IDS, COMPOSITE_WEIGHTS, COMPOSITE_TAU = _load_weight_config()
+
+
+def compute_composite(stage_results: dict[str, "StageResult"]) -> float:
+    """S = Σᵢ wᵢ · mᵢ  over scored stages.
+
+    A stage that didn't run, or ran-and-failed, contributes 0. A stage with
+    no configured weight is ignored (weight = 0). Mathematically this is the
+    LLR detector under Gaussian noise assumptions on the margins.
+    """
+    s = 0.0
+    for sid, w in COMPOSITE_WEIGHTS.items():
+        if w == 0.0:
+            continue
+        sr = stage_results.get(sid)
+        if sr is None or not sr.passed:
+            continue
+        s += w * float(sr.score or 0.0)
+    return s
+
+
+def hard_gates_passed(stage_results: dict[str, "StageResult"]) -> bool:
+    """A ticker is a valid candidate iff every hard gate that ran, passed.
+
+    We do NOT require every hard gate to have run — that would kill tickers
+    whose upstream stage short-circuited before the later hard gate could
+    execute. Instead: for each hard-gate stage that produced a result, it
+    must have passed.
+    """
+    for sid in HARD_GATE_IDS:
+        sr = stage_results.get(sid)
+        if sr is not None and not sr.passed:
+            return False
+    return True
 
 
 # --------------------------------------------------------------------------- #
@@ -163,11 +245,16 @@ def run_pipeline(
     """Run the configured stages on one symbol. Stages are callables with the
     signature `(ctx: PipelineContext) -> StageResult`.
 
-    Gate stages whose result.passed is False short-circuit the rest of the
-    chain; their failure is still traced.
+    Semantics (v3 soft-gate spine):
+      - Stages whose `stage_id` is in HARD_GATE_IDS short-circuit the chain on
+        failure. Data-availability and safety only ([U], [I], [HR]).
+      - All other stages ("soft gates") always run; their failure sets that
+        stage's contribution to the composite S to 0 but the chain continues.
+      - `passed_gates` in the returned result means "every stage that ran,
+        passed". `hard_gates_passed(...)` is the real selection precondition.
 
     `overrides` (backtest only) maps tunable-threshold keys to user-supplied
-    values; live callers pass None and gates use their canonical defaults.
+    values; live callers pass None and stages use their canonical defaults.
     """
     today_iso = today_iso or datetime.now(IST).date().isoformat()
     ctx = PipelineContext(
@@ -200,7 +287,11 @@ def run_pipeline(
         _append_trace(ctx, {"stage": result.stage_id, **_stage_result_dict(result)})
         if not result.passed:
             passed_gates = False
-            break
+            if result.stage_id in HARD_GATE_IDS:
+                break   # hard gate failed -> stop; downstream can't be trusted
+
+    # Compute composite once, at end of chain, so soft-gate margins compose.
+    ctx.composite_score = compute_composite(ctx.stage_results)
 
     return PipelineResult(
         symbol=symbol,
@@ -228,10 +319,13 @@ def append_final_trace(result: PipelineResult, today_iso: str) -> None:
     ctx = PipelineContext(symbol=result.symbol, trace_id=result.trace_id, today_iso=today_iso)
     _append_trace(ctx, {
         "stage": "FINAL",
+        "spine": "v3-soft-gate-composite",
         "selected": result.selected,
         "rank": result.rank,
         "composite": result.composite_score,
+        "composite_threshold_tau": COMPOSITE_TAU,
         "confirmation": result.confirmation_score,
         "confirmation_components": result.confirmation_components,
-        "weights": STAGE_WEIGHTS,
+        "composite_weights": dict(COMPOSITE_WEIGHTS),
+        "legacy_weights": STAGE_WEIGHTS,
     })
