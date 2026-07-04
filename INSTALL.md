@@ -32,15 +32,29 @@ cd frontend ; npm run dev
 
 Browser: <http://localhost:5173>
 
-## Configure (optional)
+## Configure — first-run data path (REQUIRED)
 
-`backend\.env` — defaults are fine. Knobs:
+**This is the #1 gotcha.** With no `backend\.env`, or with the wrong
+`DATA_SOURCE`, every ticker fails at `[I] Ingest` and you get zero picks
+with a wall of `FileNotFoundError` in the log. Pick exactly ONE of:
+
+| Situation | Set in `backend\.env` |
+|---|---|
+| First-run smoke test (synthetic prices, UI verification only) | `DEMO_MODE=1` |
+| Home / non-firewalled network | `DATA_SOURCE=yahoo` |
+| Corporate firewall, have local bhavcopy CSVs | `DATA_SOURCE=bhavcopy`<br>`STOCKYA_OHLCV_DIR=<abs path to <SYMBOL>.NS.csv files>` |
+
+Full knob list:
 
 | Var | Default | What it does |
 |---|---|---|
-| `DEMO_MODE` | `0` | `1` = synthetic data (UI dev only, no real prices) |
-| `DATA_SOURCE` | `yahoo` | `bhavcopy` is stubbed |
-| `MIN_COMPOSITE` | `60` | Score floor (0–100). Lower → more picks, lower conviction |
+| `DEMO_MODE` | `0` | `1` = synthetic data. Takes precedence over `DATA_SOURCE`. **UI only, do not trade.** |
+| `DATA_SOURCE` | `bhavcopy` | `yahoo` = live yfinance; `bhavcopy` = local CSV cache in `STOCKYA_OHLCV_DIR` |
+| `STOCKYA_OHLCV_DIR` | *(sibling tuner cache)* | Absolute path to per-symbol OHLCV CSVs. Point at your OWN cache; the tuner sibling is not guaranteed to exist. |
+| `STOCKYA_ACCOUNT_VALUE` | `100000` | Capital used by `[PS] Position Sizer` for share-count math |
+
+Composite threshold `τ` and per-stage weights `wᵢ` live in
+`config\stage_weights.json`, not `.env`. `scripts/tune_weights.py` updates them.
 
 No LLM key needed. The pipeline is deterministic, volume-only.
 
@@ -48,11 +62,13 @@ No LLM key needed. The pipeline is deterministic, volume-only.
 
 | Error | Fix |
 |---|---|
+| Every ticker logs `FileNotFoundError: Bhavcopy CSV missing for … in Stockya-tuner\data\ohlcv` | Missing/misconfigured `backend\.env`. Set `DEMO_MODE=1` (fastest) or a valid `STOCKYA_OHLCV_DIR`. See "Configure" above. |
+| Orchestrator log: `DATA SOURCE MISCONFIGURED — N of N tickers failed [I] Ingest` | Same fix — `.env` needs one of the three configs above. |
 | `Building wheel for X (pyproject.toml)` then fails | You're on Python 3.13+. Install Python 3.12, delete `backend\.venv`, re-run `setup.bat`. |
 | `port 8000 already in use` | `stop.bat` first (or kill the leftover `python.exe` listening on 8000) |
 | `SSL: CERTIFICATE_VERIFY_FAILED` | Corporate proxy — `pip install pip-system-certs` then retry |
 | Frontend shows 500 on `/api/picks` | Backend hasn't finished first fetch — wait ~30s; or check `backend` terminal for stack trace |
-| `0 picks` shown | Correct — no stock cleared the gate today. Don't force; check tomorrow |
+| `0 picks` shown, log looks healthy | Legit outcome — nothing cleared composite threshold today. Check tomorrow. |
 
 ## Where things live
 

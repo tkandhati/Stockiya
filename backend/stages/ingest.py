@@ -72,11 +72,34 @@ def run(ctx: PipelineContext) -> StageResult:
     as_of_iso = as_of.isoformat() if as_of else None
     is_backtest = as_of is not None
 
-    snap = fetch_snapshot(ctx.symbol)
-
-    # Backtest mode: fetch a window ending at as_of so we don't rely on
-    # "live window then slice". Live mode: fetch the default ~2y ending today.
-    ohlcv = fetch_ohlcv(ctx.symbol, end=as_of_iso) if is_backtest else fetch_ohlcv(ctx.symbol)
+    # Fetch snapshot + OHLCV. Data-source misconfigurations (missing bhavcopy
+    # cache, unreachable Yahoo) should surface as a clean [I] gate failure with
+    # an actionable reason, not an uncaught crash — otherwise the composite
+    # score can't tell the difference between "no data" and "no signal".
+    try:
+        snap = fetch_snapshot(ctx.symbol)
+        ohlcv = (
+            fetch_ohlcv(ctx.symbol, end=as_of_iso) if is_backtest
+            else fetch_ohlcv(ctx.symbol)
+        )
+    except FileNotFoundError as e:
+        return StageResult(
+            stage_id=stage_id, passed=False,
+            features={"has_ohlcv": False, "as_of": as_of_iso},
+            fix_point="backend/.env  (DEMO_MODE=1  or  DATA_SOURCE=yahoo)",
+            reason=(
+                f"data source missing OHLCV: {e}. "
+                "Set DEMO_MODE=1 in backend/.env for synthetic data, "
+                "or DATA_SOURCE=yahoo for live fetch."
+            ),
+        )
+    except Exception as e:
+        return StageResult(
+            stage_id=stage_id, passed=False,
+            features={"has_ohlcv": False, "as_of": as_of_iso},
+            fix_point="backend/fetch.py",
+            reason=f"fetch failed: {type(e).__name__}: {e}",
+        )
     if ohlcv is None or ohlcv.empty:
         return StageResult(
             stage_id=stage_id, passed=False,

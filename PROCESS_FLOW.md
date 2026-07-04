@@ -5,9 +5,14 @@
 >
 > Companion to PRINCIPLES.md (the *why*). This is the *how*.
 
-> **Spine: Wyckoff-VPA (2026-07).** The stage list, thresholds, and ranking
-> below have been updated to match the current design. See PRINCIPLES.md for
-> the spec.
+> **Live spine (2026-07-04 evening): v3 soft-gate composite.** The table in §3
+> lists both the Wyckoff-VPA target stages `[WY] [VSA] [AVWAP] [EX]` and the
+> currently-running intermediate stages `[ACS] [AC] [LT] [CS] [VD] [BR]`.
+> The intermediate stages are wired in `stages/__init__.py:PER_TICKER_CHAIN`
+> **today**; the Wyckoff-VPA stages are the next target (see AGENT_HANDOFF.md).
+> Selection is `hard_gates_passed(r) AND composite_score ≥ COMPOSITE_TAU`,
+> where `COMPOSITE_TAU` and per-stage weights load from
+> `config/stage_weights.json`.
 
 ---
 

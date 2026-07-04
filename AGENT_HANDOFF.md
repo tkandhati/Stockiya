@@ -1,14 +1,14 @@
 # Agent Handoff
 
-Last updated: 2026-07-04
+Last updated: 2026-07-04 (evening)
 
 ## Current Architecture Truth
 
 Stockiya is a deterministic, volume-only Nifty 100 screener for a **3-6 month
 swing hold**. The **design spec** is the Wyckoff-VPA spine described in
-PRINCIPLES.md and ARCHITECTURE.md §0-§0.3. The **code as of this commit** is
-still running the earlier 5-serial-gates chain — the pivot has been documented
-but not yet wired.
+PRINCIPLES.md and ARCHITECTURE.md §0-§0.3. The **code as of this commit** runs
+an **intermediate v3 soft-gate composite spine** — Wyckoff-VPA target still
+ahead, but the "5-AND-gates blocks every pick" issue is solved.
 
 ### Design (source of truth: PRINCIPLES.md)
 
@@ -25,11 +25,17 @@ but not yet wired.
 - One new daily stage `[EX]` scans open picks for volume-based early exit.
 - All thresholds are ATR20-normalized so the same rule works in calm and volatile regimes.
 
-### Live code (still on the old spine)
+### Live code (v3 soft-gate composite, as of 2026-07-04 evening)
 
 ```
-Regime -> Universe -> Ingest -> Hard Rejects -> Long-Term Flow -> Consolidation -> Volume/Divergence -> Breakout -> Rank -> Hypothesis/Position Sizing -> Render
+Regime -> Universe -> Ingest -> Hard Rejects -> [ACS] Accum-Screen -> [AC] Accumulation ->
+    Long-Term Flow -> Consolidation -> Volume/Divergence -> Breakout -> Rank -> Hypothesis/Position Sizing -> Render
 ```
+
+Selection is now `hard_gates_passed AND composite_score >= COMPOSITE_TAU`
+(config-driven from `config/stage_weights.json`). Only `[U] [I] [HR]` short-
+circuit on failure; every other stage always runs and contributes 0 margin
+if it fails. Ranking uses the same weighted composite plus bonus signals.
 
 Primary source files:
 - `backend/orchestrator.py`
@@ -41,10 +47,11 @@ Primary source files:
 
 ---
 
-## Latest Change (2026-07-04)
+## Latest Change (2026-07-04 evening — code + docs)
 
-**Documentation-only pivot to the Wyckoff-VPA spine.** No stage code was
-touched in this pass. The rewrite is limited to:
+**Soft-gate composite spine + tuner ratchet + robustness fixes shipped
+in code.** See `CHANGELOG.md` 2026-07-04 evening entry for the full list.
+Documentation rewrite from the morning covered:
 
 - `PRINCIPLES.md` — full rewrite (new spine, exit-watch, ATR-adaptive stops)
 - `ARCHITECTURE.md` — new §0-§0.3 prepended; §0.4 onward marked archival
@@ -101,37 +108,43 @@ Phase C / Phase D.
 
 ## Recommended Next Work (in order)
 
-1. **Extract shared primitives** from `stages/accum_screen.py` and
-   `stages/accumulation.py` into `backend/indicators.py`:
-   `range_pct_window`, `vol_dryness_ratio`, `adi`, `norm_slope` are already
-   there; verify no divergence between the two callers.
-2. **Write `backend/stages/wyckoff.py`** implementing the Phase A→D classifier
-   from PRINCIPLES §2.1. Return a `StageResult` with `score` = phase
-   confidence × phase-preference weight.
-3. **Write `backend/stages/vsa.py`** as the new trigger with three
-   sub-rules (SOS / pocket-pivot / no-supply). `pocket_pivot` primitive
-   already lives in `rank.py:_check_pocket_pivot_today` — lift it to
-   `indicators.py`.
-4. **Write `backend/stages/avwap.py`** — one new indicator
+**Already landed 2026-07-04 evening — do NOT redo:**
+- ✅ Soft-gate composite pipeline (`pipeline.py`)
+- ✅ ACS + AC wired into `PER_TICKER_CHAIN`
+- ✅ Composite filter in orchestrator
+- ✅ `rank.py` uses live weights from config
+- ✅ `config/stage_weights.json` + `scripts/tune_weights.py` (champion-challenger)
+- ✅ Crash-handler / ingest / DEMO_MODE robustness fixes
+- ✅ `SCHEMA_VERSION` bumped to 3
+
+**Still open (roughly in priority order):**
+
+1. **Write `backend/stages/wyckoff.py`** — Phase A→D classifier from
+   PRINCIPLES §2.1. Return `StageResult` with `score` = phase confidence ×
+   phase-preference weight. Wiring: add to `PER_TICKER_CHAIN` and to
+   `config/stage_weights.json` (currently `"WY": 0.00`).
+2. **Write `backend/stages/vsa.py`** — trigger with three sub-rules
+   (SOS / pocket-pivot / no-supply). Lift `_check_pocket_pivot_today` from
+   `rank.py` into `indicators.py` first.
+3. **Write `backend/stages/avwap.py`** — one new indicator
    `anchored_vwap(df, anchor_idx)` + a scored stage.
-5. **Wire `PER_TICKER_CHAIN`** in `stages/__init__.py`:
-   `[universe, ingest, hard_rejects, wyckoff, vsa, avwap]`. Remove
-   `lt_flow`, `consolidation`, `volume`, `breakout` from the chain (leave
-   files in place for one release cycle).
-6. **Update `rank.py`** so the confirmation formula reads
-   `wy_score + avwap_score + vsa_margin + 0.5 × bonus_count`.
-7. **Write `backend/stages/exit_watch.py`** and add a call site in
+4. **Write `backend/stages/exit_watch.py`** and add a call site in
    `backend/nightly.py` (17:15 IST slot, after the picks-render step).
-8. **Bump `SCHEMA_VERSION` to 3** in `pipeline.py` and add a
-   `spine: "wyckoff-vpa"` field to the FINAL trace row so the RL buffer can
-   distinguish v2 (gates) vs v3 (Wyckoff-VPA) decisions.
-9. **Frontend:** repoint `EarlySignalPanel.tsx` to consume the new
-   `[EX]` output instead of / in addition to `volume_spike_event`.
-10. **Backtest:** run the tuner over the last 12 months with the new spine
-    and compare pick-count / hit-rate against the archived gates-spine run.
+5. **Frontend:** repoint `EarlySignalPanel.tsx` to consume `[EX]` output
+   in addition to `volume_spike_event`.
+6. **Backtest:** run the tuner over 12 months to build a real champion
+   metric in `config/stage_weights.json` (currently `champion_metric.value:
+   null` — first tuner run will bootstrap).
+7. **Local OHLCV cache** — on corporate, `DEMO_MODE=1` works but doesn't
+   give real prices. Need a `STOCKYA_OHLCV_DIR` with browser-downloaded
+   bhavcopy or a personal-laptop-built cache.
 
-## Validation Already Run (this commit)
+## Validation Already Run (2026-07-04 evening)
 
-- Only doc edits. No code compiled, no build re-run.
-- Doc consistency: cross-checked stage IDs between PRINCIPLES.md,
-  ARCHITECTURE.md §0.1, PROCESS_FLOW.md §3, and this file.
+- `python -m compileall backend middleware scripts` — clean.
+- Import smoke on `pipeline`, `stages`, `orchestrator`, `rank`,
+  `tune_weights` — all resolve.
+- `DEMO_MODE=1 fetch_ohlcv('HDFCBANK.NS')` → 252 rows synthetic, no network.
+- `scripts.tune_weights` dry-run → "refuse: 0 outcomes < 20" (correct).
+- **End-to-end pipeline run not performed** — corporate firewall constraint
+  in `memory/feedback_no_live_runs.md`.

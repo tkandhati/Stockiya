@@ -3,10 +3,15 @@
 > For someone new to the codebase. Covers loading, processing, every strategy,
 > final selection, and the RL instrumentation hooks.
 
-> **⚠ Current spine (2026-07): Wyckoff-VPA.** Sections §0-§5 below describe the
-> active design. Sections §6 onward still reference the retired weighted-composite
-> and five-serial-gates spines — kept for archival context only. When they
-> disagree with §0-§5, §0-§5 wins. See PRINCIPLES.md for the source-of-truth spec.
+> **⚠ Live code (2026-07-04 evening): v3 soft-gate composite spine.**
+> §0-§0.3 below describe the **Wyckoff-VPA target** — that's the design goal.
+> The **code as of this commit** runs an intermediate step: the legacy
+> `[LT] [CS] [VD] [BR]` stages plus new `[ACS] [AC]` are all wired into
+> `PER_TICKER_CHAIN`, but as *soft* gates — failures contribute 0 to the
+> weighted composite `S = Σ wᵢ · mᵢ`; only `[U] [I] [HR]` short-circuit.
+> Weights are loaded from `config/stage_weights.json` and can be ratcheted
+> forward monthly by `scripts/tune_weights.py` (champion-challenger).
+> Sections §0.4 onward are archival legacy — do not cite as live behavior.
 
 ---
 

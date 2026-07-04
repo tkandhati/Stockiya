@@ -23,22 +23,35 @@ Read [ARCHITECTURE.md](./ARCHITECTURE.md) §0-§0.3 for the current-spine walkth
 
 ---
 
-## Architecture — pipeline of swappable stages (Wyckoff-VPA spine)
+## Architecture — pipeline of swappable stages
+
+**Live spine (2026-07-04): v3 soft-gate composite.**
 
 ```
                        ┌─ rejected ─► trace log ─► RL replay buffer
                        │
-[U] Universe ─► [I] Ingest ─► [HR] Hard Rejects ─►
-[WY] Wyckoff Phase (scored) ─► [VSA] Bar Confirmation (trigger) ─►
-[AVWAP] Anchored-VWAP Hold (scored) ─►
-[RK] Confirmation Rank ─► [PS] Position Size ─► [H] Hypothesis+Exit ─► [R] Render ─► UI
-                                                                                  │
-                                                                                  ├─► [EX] Exit-watch (daily, on held picks)
-                                                                                  │
-                                                                                  └─► [O] Outcome (T+90/T+180 → RL reward)
+[U] Universe ─► [I] Ingest ─► [HR] Hard Rejects ─►     ← hard gates: short-circuit
+[ACS] Accum-Screen ─► [AC] Accumulation ─►
+[LT] Long-Term ─► [CS] Consolidation ─► [VD] Volume/Div ─► [BR] Breakout ─►
+                                                          ↓
+                            S = Σ wᵢ · mᵢ                composite score
+                            ↓
+                            filter: S ≥ COMPOSITE_TAU
+                            ↓
+[RK] Rank ─► [PS] Position Size ─► [H] Hypothesis+Exit ─► [R] Render ─► UI
+                                                                     │
+                                                                     └─► [O] Outcome
+                                                                           T+90 / T+180
+                                                                           feeds tuner
 ```
 
 Every stage = one file in `backend/stages/` with the same `run(ctx) -> StageResult` signature. **Replace any file to swap that stage's logic; nothing else changes.**
+
+Weights (`wᵢ`) and threshold (`COMPOSITE_TAU`) live in `config/stage_weights.json`. `scripts/tune_weights.py` updates them monthly via a **champion-challenger ratchet** — the file is only overwritten if a candidate strictly beats the current champion's replay metric. Accuracy cannot regress.
+
+**Target spine (next milestone, docs describe this as the design goal):**
+`[U] → [I] → [HR] → [WY] Wyckoff Phase → [VSA] Bar Confirmation → [AVWAP] Anchored-VWAP → [RK]`
+plus a daily `[EX] Exit-watch` on held picks. See AGENT_HANDOFF.md for the wire-up plan.
 
 Two hard gates ([HR], [VSA]) and two scored stages ([WY], [AVWAP]) feed the ranker:
 

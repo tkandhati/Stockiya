@@ -23,6 +23,17 @@ from .snapshot_calc import build_snapshot_from_ohlcv
 # default `bhavcopy` path doesn't carry a hard dep on yfinance.
 
 
+def _demo_enabled() -> bool:
+    """DEMO_MODE takes precedence over DATA_SOURCE.
+
+    Rationale: on a firewalled corporate machine, DATA_SOURCE=yahoo would try
+    to hit the internet and DATA_SOURCE=bhavcopy would read a cache the user
+    hasn't populated. Setting DEMO_MODE=1 as a single env should be enough to
+    get the app producing (synthetic) picks without editing anything else.
+    """
+    return os.environ.get("DEMO_MODE", "0") == "1"
+
+
 def fetch_ohlcv(
     symbol: str,
     end: Optional[str] = None,
@@ -34,10 +45,15 @@ def fetch_ohlcv(
     Backtest mode (`end="YYYY-MM-DD"`): bars ending at that historical date,
     going back `lookback_days` calendar days.
 
-    Source is selected by env var `DATA_SOURCE`:
-        - `bhavcopy` (default) — NSE bhavcopy via the tuner's pivoted cache
-        - `yahoo`              — yfinance via the demo-mode-aware wrapper
+    Selection order:
+        1. DEMO_MODE=1               -> synthetic OHLCV (backend/demo_data.py)
+        2. DATA_SOURCE=yahoo         -> yfinance wrapper
+        3. DATA_SOURCE=bhavcopy      -> local NSE bhavcopy CSV cache
+        4. (default)  bhavcopy
     """
+    if _demo_enabled():
+        from .yahoo import history_ohlcv as _demo_history
+        return _demo_history(symbol, end=end, lookback_days=lookback_days)
     src = os.environ.get("DATA_SOURCE", "bhavcopy").lower()
     if src == "yahoo":
         from .yahoo import history_ohlcv as _yahoo_history
@@ -49,6 +65,9 @@ def fetch_ohlcv(
 
 def fetch_snapshot(symbol: str) -> dict:
     """Return today's fundamentals + headline price for one ticker."""
+    if _demo_enabled():
+        from .yahoo import snapshot as _demo_snapshot
+        return _demo_snapshot(symbol)
     src = os.environ.get("DATA_SOURCE", "bhavcopy").lower()
     if src == "yahoo":
         from .yahoo import snapshot as _yahoo_snapshot

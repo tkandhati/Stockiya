@@ -1,6 +1,54 @@
 # Changelog
 
-## 2026-07-04
+## 2026-07-04 (evening) — v3 soft-gate composite spine actually shipped
+
+Follow-up to the morning documentation pivot. The full Wyckoff-VPA rewrite
+(new `wyckoff.py` / `vsa.py` / `avwap.py` stage files) is still ahead; today
+we shipped the **intermediate step** that unblocks picks immediately:
+
+- **Soft-gate composite** — `backend/pipeline.py` now short-circuits only on
+  `HARD_GATE_IDS = {U, I, HR}`. Every other stage always runs; failure just
+  contributes 0 to the composite `S = Σ wᵢ · mᵢ`. Ends the "one missed
+  sub-threshold kills the ticker" behavior that was rejecting ~all picks.
+- **ACS + AC wired in** — `backend/stages/accum_screen.py` (tier-1 45-bar
+  range+vol) and `backend/stages/accumulation.py` (tier-2 180-bar +
+  ADI positive divergence) are now live in `PER_TICKER_CHAIN`. Previously
+  dead code.
+- **Live weight config** — `config/stage_weights.json` is the single control
+  surface for `wᵢ` and the composite threshold `τ`. `pipeline.py` loads it
+  at import; falls back to seed defaults if unreadable.
+- **Champion-challenger tuner** — `scripts/tune_weights.py` reads
+  `data/traces/outcomes.jsonl`, fits ridge + mean-return candidates, and
+  **only overwrites the config if the candidate strictly beats the current
+  champion's replay metric**. Monotone by construction: accuracy cannot
+  regress.
+- **`rank.py`** now computes confirmation from the same weighted composite,
+  not just LT/CS/VD/BR.
+- **Robustness fixes uncovered during first-run**:
+  - `pipeline.py` crash handler now extracts `stage_id` from the module,
+    so hard-gate crashes actually stop the chain.
+  - `stages/ingest.py` catches `FileNotFoundError` from the bhavcopy
+    resolver and returns a clean `[I]` failure with the .env fix in
+    `reason` / `fix_point`.
+  - `orchestrator.py` prints a loud diagnostic when ≥90% of the universe
+    fails `[I]` (points at `.env` misconfig, not strategy).
+  - `fetch.py` — `DEMO_MODE=1` now short-circuits the source dispatch, so
+    one env var alone gets synthetic OHLCV. Previously required both
+    `DEMO_MODE=1` AND `DATA_SOURCE=yahoo`.
+- **`backend/.env.example`** — rewritten with `DEMO_MODE=1` first-run
+  default (matches the corporate-firewall constraint in memory) and a
+  `STOCKYA_OHLCV_DIR` pointer for user-populated caches.
+
+Trace schema bumped to `SCHEMA_VERSION = 3`. Old v1 / v2 rows remain readable.
+
+Validation:
+- `python -m compileall backend middleware scripts` — clean.
+- Import smoke: `pipeline.py`, `stages/__init__.py`, `orchestrator.py`,
+  `stages/rank.py`, `scripts/tune_weights.py` — all resolve.
+- `DEMO_MODE=1` fetch test — 252 bars synthetic OHLCV, no network.
+- End-to-end run **not** performed (no live data on this machine).
+
+## 2026-07-04 (morning)
 
 **Strategy pivot to Wyckoff-VPA spine (documentation-only, code follows).**
 

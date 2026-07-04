@@ -269,15 +269,22 @@ def run_pipeline(
     if p.exists():
         p.unlink()
 
+    import sys
     passed_gates = True
     for stage_fn in stages:
         t0 = time.time()
+        # Look up the module-level stage_id BEFORE running, so that even if
+        # the stage crashes we can attribute the failure to the correct stage.
+        # (`stage_id` is a module attribute, not a function attribute, so
+        # `getattr(stage_fn, 'stage_id', ...)` used to always return "?".)
+        _mod = sys.modules.get(getattr(stage_fn, "__module__", ""))
+        _fallback_sid = getattr(_mod, "stage_id", "?") if _mod else "?"
         try:
             result = stage_fn(ctx)
         except Exception as e:
-            log.exception("stage %s crashed for %s", getattr(stage_fn, "__name__", stage_fn), symbol)
+            log.exception("stage %s crashed for %s", _fallback_sid, symbol)
             result = StageResult(
-                stage_id=getattr(stage_fn, "stage_id", "?"),
+                stage_id=_fallback_sid,
                 passed=False,
                 reason=f"crash: {e}",
                 fix_point=f"{getattr(stage_fn, '__module__', '?')}",

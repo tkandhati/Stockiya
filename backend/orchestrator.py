@@ -394,6 +394,29 @@ def run_universe(
             except Exception:
                 log.exception("pipeline crashed for %s", futures[fut])
 
+    # ---- Data-availability diagnostic ----
+    # If >=90% of tickers failed at [I] Ingest, the composite score is
+    # meaningless and the user is looking at a data-source misconfiguration,
+    # not a market-regime problem. Surface that loudly.
+    ingest_failed = sum(
+        1 for r in results
+        if (r.stage_results.get("I") is not None
+            and not r.stage_results["I"].passed)
+    )
+    if results and ingest_failed / len(results) >= 0.90:
+        log.error("=" * 76)
+        log.error("  DATA SOURCE MISCONFIGURED  --  %d of %d tickers failed [I] Ingest.",
+                  ingest_failed, len(results))
+        log.error("  Root cause: DATA_SOURCE points at a cache that does not exist.")
+        log.error("")
+        log.error("  Quick fix (edit backend/.env):")
+        log.error("    DEMO_MODE=1                # first-run: synthetic OHLCV, no network")
+        log.error("    DATA_SOURCE=yahoo          # or: live Yahoo (needs internet)")
+        log.error("    STOCKYA_OHLCV_DIR=...      # or: point at your own bhavcopy cache")
+        log.error("")
+        log.error("  Then restart start.bat. No strategy can produce picks without data.")
+        log.error("=" * 76)
+
     # ---- Soft-gate composite selection (v3 spine) ----
     # A survivor must: (a) clear all hard gates that ran, and (b) score
     # composite S = Σ wᵢ·mᵢ  >=  τ. That's it. The old "all-AND-gates"

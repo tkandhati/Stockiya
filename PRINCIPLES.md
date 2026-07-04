@@ -4,7 +4,9 @@
 
 Volume is the only signal that cannot be faked. Institutions cannot enter or exit a position without leaving a footprint in the daily volume tape. We don't pick stocks — we identify where institutions are already accumulating (Wyckoff Phases A–D), confirm the move has started with a Volume-Spread-Analysis bar, size the position to risk a fixed 1 % of the account, and watch for the earliest volume-based exit signal.
 
-> Status: **design spec — Wyckoff-VPA spine (2026-07).** Supersedes the earlier five-serial-gates and weighted-composite spines. Legacy stage names ([LT], [CS], [VD]) remain in code until the rewire lands; see AGENT_HANDOFF.md for the migration order.
+> Status: **design spec — Wyckoff-VPA spine (2026-07).** Supersedes the earlier five-serial-gates and weighted-composite spines.
+>
+> **Live code (2026-07-04 evening) is an intermediate v3 soft-gate composite:** the same stage IDs `[LT] [CS] [VD] [BR]` still run, but as *soft* gates whose margins feed a weighted composite `S = Σ wᵢ · mᵢ`; only `[U] [I] [HR]` remain hard gates. `[ACS]` and `[AC]` are also live. The Wyckoff-VPA stage files (`wyckoff.py`, `vsa.py`, `avwap.py`, `exit_watch.py`) described below are the next-step target — see AGENT_HANDOFF.md.
 
 ---
 
