@@ -256,13 +256,16 @@ def run_universe(
     # ---- Data-availability diagnostic ----
     # If >=90% of tickers failed at [I] Ingest, the composite score is
     # meaningless and the user is looking at a data-source misconfiguration,
-    # not a market-regime problem. Surface that loudly.
+    # not a market-regime problem. Surface that both loudly in the log AND
+    # via the response.message so the UI shows the fix instead of a
+    # misleading "nothing actionable today".
     ingest_failed = sum(
         1 for r in results
         if (r.stage_results.get("I") is not None
             and not r.stage_results["I"].passed)
     )
-    if results and ingest_failed / len(results) >= 0.90:
+    data_misconfigured = bool(results) and ingest_failed / len(results) >= 0.90
+    if data_misconfigured:
         log.error("=" * 76)
         log.error("  DATA SOURCE MISCONFIGURED  --  %d of %d tickers failed [I] Ingest.",
                   ingest_failed, len(results))
@@ -340,7 +343,20 @@ def run_universe(
     message: Optional[str] = None
     closest_to_firing: dict = {"accumulation": [], "breakout": [], "overall": []}
     if not pick_payloads:
-        message = "Nothing actionable today — quality over quantity."
+        if data_misconfigured:
+            # Don't lie to the user with "nothing actionable" when the real
+            # issue is upstream. Tell them exactly what to fix.
+            message = (
+                f"Data source misconfigured — {ingest_failed}/{len(results)} "
+                "tickers failed at [I] Ingest. Set DEMO_MODE=1 in backend/.env "
+                "(fastest), or provide a valid STOCKYA_OHLCV_DIR, then restart."
+            )
+        else:
+            message = (
+                f"Nothing cleared composite S ≥ {COMPOSITE_TAU:.2f} today. "
+                "Quality over quantity — capital preserved is capital available "
+                "for the next real signal."
+            )
         closest_to_firing = _collect_closest_to_firing(
             results, tau=COMPOSITE_TAU, n_per_tab=5
         )

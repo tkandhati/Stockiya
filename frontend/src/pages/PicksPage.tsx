@@ -133,7 +133,7 @@ export function PicksPage() {
               {data.message ||
                 (data.regime && !data.regime.passed
                   ? 'Market regime is off. No alerts will issue until NIFTY 100 closes above its 50-day moving average.'
-                  : 'No Nifty 100 stock cleared all five gates today. Quality over quantity — capital preserved is capital available for the next real signal.')}
+                  : 'Nothing cleared the composite score threshold today. Check the panel below for the tickers closest to firing.')}
             </p>
           </div>
         )}
