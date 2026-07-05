@@ -1,5 +1,21 @@
 # Changelog
 
+## 2026-07-05 (late-2) — multi-window ACS/AC scan
+
+Answers user's "20 days is enough? make it dynamic 5/10/30/60" question with
+the mathematically-correct fix instead of a single new hardcoded window.
+
+- `stages/accum_screen.py` and `stages/accumulation.py` now sweep
+  `ACCUM_WINDOWS = (10, 20, 40)` per ticker. Each stage runs its checks at
+  every window and reports the **max-margin** result. Pure math:
+  `max_W margin_W ≥ margin_20` for any fixed 20 — provably non-decreasing
+  in detection power.
+- Winning window logged in `features.best_window` so the trace shows which
+  timeframe fired per ticker over time (input for the tuner later).
+- All per-W scores also logged in `features.per_window` for full auditability.
+- Overrides accepted: `acs_windows` / `ac_windows` = list of ints (backtest).
+- Cost: 3× stage compute; still trivial at Nifty 500 scale.
+
 ## 2026-07-05 (late) — first-run resilience + empty-state honesty
 
 Three small follow-ups after the personal-PC first-run kept surfacing the
