@@ -45,7 +45,8 @@ stage_id = "AC"
 # Tunable thresholds (empirical defaults from window-sweep on cached bars)
 # --------------------------------------------------------------------------- #
 
-ACCUM_WINDOW: int = 20                # tunable — sweep-validated winner
+ACCUM_WINDOWS: tuple[int, ...] = (10, 20, 40)   # tunable — sweep these
+ACCUM_WINDOW: int = 20                           # legacy default; also min-bars anchor
 TIER2_BARS_REQUIRED: int = 180        # tunable — stability floor for ADI slope
 TIGHT_RANGE_PCT_MAX: float = 0.10     # tunable
 VOLUME_DRY_MULT: float = 0.95         # tunable
@@ -53,6 +54,78 @@ PRICE_SLOPE_MAX_ABS: float = 0.002    # tunable — normalized slope threshold
 ADI_SLOPE_MIN: float = 0.005          # tunable — normalized slope threshold
 MIN_ADV_SHARES: float = 200_000       # tunable — liquidity floor
 ADV_WINDOW: int = 50                  # tunable
+
+
+def _score_at_window(
+    df, W: int, range_max: float, vol_dry_max: float,
+    price_slope_max: float, adi_slope_min: float,
+) -> tuple[bool, float, dict, list[str]]:
+    """All three AC checks at one W. Returns (passed, margin, features, msgs).
+
+    Pure — no side effects. Caller picks the winning window.
+    """
+    if len(df) < 2 * W + 5:
+        return (False, 0.0,
+                {"window": W}, [f"[W={W}] insufficient bars"])
+    range_pct = range_pct_window(df, W)
+    vol_ratio = vol_dryness_ratio(df["Volume"], W)
+    price_slope = norm_slope(df["Close"], W)
+    adi_series = adi(df)
+    adi_slope = norm_slope(adi_series, W) if adi_series is not None else None
+    div_strength = (
+        adi_slope - price_slope
+        if price_slope is not None and adi_slope is not None
+        else None
+    )
+    feat = {
+        "window": W,
+        "range_pct": round(range_pct, 4) if range_pct is not None else None,
+        "vol_ratio": round(vol_ratio, 4) if vol_ratio is not None else None,
+        "price_slope": round(price_slope, 6) if price_slope is not None else None,
+        "adi_slope": round(adi_slope, 6) if adi_slope is not None else None,
+        "divergence_strength": round(div_strength, 6) if div_strength is not None else None,
+    }
+    fails: list[str] = []
+    lines: list[str] = []
+    # Check 1: tight range
+    if range_pct is None:
+        fails.append(f"[W={W}] range_pct unavailable")
+    elif range_pct > range_max:
+        fails.append(f"[W={W}] range {range_pct*100:.2f}% > {range_max*100:.1f}%")
+    else:
+        lines.append(f"[W={W}] range {range_pct*100:.2f}% <= {range_max*100:.1f}%")
+    # Check 2: volume dryness
+    if vol_ratio is None:
+        fails.append(f"[W={W}] vol_ratio unavailable")
+    elif vol_ratio > vol_dry_max:
+        fails.append(f"[W={W}] vol {vol_ratio:.2f}x > {vol_dry_max:.2f}x")
+    else:
+        lines.append(f"[W={W}] vol {vol_ratio:.2f}x <= {vol_dry_max:.2f}x")
+    # Check 3: ADI positive divergence
+    if price_slope is None or adi_slope is None:
+        fails.append(f"[W={W}] divergence unavailable")
+    else:
+        price_flat = abs(price_slope) <= price_slope_max
+        adi_rising = adi_slope >= adi_slope_min
+        if price_flat and adi_rising:
+            lines.append(
+                f"[W={W}] divergence: price {price_slope:+.4f} flat AND ADI {adi_slope:+.4f} rising"
+            )
+        else:
+            reasons = []
+            if not price_flat:
+                reasons.append(f"price_slope {price_slope:+.4f} not flat")
+            if not adi_rising:
+                reasons.append(f"adi_slope {adi_slope:+.4f} not rising")
+            fails.append(f"[W={W}] no divergence: " + "; ".join(reasons))
+    passed = not fails
+    margin = 0.0
+    if passed and range_pct is not None and vol_ratio is not None and div_strength is not None:
+        r_m = max(0.0, 1.0 - range_pct / range_max)
+        v_m = max(0.0, 1.0 - vol_ratio / vol_dry_max)
+        d_m = min(1.0, max(0.0, div_strength / (2 * adi_slope_min)))
+        margin = (r_m + v_m + d_m) / 3.0
+    return (passed, margin, feat, lines if passed else fails)
 
 
 def run(ctx: PipelineContext) -> StageResult:
@@ -65,116 +138,82 @@ def run(ctx: PipelineContext) -> StageResult:
         )
 
     overrides: dict = getattr(ctx, "overrides", {}) or {}
-    W = int(overrides.get("ac_window", ACCUM_WINDOW))
+    windows_override = overrides.get("ac_windows")
+    if windows_override:
+        windows = tuple(int(w) for w in windows_override)
+    else:
+        windows = ACCUM_WINDOWS
     range_max = float(overrides.get("ac_range_pct_max", TIGHT_RANGE_PCT_MAX))
     vol_dry_max = float(overrides.get("ac_vol_dry_mult", VOLUME_DRY_MULT))
     price_slope_max = float(overrides.get("ac_price_slope_max_abs", PRICE_SLOPE_MAX_ABS))
     adi_slope_min = float(overrides.get("ac_adi_slope_min", ADI_SLOPE_MIN))
     min_adv = float(overrides.get("ac_min_adv_shares", MIN_ADV_SHARES))
 
-    range_pct = range_pct_window(df, W)
-    vol_ratio = vol_dryness_ratio(df["Volume"], W)
     adv_long = adv(df["Volume"], ADV_WINDOW)
 
-    price_slope = norm_slope(df["Close"], W)
-    adi_series = adi(df)
-    adi_slope = norm_slope(adi_series, W) if adi_series is not None else None
+    # Liquidity floor — checked once, independent of window
+    if adv_long is None:
+        return StageResult(
+            stage_id=stage_id, passed=False,
+            features={"adv_50d": None, "windows_scanned": list(windows)},
+            evidence=["adv(50) unavailable"],
+            fix_point="backend/stages/accumulation.py — MIN_ADV_SHARES",
+            reason="adv(50) unavailable",
+        )
+    if adv_long < min_adv:
+        return StageResult(
+            stage_id=stage_id, passed=False,
+            features={"adv_50d": round(adv_long, 0), "windows_scanned": list(windows)},
+            evidence=[f"adv(50) {adv_long:,.0f} < {min_adv:,.0f} liquidity floor"],
+            fix_point="backend/stages/accumulation.py — MIN_ADV_SHARES",
+            reason=f"adv(50) {adv_long:,.0f} < {min_adv:,.0f}",
+        )
+    liq_line = f"adv(50) {adv_long:,.0f} >= {min_adv:,.0f}"
 
-    divergence_strength = None
-    if price_slope is not None and adi_slope is not None:
-        divergence_strength = adi_slope - price_slope
+    # Multi-window sweep — take the best margin
+    per_window = [
+        _score_at_window(df, W, range_max, vol_dry_max, price_slope_max, adi_slope_min)
+        for W in windows
+    ]
+    any_passed = any(p for p, _, _, _ in per_window)
+
+    if not any_passed:
+        all_fails = [liq_line]
+        for _, _, _, msgs in per_window:
+            all_fails.extend(msgs)
+        return StageResult(
+            stage_id=stage_id, passed=False,
+            features={
+                "adv_50d": round(adv_long, 0),
+                "windows_scanned": list(windows),
+                "per_window": [f for _, _, f, _ in per_window],
+            },
+            evidence=all_fails,
+            fix_point="backend/stages/accumulation.py — constants at top",
+            reason="no window passed all 3 checks",
+        )
+
+    best_idx = max(range(len(per_window)), key=lambda i: per_window[i][1] if per_window[i][0] else -1.0)
+    _, best_margin, best_feat, best_lines = per_window[best_idx]
 
     features = {
-        "window": W,
-        "range_pct": round(range_pct, 4) if range_pct is not None else None,
-        "vol_ratio": round(vol_ratio, 4) if vol_ratio is not None else None,
-        "price_slope": round(price_slope, 6) if price_slope is not None else None,
-        "adi_slope": round(adi_slope, 6) if adi_slope is not None else None,
-        "divergence_strength": (
-            round(divergence_strength, 6) if divergence_strength is not None else None
-        ),
-        "adv_50d": round(adv_long, 0) if adv_long is not None else None,
+        "adv_50d": round(adv_long, 0),
+        "windows_scanned": list(windows),
+        "best_window": best_feat["window"],
+        "range_pct": best_feat.get("range_pct"),
+        "vol_ratio": best_feat.get("vol_ratio"),
+        "price_slope": best_feat.get("price_slope"),
+        "adi_slope": best_feat.get("adi_slope"),
+        "divergence_strength": best_feat.get("divergence_strength"),
+        "per_window": [f for _, _, f, _ in per_window],
     }
-
-    evidence: list[str] = []
-    failures: list[str] = []
-
-    # ---- Liquidity floor ----
-    if adv_long is None:
-        failures.append("adv(50) unavailable")
-    elif adv_long < min_adv:
-        failures.append(
-            f"adv(50) {adv_long:,.0f} < {min_adv:,.0f} liquidity floor"
-        )
-    else:
-        evidence.append(f"adv(50) {adv_long:,.0f} >= {min_adv:,.0f}")
-
-    # ---- Check 1: tight range ----
-    if range_pct is None:
-        failures.append("range_pct unavailable")
-    elif range_pct > range_max:
-        failures.append(
-            f"range {range_pct*100:.2f}% over {W}d > {range_max*100:.1f}% (not coiling)"
-        )
-    else:
-        evidence.append(
-            f"range {range_pct*100:.2f}% over {W}d <= {range_max*100:.1f}%"
-        )
-
-    # ---- Check 2: volume dryness ----
-    if vol_ratio is None:
-        failures.append("vol_ratio unavailable")
-    elif vol_ratio > vol_dry_max:
-        failures.append(
-            f"vol {vol_ratio:.2f}x prior {W}d > {vol_dry_max:.2f}x (not drying up)"
-        )
-    else:
-        evidence.append(
-            f"vol {vol_ratio:.2f}x prior {W}d <= {vol_dry_max:.2f}x"
-        )
-
-    # ---- Check 3: ADI positive divergence ----
-    if price_slope is None or adi_slope is None:
-        failures.append("divergence unavailable (slope inputs missing)")
-    else:
-        price_flat = abs(price_slope) <= price_slope_max
-        adi_rising = adi_slope >= adi_slope_min
-
-        if price_flat and adi_rising:
-            evidence.append(
-                f"divergence: price_slope {price_slope:+.4f} (|.| <= {price_slope_max}) "
-                f"AND adi_slope {adi_slope:+.4f} (>= {adi_slope_min})"
-            )
-        else:
-            reasons = []
-            if not price_flat:
-                reasons.append(f"price_slope {price_slope:+.4f} not flat (|.| > {price_slope_max})")
-            if not adi_rising:
-                reasons.append(f"adi_slope {adi_slope:+.4f} not rising (< {adi_slope_min})")
-            failures.append("no divergence: " + "; ".join(reasons))
-
-    passed = len(failures) == 0
-
-    # Margin: average of the three normalized headrooms.
-    margin = 0.0
-    if (
-        passed
-        and range_pct is not None
-        and vol_ratio is not None
-        and divergence_strength is not None
-    ):
-        range_margin = max(0.0, 1.0 - range_pct / range_max)
-        vol_margin = max(0.0, 1.0 - vol_ratio / vol_dry_max)
-        # Divergence: strength / (2 * min threshold) saturates at 1.0
-        div_margin = min(1.0, max(0.0, divergence_strength / (2 * adi_slope_min)))
-        margin = (range_margin + vol_margin + div_margin) / 3.0
 
     return StageResult(
         stage_id=stage_id,
-        passed=passed,
-        score=round(margin, 4) if passed else 0.0,
+        passed=True,
+        score=round(best_margin, 4),
         features=features,
-        evidence=evidence if passed else failures,
+        evidence=[liq_line] + best_lines,
         fix_point="backend/stages/accumulation.py — constants at top",
-        reason=("passed all 3 checks" if passed else "; ".join(failures)),
+        reason=f"passed at W={best_feat['window']} (best of {list(windows)})",
     )
