@@ -24,7 +24,7 @@ DataFrame in → same StageResult out. Tuner imports this directly.
 
 from __future__ import annotations
 
-from ..indicators import adv, range_pct_window, vol_dryness_ratio
+from ..indicators import adaptive_windows, adv, range_pct_window, vol_dryness_ratio
 from ..pipeline import PipelineContext, StageResult
 
 stage_id = "ACS"
@@ -32,15 +32,17 @@ stage_id = "ACS"
 # --------------------------------------------------------------------------- #
 # Tunable thresholds
 #
-# Multi-window scan: instead of a fixed W=20 (which arbitrarily assumes every
-# stock's accumulation base is exactly 20 bars long), we sweep several Ws and
-# take the best margin. Provably non-decreasing in signal power vs single-W:
-# max_W margin_W >= margin_20 for any fixed 20. Cost is trivial — the shared
-# adv_long calculation runs once; each per-W recompute is O(W).
+# Multi-window scan: each ticker gets its own triplet of windows, sized by
+# realized volatility (see indicators.adaptive_windows). High-vol stocks
+# compress in shorter timeframes and get windows like (5, 10, 20); low-vol
+# stocks build longer bases and get windows like (20, 40, 60). We sweep all
+# three and take the max margin — provably non-decreasing vs single-W.
+#
+# Set `acs_windows` in overrides (backtest) to force a specific triplet.
 # --------------------------------------------------------------------------- #
 
-ACCUM_WINDOWS: tuple[int, ...] = (10, 20, 40)   # tunable — sweep these
-ACCUM_WINDOW: int = 20                           # legacy default; also min-bars anchor
+ACCUM_WINDOW_BASE: int = 20           # tunable — anchor for adaptive_windows()
+ACCUM_WINDOW_MAX_CAP: int = 60        # tunable — used for min-bars gating
 TIGHT_RANGE_PCT_MAX: float = 0.10     # tunable — 8% too tight for mid-caps
 VOLUME_DRY_MULT: float = 0.95         # tunable — strict 0.85 rarely fires
 MIN_ADV_SHARES: float = 200_000       # tunable — liquidity floor
@@ -92,14 +94,15 @@ def _score_at_window(
 
 def run(ctx: PipelineContext) -> StageResult:
     df = ctx.ohlcv
-    # Anchor min-bars to the largest window we intend to sweep, so short-history
-    # tickers fail fast rather than get a partial single-W answer.
-    min_bars = 2 * max(ACCUM_WINDOWS) + 5
+    # Anchor min-bars to the widest window the adaptive scan could pick, so
+    # short-history tickers fail fast rather than get a partial answer at some
+    # windows but not others.
+    min_bars = 2 * ACCUM_WINDOW_MAX_CAP + 5
     if df is None or df.empty or len(df) < min_bars:
         return StageResult(
             stage_id=stage_id, passed=False,
             reason=f"insufficient history (need >= {min_bars} bars)",
-            fix_point="backend/stages/accum_screen.py: ACCUM_WINDOWS",
+            fix_point="backend/stages/accum_screen.py: ACCUM_WINDOW_MAX_CAP",
         )
 
     overrides: dict = getattr(ctx, "overrides", {}) or {}
@@ -107,7 +110,8 @@ def run(ctx: PipelineContext) -> StageResult:
     if windows_override:
         windows = tuple(int(w) for w in windows_override)
     else:
-        windows = ACCUM_WINDOWS
+        # Adaptive per-ticker triplet, sized by realized ATR.
+        windows = adaptive_windows(df, base=ACCUM_WINDOW_BASE, w_max=ACCUM_WINDOW_MAX_CAP)
     range_max = float(overrides.get("acs_range_pct_max", TIGHT_RANGE_PCT_MAX))
     vol_dry_max = float(overrides.get("acs_vol_dry_mult", VOLUME_DRY_MULT))
     min_adv = float(overrides.get("acs_min_adv_shares", MIN_ADV_SHARES))

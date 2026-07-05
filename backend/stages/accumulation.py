@@ -31,6 +31,7 @@ Tuner imports this directly for backtesting/threshold sweeps.
 from __future__ import annotations
 
 from ..indicators import (
+    adaptive_windows,
     adi,
     adv,
     norm_slope,
@@ -45,8 +46,8 @@ stage_id = "AC"
 # Tunable thresholds (empirical defaults from window-sweep on cached bars)
 # --------------------------------------------------------------------------- #
 
-ACCUM_WINDOWS: tuple[int, ...] = (10, 20, 40)   # tunable — sweep these
-ACCUM_WINDOW: int = 20                           # legacy default; also min-bars anchor
+ACCUM_WINDOW_BASE: int = 20      # tunable — anchor for adaptive_windows()
+ACCUM_WINDOW_MAX_CAP: int = 60   # tunable — cap for adaptive triplet
 TIER2_BARS_REQUIRED: int = 180        # tunable — stability floor for ADI slope
 TIGHT_RANGE_PCT_MAX: float = 0.10     # tunable
 VOLUME_DRY_MULT: float = 0.95         # tunable
@@ -142,7 +143,8 @@ def run(ctx: PipelineContext) -> StageResult:
     if windows_override:
         windows = tuple(int(w) for w in windows_override)
     else:
-        windows = ACCUM_WINDOWS
+        # Adaptive per-ticker triplet, sized by realized ATR.
+        windows = adaptive_windows(df, base=ACCUM_WINDOW_BASE, w_max=ACCUM_WINDOW_MAX_CAP)
     range_max = float(overrides.get("ac_range_pct_max", TIGHT_RANGE_PCT_MAX))
     vol_dry_max = float(overrides.get("ac_vol_dry_mult", VOLUME_DRY_MULT))
     price_slope_max = float(overrides.get("ac_price_slope_max_abs", PRICE_SLOPE_MAX_ABS))

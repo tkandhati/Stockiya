@@ -64,6 +64,17 @@ Anchor at the lowest close of the last 90 sessions. Score = fraction of the last
 
 ### 2.4 Volatility adaptation
 
+**Per-ticker adaptive scan windows** (2026-07-05, live code): the accumulation stages `[ACS]` and `[AC]` no longer use a fixed 20-bar lookback. Each ticker's window triplet is sized from its own realized ATR:
+
+```
+atr20_pct = ATR(20) / close × 100
+scale     = clamp(2.0 / atr20_pct, 0.5, 2.0)     # 2% ≈ "normal" Nifty large-cap
+W_c       = round(20 × scale)                     # per-ticker anchor
+windows   = (W_c/2, W_c, 2·W_c)                   # clamped to [5, 60]
+```
+
+High-vol stocks (fast tape) scan short windows like `(8, 16, 32)`. Low-vol stocks (slow tape) scan long windows like `(20, 40, 60)`. Each stage takes the max-margin window per ticker — provably ≥ any single-window rule. Deterministic; pure function of the OHLCV frame.
+
 Every threshold that involves a **volume ratio** or a **range %** is normalized by ATR(20):
 
 - Tight-range threshold: `range_pct ≤ 2.5 × ATR20_pct` (was fixed 4 %)

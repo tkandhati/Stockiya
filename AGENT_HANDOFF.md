@@ -120,6 +120,9 @@ Phase C / Phase D.
 - ✅ Composite threshold τ tuned 0.35 → 0.28 — 2026-07-05
 - ✅ Empty-state UI unified into `ClosestToFiringPanel` (killed NearMiss + ReadyToBreak + EarlySignal panels) — 2026-07-05
 - ✅ Picks-response `PICKS_SCHEMA_VERSION` bumped to 5 — 2026-07-05
+- ✅ `.env.example` default flipped to `DATA_SOURCE=yahoo` (live pull) — 2026-07-05
+- ✅ `start.bat` auto-heals missing `backend\.env` — 2026-07-05
+- ✅ Adaptive per-ticker scan windows in `[ACS]` and `[AC]` via `indicators.adaptive_windows()` — 2026-07-05 (supersedes the earlier fixed `(10, 20, 40)` sweep)
 
 **Still open (roughly in priority order):**
 

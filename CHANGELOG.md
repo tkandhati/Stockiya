@@ -1,20 +1,30 @@
 # Changelog
 
-## 2026-07-05 (late-2) — multi-window ACS/AC scan
+## 2026-07-05 (late-3) — adaptive windows (per-ticker, not per-rule)
 
-Answers user's "20 days is enough? make it dynamic 5/10/30/60" question with
-the mathematically-correct fix instead of a single new hardcoded window.
+User pushback on the previous fix: `(10, 20, 40)` was still a hardcoded rule.
+Replaced with a **per-ticker adaptive triplet** anchored by realized ATR:
 
-- `stages/accum_screen.py` and `stages/accumulation.py` now sweep
-  `ACCUM_WINDOWS = (10, 20, 40)` per ticker. Each stage runs its checks at
-  every window and reports the **max-margin** result. Pure math:
-  `max_W margin_W ≥ margin_20` for any fixed 20 — provably non-decreasing
-  in detection power.
-- Winning window logged in `features.best_window` so the trace shows which
-  timeframe fired per ticker over time (input for the tuner later).
-- All per-W scores also logged in `features.per_window` for full auditability.
-- Overrides accepted: `acs_windows` / `ac_windows` = list of ints (backtest).
-- Cost: 3× stage compute; still trivial at Nifty 500 scale.
+- New `indicators.adaptive_windows(df, base=20)` — returns `(W/2, W, 2W)`
+  where `W = clamp(base × normal_atr / current_atr, base/2, 2×base)`, then
+  clamped to `[5, 60]`. Pure function of df; deterministic.
+- High-vol stocks (ATR20% > 2%) → shorter windows, e.g. `(8, 16, 32)`.
+- Low-vol stocks (ATR20% < 1%) → longer windows, up to `(20, 40, 60)`.
+- ACS and AC call `adaptive_windows()` by default; backtest override via
+  `acs_windows` / `ac_windows` still forces a specific triplet for tuning.
+- `features.windows_scanned` records what each ticker actually scanned,
+  so the trace shows the *reach* used per pick.
+
+Rationale: fixed windows encode a hidden assumption that every stock's
+accumulation base is the same length. False. Fast tape (ADANIENT-style)
+compresses and breaks in weeks; slow tape (HDFCBANK-style) takes months.
+The scan now positions itself around each ticker's own volatility clock,
+without needing ML — pure deterministic scaling from ATR.
+
+## 2026-07-05 (late-2) — multi-window ACS/AC scan (superseded by late-3)
+
+Initial pass: fixed `ACCUM_WINDOWS = (10, 20, 40)` sweep. Kept for one
+release cycle; late-3 replaces the fixed tuple with adaptive_windows().
 
 ## 2026-07-05 (late) — first-run resilience + empty-state honesty
 

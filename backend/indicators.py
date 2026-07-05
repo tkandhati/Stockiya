@@ -107,6 +107,55 @@ def atr_pct(df: pd.DataFrame, n: int = 14) -> Optional[float]:
     return a / last * 100
 
 
+def adaptive_windows(
+    df: pd.DataFrame,
+    base: int = 20,
+    atr_n: int = 20,
+    normal_atr_pct: float = 2.0,
+    scale_min: float = 0.5,
+    scale_max: float = 2.0,
+    w_min: int = 5,
+    w_max: int = 60,
+) -> tuple[int, ...]:
+    """Per-ticker adaptive window triplet, anchored by realized volatility.
+
+    Mathematics:
+        atr20_pct = ATR(20) / close                    # ticker's daily range %
+        scale     = clamp(normal / atr20_pct, .5, 2.)  # smaller for high-vol
+        W_center  = base * scale
+        windows   = (W_center / 2, W_center, W_center * 2)  clamped to [5, 60]
+
+    Rationale:
+        Fixed windows assume every stock's accumulation base is exactly W bars
+        long, regardless of how fast the stock moves. High-vol stocks compress
+        and break out in shorter timeframes; low-vol stocks build longer bases.
+        Scaling by realized ATR% makes the scan reach *per ticker* — no shared
+        (10, 20, 40) rule. Deterministic; pure function of df.
+
+    Fallback: if ATR is unavailable, returns (base // 2, base, base * 2)
+    clamped — same behavior as the previous fixed default.
+    """
+    a_pct = atr_pct(df, atr_n)
+    if a_pct is None or a_pct <= 0:
+        w_c = base
+    else:
+        scale = normal_atr_pct / max(a_pct, 0.1)
+        scale = max(scale_min, min(scale_max, scale))
+        w_c = int(round(base * scale))
+    w_c = max(w_min, min(w_max, w_c))
+    triplet = (
+        max(w_min, w_c // 2),
+        w_c,
+        min(w_max, w_c * 2),
+    )
+    # De-dupe in the edge case where clamping collapses two adjacent windows.
+    seen: list[int] = []
+    for w in triplet:
+        if w not in seen:
+            seen.append(w)
+    return tuple(seen)
+
+
 # --------------------------------------------------------------------------- #
 # Average daily volume
 # --------------------------------------------------------------------------- #
