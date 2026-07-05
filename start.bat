@@ -51,6 +51,30 @@ if not exist "frontend\node_modules" (
 )
 echo       OK.
 
+REM ---- [3.5/5] backend\.env is present (auto-heal if not) ---------
+REM
+REM Without .env, DEMO_MODE and DATA_SOURCE fall back to code defaults
+REM which try to read a bhavcopy cache that does not exist on a fresh
+REM clone. Result: every ticker fails at [I] Ingest and the UI shows
+REM "Nothing actionable today" for a reason that has NOTHING to do
+REM with the market. Auto-create from .env.example so this never bites.
+echo [3.5/5] Checking backend\.env...
+if not exist "backend\.env" (
+    if exist "backend\.env.example" (
+        copy /Y "backend\.env.example" "backend\.env" >nul
+        echo       CREATED backend\.env from .env.example
+        echo                ^(DEMO_MODE=1 by default -- synthetic OHLCV, not real prices^).
+        echo                Edit backend\.env if you have your own OHLCV cache.
+    ) else (
+        echo       WARNING: backend\.env AND backend\.env.example both missing.
+        echo                Pipeline will use code defaults and likely fail.
+    )
+) else (
+    echo       OK -- backend\.env exists.
+    echo                If you see 0 picks after startup, edit backend\.env
+    echo                and add:  DEMO_MODE=1   ^(or a real OHLCV cache^).
+)
+
 REM ---- [4/5] Port 8000 free ---------------------------------------
 echo [4/5] Checking port 8000 (middleware) is free...
 netstat -ano | findstr ":8000 " | findstr "LISTENING" >nul
