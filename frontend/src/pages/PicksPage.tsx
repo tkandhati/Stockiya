@@ -5,10 +5,8 @@ import { fetchPicks, refreshPicks } from '../api'
 import { Disclaimer } from '../components/Disclaimer'
 import { DemoBanner } from '../components/DemoBanner'
 import { DataHealthPill } from '../components/DataHealthPill'
-import { EarlySignalPanel } from '../components/EarlySignalPanel'
-import { NearMissPanel } from '../components/NearMissPanel'
+import { ClosestToFiringPanel } from '../components/ClosestToFiringPanel'
 import { PickCard } from '../components/PickCard'
-import { ReadyToBreakPanel } from '../components/ReadyToBreakPanel'
 import { RegimeBanner } from '../components/RegimeBanner'
 import type { PicksResponse } from '../types'
 
@@ -140,16 +138,8 @@ export function PicksPage() {
           </div>
         )}
 
-        {data?.ready_to_break && data.ready_to_break.length > 0 && (
-          <ReadyToBreakPanel items={data.ready_to_break} />
-        )}
-
-        {data && data.picks.length === 0 && data.near_misses && data.near_misses.length > 0 && (
-          <NearMissPanel items={data.near_misses} />
-        )}
-
-        {data?.early_signals && data.early_signals.length > 0 && (
-          <EarlySignalPanel items={data.early_signals} />
+        {data && data.picks.length === 0 && data.closest_to_firing && (
+          <ClosestToFiringPanel data={data.closest_to_firing} />
         )}
       </main>
 

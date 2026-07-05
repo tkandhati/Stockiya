@@ -51,6 +51,7 @@ Full knob list:
 | `DEMO_MODE` | `0` | `1` = synthetic data. Takes precedence over `DATA_SOURCE`. **UI only, do not trade.** |
 | `DATA_SOURCE` | `bhavcopy` | `yahoo` = live yfinance; `bhavcopy` = local CSV cache in `STOCKYA_OHLCV_DIR` |
 | `STOCKYA_OHLCV_DIR` | *(sibling tuner cache)* | Absolute path to per-symbol OHLCV CSVs. Point at your OWN cache; the tuner sibling is not guaranteed to exist. |
+| `STOCKYA_UNIVERSE` | `nifty100` | `nifty50` (fast) / `nifty100` / `nifty200` / `nifty500` (~456 tickers, curated) / `custom` (reads `config/universe_custom.txt`, one ticker per line). |
 | `STOCKYA_ACCOUNT_VALUE` | `100000` | Capital used by `[PS] Position Sizer` for share-count math |
 
 Composite threshold `τ` and per-stage weights `wᵢ` live in

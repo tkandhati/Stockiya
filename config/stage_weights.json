@@ -18,7 +18,7 @@
     "AVWAP": 0.00
   },
 
-  "composite_threshold_tau": 0.35,
+  "composite_threshold_tau": 0.28,
 
   "champion_metric": {
     "name": "mean_return_90d_top3",

@@ -1,5 +1,48 @@
 # Changelog
 
+## 2026-07-05 — Nifty 500 universe + trader-UI empty state
+
+Follow-up to the 2026-07-04 evening wire-up. Three tight changes based on user
+feedback ("only Nifty 100 → Nifty 500", "still no picks", "empty page has too
+many panels, creates confusion"):
+
+- **Universe expanded.** `backend/universe.py` now exports `NIFTY_500`
+  (~456 dedup'd tickers curated from prior knowledge — not the official NSE
+  snapshot; will drift at each rebalance). New `STOCKYA_UNIVERSE=nifty500`
+  option plus a **`custom` escape hatch** that reads one ticker per line from
+  `config/universe_custom.txt` (`#` comments and `.NS` suffix optional).
+- **Composite threshold τ lowered 0.35 → 0.28** in `config/stage_weights.json`.
+  Modest relax to admit more marginal picks; the champion-challenger ratchet
+  in `scripts/tune_weights.py` will reject any tuner delta that produces a
+  worse metric, so the accuracy floor is unchanged.
+- **Empty-state UI collapsed to a single tabbed panel.** Killed three
+  overlapping panels (`NearMissPanel`, `ReadyToBreakPanel`, `EarlySignalPanel`)
+  and their backend collectors, replaced with **`ClosestToFiringPanel`**:
+  three tabs (Accumulation / Breakout / Overall), 4 columns per row
+  (`Symbol · S · Gap · Held back by`), max 5 rows per tab. Trader-UI rule:
+  every column earns its place or gets cut.
+- Backend: `orchestrator._collect_closest_to_firing` groups tickers by
+  strategy leader (`_weighted_margin` over `{ACS, AC}` vs `{LT, CS, VD, BR}`)
+  and surfaces `_pulled_down_by` = `argmax wᵢ · (1 − mᵢ)` — the one stage
+  that would flip the ticker if it fully fired.
+- Middleware schema: `PulledDownBy` / `ClosestRow` / `ClosestToFiring`
+  replace the removed DTOs. Picks response `schema_version` bumped **4 → 5**.
+
+Files changed:
+```
+backend/universe.py, orchestrator.py, stages/render.py
+config/stage_weights.json
+middleware/schemas.py
+frontend/src/types.ts, pages/PicksPage.tsx
+frontend/src/components/ClosestToFiringPanel.tsx  (new)
+  (deleted: NearMissPanel.tsx, ReadyToBreakPanel.tsx, EarlySignalPanel.tsx)
+```
+
+Validation:
+- `python -m compileall backend middleware scripts` — clean
+- `npm run build` in `frontend` — clean (726 kB main bundle, unchanged)
+- End-to-end run not performed — corporate-firewall constraint stands
+
 ## 2026-07-04 (evening) — v3 soft-gate composite spine actually shipped
 
 Follow-up to the morning documentation pivot. The full Wyckoff-VPA rewrite

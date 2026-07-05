@@ -219,58 +219,30 @@ export interface PositionsResponse {
   positions: Position[]
 }
 
-export interface NearMissGate {
-  stage_id: string
+// Closest-to-firing empty-state panel: one tabbed panel replaces the old
+// NearMiss / EarlyVolumeSignal / ReadyToBreak trio. Four fields per row —
+// every column earns its place.
+
+export interface PulledDownBy {
+  stage_id: string | null
   label: string
-  evidence?: string[]
-  reason?: string | null
+  current_margin: number
+  weight: number
+  reason: string
 }
 
-export interface NearMiss {
+export interface ClosestRow {
   symbol: string
   company: string
-  passed_count: number
-  passed_gates: NearMissGate[]
-  failed_gate: NearMissGate
+  composite_score: number
+  gap_to_tau: number
+  pulled_down_by: PulledDownBy
 }
 
-export interface EarlyVolumeSignal {
-  symbol: string
-  company: string
-  direction: 'bullish' | 'bearish' | 'neutral'
-  kind: string
-  score: number
-  label: string
-  detail: string
-  event: VolumeEvent
-  stage_reached?: string | null
-  failed_gate?: NearMissGate | null
-  selected: boolean
-}
-
-export interface BRSubCheck {
-  name: string
-  label: string
-  current?: number | null
-  threshold?: number | null
-  passed: boolean
-  gap_pct?: number | null
-  gap_detail: string
-}
-
-export interface ReadyToBreak {
-  symbol: string
-  company: string
-  lt_score: number
-  cs_score: number
-  vd_score: number
-  setup_strength: number
-  br_checks: BRSubCheck[]
-  br_passing: number
-  br_total: number
-  br_reason: string
-  closeness_score: number
-  last_close?: number | null
+export interface ClosestToFiring {
+  accumulation: ClosestRow[]
+  breakout: ClosestRow[]
+  overall: ClosestRow[]
 }
 
 export interface PicksResponse {
@@ -281,9 +253,7 @@ export interface PicksResponse {
   regime?: Regime
   message?: string
   picks: Pick[]
-  near_misses?: NearMiss[]
-  early_signals?: EarlyVolumeSignal[]
-  ready_to_break?: ReadyToBreak[]
+  closest_to_firing?: ClosestToFiring
 }
 
 // --------------------------------------------------------------------------

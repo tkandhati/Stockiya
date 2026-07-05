@@ -123,58 +123,33 @@ class RegimeDTO(BaseModel):
     checks: list[RegimeCheckDTO] = []
 
 
-class NearMissGate(BaseModel):
-    stage_id: str
-    label: str
-    evidence: list[str] = []
-    reason: Optional[str] = None
+class PulledDownBy(BaseModel):
+    """The single stage that most held a ticker back from firing.
+
+    argmax over scored stages of  wᵢ · (1 − mᵢ). Actionable "one thing to
+    fix" pointer surfaced in the empty-state tabbed panel.
+    """
+    stage_id: Optional[str] = None
+    label: str = ""
+    current_margin: float = 0.0
+    weight: float = 0.0
+    reason: str = ""
 
 
-class NearMiss(BaseModel):
+class ClosestRow(BaseModel):
+    """One row in the Closest-to-Firing panel. Four fields, deliberately."""
     symbol: str
     company: str
-    passed_count: int
-    passed_gates: list[NearMissGate] = []
-    failed_gate: NearMissGate
+    composite_score: float
+    gap_to_tau: float
+    pulled_down_by: PulledDownBy
 
 
-class EarlyVolumeSignal(BaseModel):
-    symbol: str
-    company: str
-    direction: Literal["bullish", "bearish", "neutral"]
-    kind: str
-    score: float
-    label: str
-    detail: str
-    event: VolumeEventDTO
-    stage_reached: Optional[str] = None
-    failed_gate: Optional[NearMissGate] = None
-    selected: bool = False
-
-
-class BRSubCheckDTO(BaseModel):
-    name: str
-    label: str
-    current: Optional[float] = None
-    threshold: Optional[float] = None
-    passed: bool
-    gap_pct: Optional[float] = None
-    gap_detail: str = ""
-
-
-class ReadyToBreak(BaseModel):
-    symbol: str
-    company: str
-    lt_score: float = 0.0
-    cs_score: float = 0.0
-    vd_score: float = 0.0
-    setup_strength: float = 0.0
-    br_checks: list[BRSubCheckDTO] = []
-    br_passing: int = 0
-    br_total: int = 0
-    br_reason: str = ""
-    closeness_score: float = 0.0
-    last_close: Optional[float] = None
+class ClosestToFiring(BaseModel):
+    """Three tabs on the empty-state page. Each is at most 5 rows."""
+    accumulation: list[ClosestRow] = []
+    breakout: list[ClosestRow] = []
+    overall: list[ClosestRow] = []
 
 
 class PicksResponse(BaseModel):
@@ -185,9 +160,7 @@ class PicksResponse(BaseModel):
     regime: Optional[RegimeDTO] = None
     message: Optional[str] = None
     picks: list[Pick] = []
-    near_misses: list[NearMiss] = []
-    early_signals: list[EarlyVolumeSignal] = []
-    ready_to_break: list[ReadyToBreak] = []
+    closest_to_firing: Optional[ClosestToFiring] = None
 
 
 # --------------------------------------------------------------------------- #

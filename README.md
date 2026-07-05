@@ -191,10 +191,14 @@ See [WEEKLY_TRACKING.md](./WEEKLY_TRACKING.md) — what to monitor weekly, bi-we
 | ✅ done | NSE block + bulk deals downloader |
 | ✅ done | Outcome tracker (T+90 / T+180 writes to `outcomes.jsonl`) |
 | ✅ done | Wyckoff-VPA spec documented (PRINCIPLES.md, ARCHITECTURE.md §0-§0.3) |
+| ✅ done | v3 soft-gate composite spine (ACS + AC wired, composite `S ≥ τ`) |
+| ✅ done | Champion-challenger tuner (`scripts/tune_weights.py`, monotone metric) |
+| ✅ done | NIFTY 500 universe + `STOCKYA_UNIVERSE=custom` file loader |
+| ✅ done | Empty-state UI collapsed to one tabbed `ClosestToFiringPanel` |
 | ⏳ next | Wire `stages/wyckoff.py`, `vsa.py`, `avwap.py` into `PER_TICKER_CHAIN` (see AGENT_HANDOFF.md for step-by-step) |
 | ⏳ next | `stages/exit_watch.py` daily scan on held picks |
 | ⏳ next | ATR20-normalized thresholds + regime vol-clock in `stages/regime.py` |
-| ⏳ next | Backtest new spine vs archived gates spine over trailing 12 months |
+| ⏳ next | Backtest v3 spine over trailing 12 months to seed champion metric |
 | ⏳ next | Contextual-bandit tuner (once ~3 months of outcomes accumulated) |
 | ⏳ next | NSE bhavcopy adapter (replaces yfinance for India-native data) |
 | ⏳ later | Offline RL (CQL/IQL) for per-stage threshold tuning |

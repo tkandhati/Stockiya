@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated: 2026-07-04 (evening)
+Last updated: 2026-07-05
 
 ## Current Architecture Truth
 
@@ -108,14 +108,18 @@ Phase C / Phase D.
 
 ## Recommended Next Work (in order)
 
-**Already landed 2026-07-04 evening — do NOT redo:**
-- ✅ Soft-gate composite pipeline (`pipeline.py`)
-- ✅ ACS + AC wired into `PER_TICKER_CHAIN`
-- ✅ Composite filter in orchestrator
-- ✅ `rank.py` uses live weights from config
-- ✅ `config/stage_weights.json` + `scripts/tune_weights.py` (champion-challenger)
-- ✅ Crash-handler / ingest / DEMO_MODE robustness fixes
-- ✅ `SCHEMA_VERSION` bumped to 3
+**Already landed — do NOT redo:**
+- ✅ Soft-gate composite pipeline (`pipeline.py`) — 2026-07-04
+- ✅ ACS + AC wired into `PER_TICKER_CHAIN` — 2026-07-04
+- ✅ Composite filter in orchestrator — 2026-07-04
+- ✅ `rank.py` uses live weights from config — 2026-07-04
+- ✅ `config/stage_weights.json` + `scripts/tune_weights.py` (champion-challenger) — 2026-07-04
+- ✅ Crash-handler / ingest / DEMO_MODE robustness fixes — 2026-07-04
+- ✅ Trace `SCHEMA_VERSION` bumped to 3 — 2026-07-04
+- ✅ NIFTY 500 universe + `STOCKYA_UNIVERSE=custom` file loader — 2026-07-05
+- ✅ Composite threshold τ tuned 0.35 → 0.28 — 2026-07-05
+- ✅ Empty-state UI unified into `ClosestToFiringPanel` (killed NearMiss + ReadyToBreak + EarlySignal panels) — 2026-07-05
+- ✅ Picks-response `PICKS_SCHEMA_VERSION` bumped to 5 — 2026-07-05
 
 **Still open (roughly in priority order):**
 
