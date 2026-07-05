@@ -1,5 +1,29 @@
 # Changelog
 
+## 2026-07-05 (late) — first-run resilience + empty-state honesty
+
+Three small follow-ups after the personal-PC first-run kept surfacing the
+same "0 picks / bhavcopy missing" trap:
+
+- **`start.bat` auto-heals `backend\.env`.** If the file is missing on
+  start, `start.bat` now copies `backend\.env.example` → `backend\.env`
+  (which defaults to `DEMO_MODE=1`) instead of silently launching with the
+  code-default `DATA_SOURCE=bhavcopy`. Prints a clear line so the user knows.
+- **Empty-state message tells the truth on data-misconfig days.** When
+  ≥90 % of tickers fail `[I] Ingest`, `orchestrator.py` sets
+  `response.message` to the actionable fix ("Data source misconfigured —
+  N/M tickers failed at [I] Ingest. Set DEMO_MODE=1 in backend/.env...")
+  instead of the misleading "Nothing actionable today". UI shows it in the
+  empty state block.
+- **`PicksPage.tsx` fallback text de-staled.** Removed the "cleared all
+  five gates" language (accurate under the retired 5-AND-gates spine, wrong
+  under v3 soft-gate composite). Now points the user at the tabbed
+  Closest-to-Firing panel below when nothing clears τ.
+
+Validation:
+- `python -m compileall backend middleware` — clean
+- `npm run build` — clean
+
 ## 2026-07-05 — Nifty 500 universe + trader-UI empty state
 
 Follow-up to the 2026-07-04 evening wire-up. Three tight changes based on user
