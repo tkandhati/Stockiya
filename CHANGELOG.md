@@ -1,5 +1,125 @@
 # Changelog
 
+## 2026-07-12 (design) — My Positions: user-actual entry capture proposed
+
+No code change. Extends the "suggested vs held" gap already documented
+in PROCESS_FLOW.md §5b with a second, related gap surfaced by the user
+question *"in my portfolio you have option to user to capture when he
+entered and what value and guide him?"* — the answer today is no. The
+scanner writes `entry_date` and `entry_price` at pick time; every
+downstream number in `positions_view.py` (stop, T1, T2, day-45/90/180
+time-stops, P&L, action column) is computed against the scanner's
+assumption, not the user's real fill. If the user bought a day later
+at a different price, the guidance is speaking to a position they don't
+own.
+
+**Base V1 (additive, no schema break)** — add five optional columns to
+`portfolio.csv`:
+
+- `ownership` — `suggested | paper | live | declined`
+- `user_entry_date`, `user_entry_price`, `user_shares` — user's real fill
+- `user_notes` — free-form
+
+`positions_view.py` uses `user_*` if present, else scanner's values —
+tolerant reader on both sides. `weekly.py` and `outcome.py` skip
+`declined` rows. Guidance re-anchors immediately on save.
+
+UI: `Take (paper)` / `Take (live)` / `Decline` buttons on each
+`suggested` row; "Take" opens a small form; blank fields = accept
+scanner's numbers.
+
+**Not shipping in this pass.** Design captured for a future PR. Two
+sequencing options:
+
+1. **Bundle** `ownership` + `user_entry_*` in one PR (~150 lines across
+   `portfolio.py`, `positions_view.py`, `PositionsPage.tsx`). Coherent
+   story — day-one guidance already speaks to the user's fill.
+2. **Ownership only first**, then user-fill in a follow-up. Smaller PR
+   but forces a two-week gap where "I took it" is captured but guidance
+   still speaks to the scanner's assumption.
+
+**Invariants preserved (both options)**
+
+- No scanner change.
+- `pipeline.py`, `config/stage_weights.json`, τ, and `HARD_GATE_IDS`
+  untouched.
+- Data survives code changes: additive schema, tolerant reader treats
+  missing `user_*` fields as blank → fall back to scanner's numbers.
+- Deterministic — user-fill fields are manual inputs; no live data
+  fetch, no LLM, no external API.
+
+## 2026-07-12 (decision) — PB/BR split reviewed; 5 of 6 steps rejected, step 5 approved
+
+No code change. Records the outcome of a design review triggered by the
+CHANGELOG 2026-07-12 "Deferred" line for the `PB` (pre-breakout) / `BR`
+(SOS-only) split. Proposal was staged as six steps; each was validated
+against PRINCIPLES.md before any code was touched.
+
+**Decisions**
+
+| # | Step | Verdict | Reason |
+|---|---|---|---|
+| 1 | Verify BR is SOS-only | No work — already true | `stages/breakout.py:111-150` implements the three checks from PRINCIPLES §2.2 SOS bar rule; nothing folded in |
+| 2 | Build PB score from `vol_robust_z_50d`, `dry_up_streak_days_p25`, `anomaly_cluster_count_15d`, CS tightness, pocket-pivot, no-supply | **Rejected** | Hand-designed weights on 6 metrics. Violates §9 ("thresholds evolved by the tuner once ≥90d of outcomes accumulate — never hand-tuned to last quarter") and §2.5 ("no live gate consumes them yet — the tuner picks weights once we have enough outcome history"). Current spine has zero T+90 outcomes for the post-2026-07-04 pivot. First outcome cohort lands ~2026-10-02 (T+90) and ~2026-12-31 (T+180). |
+| 3 | Route: `clears τ ∧ BR fires` → Active Alert; `clears τ ∧ BR misses` → Watchlist ranked by PB | **Rejected** | Uses BR as the trigger, but per PRINCIPLES §2.2 the `[VSA]` trigger is **any of** SOS bar / pocket-pivot / no-supply test. Under the proposed rule, a pocket-pivot day (the "5-15 sessions earlier" lever §2.2 explicitly calls out) gets silently downgraded to Watchlist. Also adds a 4th UI surface (ClosestToFiringPanel + Active Alert + Watchlist + Positions) for information a single badge could carry. |
+| 4 | Reuse ClosestToFiringPanel patterns for the Watchlist | N/A | Step 3 not shipping, so this design instruction has no target. |
+| 5 | Log `trigger_state ∈ {sos, pocket_pivot, none}` in trace + bump `SCHEMA_VERSION 3 → 4` | **Approved** | Trace-only enrichment; zero effect on pick set today. Seeds the tuner with an explicit column for which of the three [VSA] triggers preceded each entry, so when outcomes land Oct–Dec 2026 the champion-challenger ratchet can weight trigger-presence explicitly instead of it being latent in the BR margin. No zero-picks risk (no gate change). |
+| 6 | Validate against `data/ohlcv/ABB.csv` | N/A without steps 2/3 | Nothing to validate beyond the current pipeline. |
+
+**Constraints honored**
+
+- `pipeline.py:HARD_GATE_IDS = {U, I, HR}` — untouched.
+- `config/stage_weights.json` — untouched (weights, τ = 0.28).
+- No ticker that clears τ today is newly rejected by any of the above.
+- No hand-fit weights added to any decision surface.
+
+**Implementation status**
+
+- Step 5 code lands in a subsequent commit. Scope: `PipelineResult` gets a
+  `trigger_state` field, computed once from BR pass ∨ existing
+  `_check_pocket_pivot_today` (in `stages/rank.py`, to be promoted to a
+  public predicate to avoid circular import with `pipeline.py`).
+  `append_final_trace` in `pipeline.py` includes it; `SCHEMA_VERSION`
+  bumps 3 → 4. Old v3 rows remain readable. No-supply-test is not
+  wired (not currently implemented anywhere in `backend/`) — deferred
+  until the [VSA] stage lands per AGENT_HANDOFF.md.
+
+**Not shipped from the original proposal**
+
+- PB score construct — will not ship. If future outcomes justify weighting
+  the advisory metrics, the tuner adds them; no hand-fit path.
+- Watchlist UI surface — will not ship. The pick-card badge added by step 5
+  carries the same information at 1/10 the surface area.
+
+## 2026-07-12 (docs) — My Positions lifecycle documented
+
+No code change. `PROCESS_FLOW.md` gains a new §5b that captures the
+post-pick lifecycle running in code since 2026-07-04 but never surfaced
+in one place. Motivated by user question: "how long does it get
+monitored, when will it close, and how does completed monitoring
+summarize into learning?"
+
+- **Dedupe rule.** `portfolio.record_picks` guards on
+  `(symbol, entry_date)` — same-day duplicates are impossible;
+  same-ticker-different-day tranches are by design (add-on-strength).
+- **State machine.** `open → partial_t1 → target_hit / stopped /
+  timed_out` with day-45 stop tighten (4%), day-90 forced exit if no
+  T1, day-180 unconditional final exit. `/api/positions` filters to
+  `{open, partial_t1}`; closed rows stay in `portfolio.csv` as history.
+- **Cadence.** Daily 17:15 `[EX]` advisory-only exit-watch; Friday 17:30
+  `weekly.py` may change status; daily 21:00 `[O]` writes realized
+  returns to `outcomes.jsonl` at T+90 / T+180.
+- **Learning loop.** `outcomes.jsonl` → `scripts/tune_weights.py`
+  champion-challenger ratchet against `config/stage_weights.json`
+  (accuracy monotone-non-decreasing).
+- **Documented gap.** No `suggested vs held` distinction today — every
+  pick enters as `status=open` and is monitored equally. Proposed base
+  V1 (add `ownership` column + Watching/Holding/Closed tabs) captured
+  as roadmap in §5b "Known limitation"; not implemented.
+
+Validation:
+- doc-only; no code, config, or data touched.
+
 ## 2026-07-12 — pre-breakout feedback: 3 bug fixes + additive volume metrics
 
 Triggered by the "Stockiya — Feedback for Claude Code" review after cross-

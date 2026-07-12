@@ -152,6 +152,159 @@ This is the honest surface for the v3 soft-gate composite: a pick can clear the 
 
 ---
 
+## 5b. My Positions — post-pick lifecycle
+
+Every row `[R] Render` produces is also written to `data/portfolio.csv` by
+`build_pick_payload → portfolio.record_picks` for downstream monitoring.
+That ledger is the single source of truth behind `/api/positions`, served by
+`positions_view.list_active_positions` and rendered at
+`frontend/src/pages/PositionsPage.tsx`.
+
+### Ledger key & dedupe rule (data/portfolio.csv)
+
+`portfolio.record_picks` is append-only with an **idempotency guard**:
+
+```python
+existing = {(r["symbol"], r["entry_date"]) for r in rows}
+for p in payload["picks"]:
+    if (p["symbol"], today) in existing:
+        continue        # already recorded — skip
+    rows.append(new_row); added += 1
+```
+
+Consequences:
+- Same ticker, same day → **cannot** duplicate (guarded).
+- Same ticker, **different day** → new tranche row by design (allows
+  add-on-strength entries).
+- If duplicates ever appear in the CSV, root cause is either manual edits
+  or legacy rows from before the guard existed — not the pipeline.
+
+Key columns: `pick_id, trace_id, entry_date, symbol, entry_price,
+stop_price, t1_price, t2_price, shares_total, shares_at_t1, shares_at_t2,
+confirmation_score, target_date, target_min_date, target_max_date,
+status, hit_t1, hit_t1_date, exit_date, exit_price, exit_reason, pnl_pct,
+last_updated`. Default holding window centered at **6 months** with ±2
+months tolerance (`portfolio.py:202-207`), aligning with `[O]` outcome
+horizons at T+90 and T+180.
+
+### Lifecycle state machine
+
+```
+   entry_date
+      │
+      ├─ close ≥ t1_price ────► status = partial_t1
+      │      │                  hit_t1 = true, hit_t1_date set
+      │      │
+      │      └─ close ≥ t2_price ─► status = target_hit
+      │                             exit_date / exit_price / pnl_pct set
+      │
+      ├─ close ≤ stop_price ──► status = stopped         (closed)
+      │
+      ├─ Day 45  (no T1) ─── tighten stop to entry × (1 − 4%)   (advisory)
+      ├─ Day 90  (no T1) ──► status = timed_out          (forced exit)
+      ├─ Day 180 ──────────► status = timed_out          (final exit)
+      │
+      └─ signal flip (OBV divergence /
+         ≥3 distribution days /
+         AVWAP break)         ── UI action = "exit_distribution" (advisory only;
+                                  does NOT change status — human confirms)
+```
+
+Constants (`backend/positions_view.py` top-of-file, tunable):
+`DAY_45 = 45`, `DAY_90 = 90`, `DAY_180 = 180`,
+`DAY_45_TIGHTEN_PCT = 0.04`, `EXPECTED_T1_TRADING_DAYS = 21`.
+
+`/api/positions` returns **only** rows with `status ∈ {open, partial_t1}`.
+Closed rows (`target_hit`, `stopped`, `timed_out`, `hypothesis_broken`)
+stay in `portfolio.csv` for history and are the input feed to
+`outcomes.jsonl`.
+
+### Monitoring cadence
+
+| When (IST) | Job | Effect on ledger |
+|---|---|---|
+| Daily 17:15 | `[EX]` exit-watch volume scan (`stages/exit_watch.py`) | Advisory only — surfaces `exit_distribution` in `/api/positions`, does NOT set status |
+| Friday 17:30 | `weekly.py` → `portfolio.update_open_picks()` | May set `hit_t1` / `partial_t1` / `target_hit` / `stopped` / `timed_out`; appends one row per open pick to `portfolio_weekly.csv` |
+| Daily 21:00 | `[O]` outcome tracker (`stages/outcome.py`) | At T+90 and T+180 per pick, appends realized return + hit flags to `data/traces/outcomes.jsonl` |
+
+### Learning loop
+
+```
+   portfolio.csv                outcomes.jsonl               stage_weights.json
+   (per-pick decisions)  ───►   (per-pick reward at T+90 /   ───►  (weights wᵢ + τ)
+                                 T+180, joined via trace_id
+                                 to confirmation_score
+                                 and per-stage features)
+```
+
+`scripts/tune_weights.py` reads `outcomes.jsonl`, fits candidate weight
+vectors (ridge + mean-return), and **only overwrites `config/stage_weights.json`
+if the candidate's replay metric strictly beats the current champion's**.
+Champion-challenger ratchet — accuracy is monotone-non-decreasing by
+construction. This is the "learning" that closes back into future picks.
+
+### Known limitations — "suggested vs held" and "user-actual entry" not captured
+
+Two related gaps in the current ledger, both about the user's real
+position vs the scanner's assumption:
+
+**1. No accept / decline gesture.** Every pick the scanner emits enters
+`portfolio.csv` with `status = open` and is monitored equally. There is
+no column recording whether the user actually **took** the position
+(paper / live) or **declined** it. All picks show up in `/api/positions`
+until they hit an exit condition — including ones the user never took.
+
+**2. No user-actual entry.** `portfolio.record_picks`
+(`backend/portfolio.py:172`) auto-fills `entry_date = today` and
+`entry_price = close_from_[PS]` at pick time. Every downstream number
+— stop, T1, T2, day-45/90/180 checkpoints, P&L, and the "hold / sell at
+T1 / exit" action column in `positions_view.py` — is computed against
+the scanner's *assumed* entry, not the user's *real* fill. If the user
+actually bought a day later at a different price (slippage, limit
+order, discretionary timing), the guidance surface is speaking to a
+position they don't own.
+
+**Base V1 to close both gaps — additive, no schema break**
+
+Extend `portfolio.csv` with five optional columns; tolerant reader
+treats blanks as "use scanner's numbers":
+
+```
+ownership         : suggested | paper | live | declined
+user_entry_date   : ISO date or ""      (blank = use scanner's)
+user_entry_price  : float or 0
+user_shares       : int or 0
+user_notes        : free-form string
+```
+
+`positions_view.py` routing when computing action + P&L:
+
+```
+entry_effective   = user_entry_date  or scanner entry_date
+price_effective   = user_entry_price or scanner entry_price
+shares_effective  = user_shares      or scanner shares_total
+stop / T1 / T2    = recomputed off price_effective + original R math
+day-45/90/180     = counted from entry_effective
+pnl_pct           = (close_today - price_effective) / price_effective
+```
+
+UI: on any `ownership = suggested` row, offer
+`[Take (paper)] [Take (live)] [Decline]`. "Take" opens a small form
+(entry_date / entry_price / shares / notes); blank fields = accept
+scanner's numbers. Save re-anchors monitoring immediately.
+
+Downstream: `weekly.py` and `outcome.py` skip `ownership = declined`
+rows so cycles aren't burned monitoring rejected picks. `outcomes.jsonl`
+can record both scanner-entry and user-entry price so realized returns
+are tracked against both surfaces (the algorithm's assumption vs. the
+user's actual fill).
+
+Neither gap is implemented today. Both are flagged here as roadmap. See
+CHANGELOG 2026-07-12 (design) for the decision trail and sequencing
+options.
+
+---
+
 ## 6. Intervals at a glance
 
 | Interval | Job | Module |

@@ -22,9 +22,20 @@ See CHANGELOG for the full write-up; short version:
 - **Additive advisory metrics** in `indicators.py` and surfaced in
   `stages/breakout.py`: `volume_robust_zscore`, `dry_up_streak_days`,
   `anomaly_cluster_count`. Zero threshold changes — existing gates untouched.
-- **Deferred (need explicit approval):** split BR into `PB` + `BR`;
-  delivery-% overlay from bhavcopy; block-deal from bonus to multiplier;
-  sector-relative volume z-score.
+- **Reviewed 2026-07-12 → PB/BR split rejected, step-5 fragment approved.**
+  The six-step proposal was validated against PRINCIPLES.md before any
+  code touched disk. Steps 2 (PB score) and 3 (Watchlist routing) rejected
+  — hand-fit weights on advisory metrics violates §9 and §2.5; BR ≠ [VSA]
+  triple-trigger per §2.2 would silently downgrade pocket-pivot days.
+  Steps 1, 4, 6 have no standalone work. **Step 5 approved as a trace-only
+  enrichment**: add `trigger_state ∈ {sos, pocket_pivot, none}` to the
+  FINAL trace row and bump `SCHEMA_VERSION 3 → 4`. Zero effect on pick
+  set today; seeds the tuner with an explicit column for when outcomes
+  land Oct–Dec 2026. See CHANGELOG 2026-07-12 (decision) for the full
+  per-step table. Implementation pending in a subsequent commit.
+- **Still deferred (need explicit approval):** delivery-% overlay from
+  bhavcopy; block-deal from bonus to multiplier; sector-relative volume
+  z-score.
 - **Test:** `Stockya-tuner/scripts/test_prebreakout_feedback.py` runs against
   `data/ohlcv/ABB.csv` and reproduces the feedback's numbers exactly.
 
