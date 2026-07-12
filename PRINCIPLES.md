@@ -7,6 +7,10 @@ Volume is the only signal that cannot be faked. Institutions cannot enter or exi
 > Status: **design spec — Wyckoff-VPA spine (2026-07).** Supersedes the earlier five-serial-gates and weighted-composite spines.
 >
 > **Live code (2026-07-04 evening) is an intermediate v3 soft-gate composite:** the same stage IDs `[LT] [CS] [VD] [BR]` still run, but as *soft* gates whose margins feed a weighted composite `S = Σ wᵢ · mᵢ`; only `[U] [I] [HR]` remain hard gates. `[ACS]` and `[AC]` are also live. The Wyckoff-VPA stage files (`wyckoff.py`, `vsa.py`, `avwap.py`, `exit_watch.py`) described below are the next-step target — see AGENT_HANDOFF.md.
+>
+> **UI truth-in-labelling (2026-07-12):** because a pick can clear the composite `S ≥ τ` while a listed soft leg failed its own boolean, the UI never asserts "all N gates passed" unconditionally. `hypothesis.build_pick_payload` now emits `gate_confirmation_status = {hard_confirmed | composite_qualified, passed[], failed[]}` and the stock-detail page reads it. See CHANGELOG 2026-07-12.
+>
+> **Volume signal integrity (2026-07-12):** OBV is a signed cumulative that can cross zero, so `% change vs a base bar` is unstable on long horizons (e.g. `n=120` can print ±thousands of %). `indicators.obv_norm_slope_pct` — linear-regression slope normalized by `mean(|OBV|)` — is now the preferred user-facing form. Existing threshold sites (`lt_flow.py`, `rank.py` bonus) keep the % form so strategy math is unchanged; the ranker can be re-anchored on the norm form once outcomes accumulate.
 
 ---
 
@@ -82,6 +86,25 @@ Every threshold that involves a **volume ratio** or a **range %** is normalized 
 - Dry-up: `adv(5) / adv(50) < 0.60` in normal, `< 0.75` in volatile
 
 The regime multiplier is set once per day from a NIFTY 100 realized-vol reading, not per-ticker.
+
+### 2.5 Advisory pre-breakout volume metrics (2026-07-12)
+
+Additive companions to the multi-lookback machinery above. **No live gate
+consumes them yet** — they surface in `backend/stages/breakout.py`'s features
+dict and traces, so the tuner can weight them once we have enough outcome
+history. They exist because "quiet accumulation before the trigger fires" is
+the pre-breakout footprint we want to catch earlier without loosening any
+existing threshold.
+
+- **`vol_robust_z_50d`** — `0.6745 · (v_today − median₅₀) / MAD₅₀`. Robust
+  to volume's fat right tail; comparable across sleepy large-caps and
+  hyperactive small-caps.
+- **`dry_up_streak_days_p25`** — consecutive trailing sessions whose volume
+  sat below the 25th percentile of the last 50 bars. A streak, not a
+  single-day snapshot — a 6-day quiet run inside a tight range is a
+  stronger tell than one dry bar.
+- **`anomaly_cluster_count_15d`** — count of `|z| ≥ 2` days in the trailing
+  15 sessions. Catches "the pocket pivot fired 12 days ago, not today."
 
 ---
 

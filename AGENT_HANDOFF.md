@@ -1,6 +1,35 @@
 # Agent Handoff
 
-Last updated: 2026-07-05
+Last updated: 2026-07-12
+
+## Latest Change (2026-07-12) — pre-breakout feedback: 3 bug fixes + advisory volume metrics
+
+Triggered by "Stockiya — Feedback for Claude Code" reviewing an ABB.NS pick.
+See CHANGELOG for the full write-up; short version:
+
+- **Bug 1 (UI wording lie).** `hypothesis.py` now emits
+  `gate_confirmation_status`; `StockDetailPage.tsx` reads it. No more
+  "all four gates passed" when a leg's own row shows failing evidence.
+- **Bug 2 (thesis sign-flip).** `_build_headline` branches on
+  `sign(break_pct)`. Negative days now say "closed X% below 20d high — no
+  confirmed breakout yet."
+- **Bug 3 (OBV divergence + instability).** `volume_signals.py` unified onto
+  `indicators.obv()` (one source). New `indicators.obv_norm_slope_pct` —
+  slope-of-regression normalized by `mean(|OBV|)` — is bounded across zero
+  crossings and is the preferred user-facing form. `AccumulationSignals`
+  now emits `obv_norm_slope_90d_pct` / `obv_norm_slope_180d_pct` alongside
+  the legacy % forms.
+- **Additive advisory metrics** in `indicators.py` and surfaced in
+  `stages/breakout.py`: `volume_robust_zscore`, `dry_up_streak_days`,
+  `anomaly_cluster_count`. Zero threshold changes — existing gates untouched.
+- **Deferred (need explicit approval):** split BR into `PB` + `BR`;
+  delivery-% overlay from bhavcopy; block-deal from bonus to multiplier;
+  sector-relative volume z-score.
+- **Test:** `Stockya-tuner/scripts/test_prebreakout_feedback.py` runs against
+  `data/ohlcv/ABB.csv` and reproduces the feedback's numbers exactly.
+
+---
+
 
 ## Current Architecture Truth
 

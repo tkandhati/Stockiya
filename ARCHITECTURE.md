@@ -252,7 +252,8 @@ These answer: *"Have institutions been accumulating for months?"*
 
 | Indicator | Window | Formula summary | Why it matters |
 |-----------|--------|-----------------|----------------|
-| **OBV slope** | 90d, 180d | Cumulative sum of (volume × sign of price change); linear slope | Granville: smart money cannot buy/sell without moving OBV |
+| **OBV slope (% form)** | 90d, 180d | Cumulative sum of (volume × sign of price change); `(OBV_now / OBV_t−n − 1) × 100` | Legacy % form — kept for existing thresholds. Unstable when the base bar is near zero (OBV can cross zero). |
+| **OBV norm-slope (2026-07-12)** | 90d, 180d | Linear-regression slope over the window, normalized by `mean(|OBV|)`, scaled to % / window | Zero-crossing-safe. Preferred for user-facing display; ranker thresholds will migrate here once outcomes accumulate. |
 | **CMF** | 60d | Σ[ (C-L)-(H-C) / (H-L) × Vol ] / Σ Vol (Chaikin Money Flow) | Close-proximity-weighted flow; ≥ +0.05 = sustained buying |
 | **Up/Down vol ratio** | 90d | Sum of up-day volumes / sum of down-day volumes | > 1.3 = net buying over 3 months |
 | **A/D line slope** | 30d | Chaikin Accumulation/Distribution cumulative | Direction of institutional money |
@@ -297,6 +298,37 @@ These answer: *"Is there a fresh trigger to enter today?"*
 **Fix point for math:** `backend/volume_signals.py`. All thresholds that the
 stages check are defined per-stage in the stage files, not here — this file
 just computes the raw numbers.
+
+### Group E — Pre-breakout advisory metrics (2026-07-12)
+
+Emitted by `backend/stages/breakout.py` into its features dict; **no gate
+threshold currently consumes them**. Companions to (not replacements for)
+the multi-lookback machinery in Group B, added so a quietly-accumulating
+name can be surfaced by the tuner without loosening any existing check.
+
+| Metric | Formula | Reads as |
+|--------|---------|----------|
+| **`vol_robust_z_50d`** | `0.6745 · (v_today − median₅₀) / MAD₅₀` | Robust per-ticker z. \|z\|≥2 = anomaly |
+| **`dry_up_streak_days_p25`** | Consecutive trailing bars with `v < p25(v, 50)` | Streak of quiet accumulation |
+| **`anomaly_cluster_count_15d`** | Count of `z ≥ 2` days in trailing 15 | Institutional-footprint cluster |
+
+Root feedback: `Stockya-tuner/scripts/test_prebreakout_feedback.py` reproduces
+ABB.NS's readings against these metrics.
+
+### OBV computation — single source of truth (2026-07-12)
+
+Historical bug: `volume_signals.py` and `indicators.py` both cumsum'd their
+own OBV series, and `signal_trajectory.py` / `backtest.py` computed their
+own % slopes off different bases. That's how the card and detail page for
+the same ticker could disagree (e.g. OBV-90d +357 % vs +198 %).
+
+- `backend/indicators.py:obv()` is now the only OBV cumsum in the engine.
+- `backend/volume_signals.py` imports it (no local copy).
+- The old `obv_slope_pct(obv, n)` is retained for existing threshold sites
+  (`lt_flow.py` LT gate; `rank.py` bonus signal) that reference documented
+  numeric thresholds — but marked with a WARNING docstring.
+- New `indicators.obv_norm_slope_pct(obv, n)` is the preferred user-facing
+  form: bounded across zero crossings, sign-consistent with the % form.
 
 ---
 

@@ -186,7 +186,15 @@ export function StockDetailPage() {
               {data.pick_today.gates_evidence && (
                 <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50/60 p-4">
                   <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-700">
-                    Why all four gates passed
+                    {(() => {
+                      const s = data.pick_today?.gate_confirmation_status
+                      if (!s) return 'Why the gates fired'
+                      if (s.status === 'hard_confirmed') {
+                        return `Why all ${s.counts.total} gates passed`
+                      }
+                      const failed = s.failed.join(', ')
+                      return `Composite-qualified — ${s.counts.passed}/${s.counts.total} legs confirmed (soft-fail: ${failed || 'none'})`
+                    })()}
                   </div>
                   <ul className="mt-2 space-y-1 text-xs text-slate-700">
                     {(['CS', 'VD', 'BR'] as const).flatMap((gid) =>

@@ -252,6 +252,87 @@ def vol_dryness_ratio(volume: pd.Series, n: int) -> Optional[float]:
     return recent / prior
 
 
+def volume_robust_zscore(volume: pd.Series, n: int = 50) -> Optional[float]:
+    """Per-ticker robust z-score of today's volume vs its trailing distribution.
+
+    z = 0.6745 · (v_today - median(v, n)) / MAD(v, n)
+
+    Median + MAD are robust to volume's fat right tail (a handful of spike
+    days won't inflate the "normal" baseline). The 0.6745 factor makes the
+    statistic comparable to a standard normal z (consistent under Gaussian).
+
+    Additive to the existing `vol_ratio_today_50d`: this measure treats a
+    sleepy large-cap and a hyperactive small-cap differently, so anomalies
+    stand out on their own tape rather than against a shared multiplier.
+
+    Returns None on <n+1 bars or when MAD is zero (flat volume history).
+    """
+    if volume is None or len(volume) < n + 1:
+        return None
+    prior = volume.iloc[-(n + 1):-1].astype(float)
+    today = float(volume.iloc[-1])
+    med = float(prior.median())
+    mad = float((prior - med).abs().median())
+    if mad <= 0:
+        return None
+    return 0.6745 * (today - med) / mad
+
+
+def dry_up_streak_days(
+    volume: pd.Series,
+    n: int = 50,
+    percentile: float = 25.0,
+) -> int:
+    """Consecutive trailing sessions with volume below the p-th percentile
+    of the last n bars (default 25 %).
+
+    Streak-based, not a single snapshot: a 6-day quiet run inside a coil is
+    a stronger pre-breakout tell than one dry bar. Companion to (not a
+    replacement for) `vol_dryness_ratio`, which stays available for existing
+    multi-lookback checks.
+
+    Returns 0 on insufficient history.
+    """
+    if volume is None or len(volume) < n + 1 or not (0.0 < percentile < 100.0):
+        return 0
+    prior = volume.iloc[-(n + 1):-1].astype(float)
+    threshold = float(np.percentile(prior.to_numpy(), percentile))
+    streak = 0
+    for i in range(len(volume) - 1, -1, -1):
+        if float(volume.iloc[i]) < threshold:
+            streak += 1
+        else:
+            break
+    return streak
+
+
+def anomaly_cluster_count(
+    volume: pd.Series,
+    n: int = 50,
+    lookback: int = 15,
+    z_threshold: float = 2.0,
+) -> int:
+    """Count of sessions in the trailing `lookback` window whose robust
+    z-score exceeded `z_threshold` (positive-tail spikes).
+
+    A single pocket-pivot day is noisy; 2–3 spike days inside a tight base is
+    the classic institutional-footprint cluster. Deterministic per-ticker.
+    """
+    if volume is None or len(volume) < n + lookback:
+        return 0
+    count = 0
+    for i in range(len(volume) - lookback, len(volume)):
+        window = volume.iloc[i - n : i].astype(float)
+        med = float(window.median())
+        mad = float((window - med).abs().median())
+        if mad <= 0:
+            continue
+        z = 0.6745 * (float(volume.iloc[i]) - med) / mad
+        if z >= z_threshold:
+            count += 1
+    return count
+
+
 def adi(df: pd.DataFrame) -> Optional[pd.Series]:
     """Accumulation/Distribution Line — cumulative money-flow volume series.
 
@@ -309,13 +390,48 @@ def obv(close: pd.Series, volume: pd.Series) -> pd.Series:
 
 
 def obv_slope_pct(obv_series: pd.Series, n: int) -> Optional[float]:
-    """% change in OBV over the last n bars."""
+    """% change in OBV over the last n bars.
+
+    WARNING: OBV is a signed cumulative that can pass through zero. This ratio
+    blows up (or flips sign) when the base bar is near zero — the reason two
+    UI surfaces can report wildly different long-horizon "% change" numbers
+    for the same series. Prefer `obv_norm_slope_pct` for user-facing reporting;
+    keep this one only where a documented % change threshold is already in
+    force (e.g. lt_flow.py, rank.py bonus signals).
+    """
     if len(obv_series) < n + 1:
         return None
     base = obv_series.iloc[-(n + 1)]
     if base == 0:
         return None
     return float((obv_series.iloc[-1] / base - 1) * 100)
+
+
+def obv_norm_slope_pct(obv_series: pd.Series, n: int) -> Optional[float]:
+    """Zero-crossing-safe OBV trend metric over the last n bars.
+
+    Fits a linear regression to OBV over the trailing window, normalizes the
+    slope by mean(|OBV|), and scales to a "% per window" figure. Because the
+    denominator is a magnitude (never near zero even when OBV itself crosses
+    zero), the metric stays bounded and comparable across tickers.
+
+    Interpretation is the same *sign* as `obv_slope_pct` — positive = rising
+    cumulative buying pressure, negative = distribution — but the magnitude
+    won't explode to +356 % on one snapshot and +198 % on another for the
+    same window.
+
+    Returns None on <3 valid points or when the OBV series has zero magnitude.
+    """
+    if obv_series is None or len(obv_series) < max(n, 3):
+        return None
+    window = obv_series.iloc[-n:] if n is not None else obv_series
+    slope_per_bar = norm_slope(window, None)
+    if slope_per_bar is None:
+        return None
+    # slope_per_bar is slope-per-bar as fraction of mean(|OBV|). Multiply by
+    # the number of bars to get the full-window change in the same units,
+    # then to percent.
+    return float(slope_per_bar * len(window) * 100.0)
 
 
 @dataclass

@@ -57,9 +57,18 @@ def _build_headline(result: PipelineResult) -> str:
     if div_form and div_form != "none":
         parts.append(f"{div_form.replace('-', ' ')} OBV divergence")
     if vol_ratio is not None and break_pct is not None:
-        parts.append(
-            f"broke {break_pct:+.1f}% above 20d high on {vol_ratio:.1f}x vol"
-        )
+        # Bug fix: a *negative* break_pct means today closed BELOW the 20d high —
+        # the trigger bar did not confirm. Templating "broke -6.4% above ..."
+        # produced a self-contradictory sentence. Branch on sign.
+        if break_pct >= 0:
+            parts.append(
+                f"broke {break_pct:+.1f}% above 20d high on {vol_ratio:.1f}x vol"
+            )
+        else:
+            parts.append(
+                f"closed {abs(break_pct):.1f}% below 20d high on {vol_ratio:.1f}x vol "
+                f"— no confirmed breakout yet"
+            )
     return "; ".join(parts) or "All four gates cleared"
 
 
@@ -70,6 +79,43 @@ def _gate_evidence(result: PipelineResult) -> dict:
         sr = result.stage_results.get(gid)
         out[gid] = list(sr.evidence) if sr and sr.evidence else []
     return out
+
+
+def _gate_confirmation_status(result: PipelineResult) -> dict:
+    """Report whether every listed soft gate literally passed on its own terms.
+
+    Bug fix: the UI previously hardcoded "Why all four gates passed" whenever a
+    ticker was surfaced. Under the v3 soft-gate composite spine a pick can
+    clear the composite `S ≥ τ` while an individual soft leg (e.g. BR) failed
+    its own bool check. Reporting "all four passed" in that case is a lie.
+
+    Returns:
+        {
+          "status":  "hard_confirmed" | "composite_qualified",
+          "passed":  ["CS", "VD"],
+          "failed":  ["BR"],
+          "counts":  {"passed": 2, "total": 3},
+        }
+
+    UI should branch its heading text on `status`:
+      - hard_confirmed      →  "Why all N gates passed"
+      - composite_qualified →  "Composite-qualified — {p}/{t} legs confirmed"
+    """
+    gate_ids = ("CS", "VD", "BR")
+    passed: list[str] = []
+    failed: list[str] = []
+    for gid in gate_ids:
+        sr = result.stage_results.get(gid)
+        if sr is None:
+            continue
+        (passed if sr.passed else failed).append(gid)
+    total = len(passed) + len(failed)
+    return {
+        "status": "hard_confirmed" if not failed and total > 0 else "composite_qualified",
+        "passed": passed,
+        "failed": failed,
+        "counts": {"passed": len(passed), "total": total},
+    }
 
 
 def build_pick_payload(
@@ -156,6 +202,7 @@ def build_pick_payload(
         "exit_schedule": exit_schedule,
         "distribution_flip_exit": distribution_flip_note,
         "gates_evidence": _gate_evidence(result),
+        "gate_confirmation_status": _gate_confirmation_status(result),
         "volume_event": vol_event,
 
         # ---- Legacy aliases (so existing frontend keeps rendering) ----

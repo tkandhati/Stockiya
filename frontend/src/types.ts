@@ -51,6 +51,18 @@ export interface GatesEvidence {
   BR?: string[]
 }
 
+export interface GateConfirmationStatus {
+  // "hard_confirmed" = every listed soft leg passed on its own boolean check.
+  // "composite_qualified" = the weighted composite S >= tau, but at least one
+  // listed leg failed its own terms. UI must not claim "all gates passed" in
+  // the composite-qualified case — that reads as a bug when a leg's own row
+  // shows failing evidence.
+  status: 'hard_confirmed' | 'composite_qualified'
+  passed: string[]
+  failed: string[]
+  counts: { passed: number; total: number }
+}
+
 export interface VolumeEvent {
   kind: string
   direction: 'bullish' | 'bearish' | 'neutral'
@@ -88,6 +100,7 @@ export interface Pick {
   exit_schedule?: ExitSchedule
   distribution_flip_exit?: string
   gates_evidence?: GatesEvidence
+  gate_confirmation_status?: GateConfirmationStatus
   volume_event?: VolumeEvent | null
 
   // ---- Legacy aliases (still populated by build_pick_payload) ----

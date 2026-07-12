@@ -91,6 +91,9 @@ class AccumulationSignals:
     minervini_template: bool = False               # 50>150>200, all rising, price>50
     obv_slope_90d_pct: Optional[float] = None
     obv_slope_180d_pct: Optional[float] = None
+    # Zero-crossing-safe OBV trend (bounded). Preferred for user-facing display.
+    obv_norm_slope_90d_pct: Optional[float] = None
+    obv_norm_slope_180d_pct: Optional[float] = None
     cmf_60d: Optional[float] = None
     up_down_vol_ratio_90d: Optional[float] = None
     base_length_days: int = 0                      # days price stayed within ±10% of recent
@@ -212,9 +215,13 @@ def compute(history: pd.DataFrame, symbol: Optional[str] = None) -> Accumulation
             ))
 
     # ---------- 3. OBV (Granville) slope ----------
-    direction = closes.diff().fillna(0).apply(lambda x: 1 if x > 0 else (-1 if x < 0 else 0))
-    obv = (direction * vols).cumsum()
-    obv_slope = (obv.iloc[-1] / obv.iloc[-31] - 1) * 100 if len(obv) >= 31 and obv.iloc[-31] != 0 else None
+    # Bug fix: previously this module cumsum'd its own OBV series while
+    # indicators.py did the same in a second function. Two implementations →
+    # two card/detail-page numbers that disagreed for the same ticker. Now
+    # both sites route through indicators.obv() — one source of truth.
+    from .indicators import obv as _obv_series, obv_slope_pct as _obv_slope_pct
+    obv = _obv_series(closes, vols)
+    obv_slope = _obv_slope_pct(obv, 30)
 
     if obv_slope is not None:
         if obv_slope >= 5:
@@ -538,12 +545,21 @@ def compute(history: pd.DataFrame, symbol: Optional[str] = None) -> Accumulation
         )
 
     # OBV at 90 and 180 days
+    # NOTE: the % change forms below are what the UI historically shows. They
+    # can blow up when the base bar is near zero — that is the root cause of
+    # the card vs detail page divergence (e.g. +357 % vs +198 %). We keep
+    # them for backwards-compat with existing thresholds and the accumulation
+    # schema, but ALSO emit the zero-crossing-safe norm-slope form. Callers
+    # (and the UI) should prefer the *_norm_pct variants going forward.
+    from .indicators import obv_norm_slope_pct as _obv_norm_slope_pct
     obv_slope_90d_pct: Optional[float] = None
     obv_slope_180d_pct: Optional[float] = None
     if len(obv) >= 91 and obv.iloc[-91] != 0:
         obv_slope_90d_pct = (obv.iloc[-1] / obv.iloc[-91] - 1) * 100
     if len(obv) >= 181 and obv.iloc[-181] != 0:
         obv_slope_180d_pct = (obv.iloc[-1] / obv.iloc[-181] - 1) * 100
+    obv_norm_slope_90d_pct = _obv_norm_slope_pct(obv, 90)
+    obv_norm_slope_180d_pct = _obv_norm_slope_pct(obv, 180)
 
     # CMF 60-day
     cmf_60d: Optional[float] = None
@@ -798,6 +814,8 @@ def compute(history: pd.DataFrame, symbol: Optional[str] = None) -> Accumulation
         minervini_template=minervini_template,
         obv_slope_90d_pct=round(obv_slope_90d_pct, 1) if obv_slope_90d_pct is not None else None,
         obv_slope_180d_pct=round(obv_slope_180d_pct, 1) if obv_slope_180d_pct is not None else None,
+        obv_norm_slope_90d_pct=round(obv_norm_slope_90d_pct, 1) if obv_norm_slope_90d_pct is not None else None,
+        obv_norm_slope_180d_pct=round(obv_norm_slope_180d_pct, 1) if obv_norm_slope_180d_pct is not None else None,
         cmf_60d=round(cmf_60d, 3) if cmf_60d is not None else None,
         up_down_vol_ratio_90d=round(up_down_90d, 2) if up_down_90d is not None else None,
         base_length_days=base_length_days,

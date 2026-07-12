@@ -1,5 +1,86 @@
 # Changelog
 
+## 2026-07-12 — pre-breakout feedback: 3 bug fixes + additive volume metrics
+
+Triggered by the "Stockiya — Feedback for Claude Code" review after cross-
+checking two UI surfaces for the same ABB.NS pick. All three reported bugs
+were reproduced against `data/ohlcv/ABB.csv` (128 EOD rows) before fixing.
+
+**Bugs fixed**
+
+1. *Gate-pass label overstates confirmation.* Under the v3 soft-gate composite
+   spine a pick can clear `S >= τ` while a listed leg (e.g. BR) failed its own
+   boolean. The old hardcoded header "Why all four gates passed" therefore
+   lied whenever the composite carried a soft-failed leg.
+   - `backend/stages/hypothesis.py` now emits `gate_confirmation_status`
+     `{status, passed[], failed[], counts}` alongside `gates_evidence`.
+   - `frontend/src/pages/StockDetailPage.tsx` branches the heading on
+     `status`: "Why all N gates passed" (hard_confirmed) vs "Composite-
+     qualified — p/t legs confirmed (soft-fail: …)" (composite_qualified).
+   - `frontend/src/types.ts` gains the `GateConfirmationStatus` interface.
+
+2. *Sign-flip in generated thesis text.* `_build_headline` templated
+   `"broke {break_pct:+.1f}% above 20d high"` unconditionally, producing the
+   self-contradictory `"broke -6.4% above 20d high"` on non-triggering days.
+   - Branches on `sign(break_pct)`. Negative path now reads
+     `"closed X.X% below 20d high on Yx vol — no confirmed breakout yet"`.
+   - Positive path preserved: `"broke +X.X% above 20d high on Yx vol"`.
+
+3. *OBV disagreement across UI + unstable OBV-180d.* Two separate cumsum
+   implementations plus `% change vs a base bar` that blows up when the base
+   is near zero (OBV is a signed cumulative). Same ABB series produced e.g.
+   `-4334 %` at n=120 with the % form.
+   - Unified: `backend/volume_signals.py` now imports `indicators.obv()` and
+     `indicators.obv_slope_pct()`. Single source of truth.
+   - Added `indicators.obv_norm_slope_pct(obv_series, n)` — linear-regression
+     slope normalized by `mean(|OBV|)`, scaled to % / window. Bounded across
+     zero crossings.
+   - `AccumulationSignals` now emits `obv_norm_slope_90d_pct` and
+     `obv_norm_slope_180d_pct` alongside the legacy % forms; UI should
+     prefer the norm variants for display. Existing threshold call sites in
+     `lt_flow.py` and `rank.py` still consume the % form (strategy math
+     untouched) but the metric can be swapped once outcomes accumulate.
+
+**Additive pre-breakout metrics (advisory; no thresholds consume them yet)**
+
+These are the "genuine and additive" pieces from suggestions B/C/E of the
+feedback. Multi-lookback machinery (`adaptive_windows`, `vol_dryness_ratio`)
+was left in place — these are companions, not replacements.
+
+- `indicators.volume_robust_zscore(volume, n=50)` — robust z via median +
+  MAD × 0.6745. Treats sleepy large-caps and hyperactive small-caps on
+  their own tape.
+- `indicators.dry_up_streak_days(volume, n=50, percentile=25)` — count of
+  consecutive trailing sessions with volume below the p25 of the last n
+  bars. Streak, not a snapshot.
+- `indicators.anomaly_cluster_count(volume, n=50, lookback=15, z_threshold=2)`
+  — count of |z|≥2 spike sessions in the trailing 15. Catches "the pocket
+  pivot fired 12 days ago, not today."
+
+Wired into `backend/stages/breakout.py` features dict as
+`vol_robust_z_50d`, `dry_up_streak_days_p25`, `anomaly_cluster_count_15d`.
+Purely informational — the existing `vol_ratio_today_50d >= 1.3` check is
+still the only volume decision-maker.
+
+**Deferred (roadmap; strategy-touching, need explicit user approval)**
+
+- Split BR into `PB` (pre-breakout: pocket-pivot, no-supply) and `BR`
+  (SOS-only). Sketched in PRINCIPLES.md `[VSA]` section, not yet coded.
+- NSE delivery-% overlay. Bhavcopy ingest already writes
+  `data/delivery/<SYMBOL>.csv`; wiring as a filter/multiplier is a scoring
+  change.
+- Promote block/bulk-deal net-buy from a +1 bonus to a rank multiplier.
+- Sector-relative volume z-score against the sector's same-day median.
+
+**Validation**
+
+- New smoke test `Stockya-tuner/scripts/test_prebreakout_feedback.py`.
+  Runs against `data/ohlcv/ABB.csv`. Reproduces the feedback's numbers
+  exactly (`break_pct = -6.41 %`, `vol_ratio = 0.28×`, upper-third `0.24`),
+  proves the OBV pct-form pathology (`n=120 → -4334.2 %` vs norm-form
+  `+149.9 %`), and asserts the headline no longer contains "broke -X% above".
+- `python -m compileall backend middleware` clean.
+
 ## 2026-07-05 (late-3) — adaptive windows (per-ticker, not per-rule)
 
 User pushback on the previous fix: `(10, 20, 40)` was still a hardcoded rule.

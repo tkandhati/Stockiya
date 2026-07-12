@@ -19,7 +19,14 @@ Fix points:
 
 from __future__ import annotations
 
-from ..indicators import adv, last_bar_upper_third_ratio, rolling_high
+from ..indicators import (
+    adv,
+    anomaly_cluster_count,
+    dry_up_streak_days,
+    last_bar_upper_third_ratio,
+    rolling_high,
+    volume_robust_zscore,
+)
 from ..pipeline import PipelineContext, StageResult
 
 stage_id = "BR"
@@ -65,6 +72,16 @@ def run(ctx: PipelineContext) -> StageResult:
 
     vol_ratio = vol_today / adv_long if adv_long and adv_long > 0 else None
 
+    # Additive per-ticker anomaly features (informational only — no threshold
+    # here consumes them, so the existing `vol_ratio >= vol_mult_min` check
+    # remains the single volume decision-maker). Kept separate so a future
+    # tuner ratchet can start weighting them once outcomes accumulate.
+    vol_z = volume_robust_zscore(df["Volume"], ADV_WINDOW)
+    dryup_streak = dry_up_streak_days(df["Volume"], ADV_WINDOW, percentile=25.0)
+    anomaly_cluster = anomaly_cluster_count(
+        df["Volume"], n=ADV_WINDOW, lookback=15, z_threshold=2.0
+    )
+
     features = {
         "close": round(close, 2),
         "high": round(high, 2),
@@ -82,6 +99,10 @@ def run(ctx: PipelineContext) -> StageResult:
         "upper_third_ratio": (
             round(upper_third, 3) if upper_third is not None else None
         ),
+        # New: robust per-ticker anomaly metrics (advisory).
+        "vol_robust_z_50d": round(vol_z, 2) if vol_z is not None else None,
+        "dry_up_streak_days_p25": dryup_streak,
+        "anomaly_cluster_count_15d": anomaly_cluster,
     }
 
     evidence: list[str] = []

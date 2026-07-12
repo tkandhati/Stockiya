@@ -143,6 +143,13 @@ At the top of every page is a regime banner:
 
 If zero tickers cleared all four gates on a regime-on day, the page shows *"Nothing actionable today — quality over quantity."*
 
+**Truth-in-labelling (2026-07-12):** the stock-detail page no longer hardcodes *"Why all four gates passed"*. It reads `pick_today.gate_confirmation_status.status` (emitted by `build_pick_payload`) and shows:
+
+- `hard_confirmed` → *"Why all N gates passed"*
+- `composite_qualified` → *"Composite-qualified — p/t legs confirmed (soft-fail: BR, …)"*
+
+This is the honest surface for the v3 soft-gate composite: a pick can clear the composite `S ≥ τ` while an individual leg's own boolean check failed. The old wording was accurate under the retired 5-AND-gates spine and misleading under v3.
+
 ---
 
 ## 6. Intervals at a glance
