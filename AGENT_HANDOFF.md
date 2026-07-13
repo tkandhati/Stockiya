@@ -1,6 +1,43 @@
 # Agent Handoff
 
-Last updated: 2026-07-12
+Last updated: 2026-07-13
+
+For proposals that have been analyzed but not shipped, see `WISHLIST.md`.
+
+## Latest Change (2026-07-13) — My Positions V1: ownership + user-actual fill
+
+Every pick the scanner emits now starts as `ownership="suggested"` in
+`data/portfolio.csv`. On the `My Positions` page the user can accept
+(paper / live, with optional custom entry date / price / shares / notes)
+or decline. `positions_view` re-anchors P&L, `days_held`, and day-45/90/180
+time-stops on whichever entry is populated (user's fill takes precedence
+when provided, otherwise falls back to the scanner's numbers). Stop /
+T1 / T2 stay at the scanner's absolute price levels — they're targets on
+the tape, not offsets from the fill.
+
+- **Schema** — five additive columns on `portfolio.csv`: `ownership`,
+  `user_entry_date`, `user_entry_price`, `user_shares`, `user_notes`.
+  Tolerant reader; older rows load unchanged.
+- **Downstream filters** — `positions_view.list_active_positions`,
+  `portfolio.update_open_picks` (weekly Friday), and `stages/outcome.py`
+  (T+90 / T+180) all skip `ownership="declined"`.
+- **API** — `POST /api/positions/{pick_id}/take` (paper|live with
+  optional user_* fields) and `POST /api/positions/{pick_id}/decline`.
+- **UI** — `PositionsPage.tsx` renders `Suggested` and `Held` sections;
+  `PositionCard.tsx` shows an ownership badge plus a "Your fill" strip
+  when user's inputs diverge from scanner's.
+- **Invariants preserved** — no scanner change; `pipeline.py`,
+  `config/stage_weights.json`, and τ untouched; the pick set is
+  byte-identical to yesterday.
+- **Validation** — `python -m compileall backend middleware` clean;
+  `npm run build` clean (734 kB main bundle, +8 kB for the inline
+  take-fill form). Corporate-firewall constraint stands — no live
+  pipeline run performed.
+
+See `CHANGELOG.md` for the full write-up + file list. See
+`PROCESS_FLOW.md §5b` for the routing table.
+
+---
 
 ## Latest Change (2026-07-12) — pre-breakout feedback: 3 bug fixes + advisory volume metrics
 
@@ -22,22 +59,11 @@ See CHANGELOG for the full write-up; short version:
 - **Additive advisory metrics** in `indicators.py` and surfaced in
   `stages/breakout.py`: `volume_robust_zscore`, `dry_up_streak_days`,
   `anomaly_cluster_count`. Zero threshold changes — existing gates untouched.
-- **Reviewed 2026-07-12 → PB/BR split rejected, step-5 fragment approved.**
-  The six-step proposal was validated against PRINCIPLES.md before any
-  code touched disk. Steps 2 (PB score) and 3 (Watchlist routing) rejected
-  — hand-fit weights on advisory metrics violates §9 and §2.5; BR ≠ [VSA]
-  triple-trigger per §2.2 would silently downgrade pocket-pivot days.
-  Steps 1, 4, 6 have no standalone work. **Step 5 approved as a trace-only
-  enrichment**: add `trigger_state ∈ {sos, pocket_pivot, none}` to the
-  FINAL trace row and bump `SCHEMA_VERSION 3 → 4`. Zero effect on pick
-  set today; seeds the tuner with an explicit column for when outcomes
-  land Oct–Dec 2026. See CHANGELOG 2026-07-12 (decision) for the full
-  per-step table. Implementation pending in a subsequent commit.
-- **Still deferred (need explicit approval):** delivery-% overlay from
-  bhavcopy; block-deal from bonus to multiplier; sector-relative volume
-  z-score.
 - **Test:** `Stockya-tuner/scripts/test_prebreakout_feedback.py` runs against
   `data/ohlcv/ABB.csv` and reproduces the feedback's numbers exactly.
+
+Follow-up items from this feedback (`PB / BR split`, deferred overlays)
+have been analyzed and moved to `WISHLIST.md`.
 
 ---
 

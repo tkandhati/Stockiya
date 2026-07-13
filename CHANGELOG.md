@@ -1,95 +1,92 @@
 # Changelog
 
-## 2026-07-12 (design) — My Positions: user-actual entry capture proposed
+## 2026-07-13 — My Positions V1: ownership + user-actual fill capture
 
-No code change. Extends the "suggested vs held" gap already documented
-in PROCESS_FLOW.md §5b with a second, related gap surfaced by the user
-question *"in my portfolio you have option to user to capture when he
-entered and what value and guide him?"* — the answer today is no. The
-scanner writes `entry_date` and `entry_price` at pick time; every
-downstream number in `positions_view.py` (stop, T1, T2, day-45/90/180
-time-stops, P&L, action column) is computed against the scanner's
-assumption, not the user's real fill. If the user bought a day later
-at a different price, the guidance is speaking to a position they don't
-own.
+The "did I actually take this pick, and at what fill?" story is now
+end-to-end. Every pick the scanner emits starts as `ownership=suggested`;
+the user can accept it (paper / live, with optional custom fill) or
+decline it. Position monitoring re-anchors on the user's fill when
+provided, and skips declined rows entirely.
 
-**Base V1 (additive, no schema break)** — add five optional columns to
-`portfolio.csv`:
+**portfolio.csv — 5 additive columns (tolerant reader; old rows load unchanged)**
 
-- `ownership` — `suggested | paper | live | declined`
-- `user_entry_date`, `user_entry_price`, `user_shares` — user's real fill
-- `user_notes` — free-form
+| Column | Values | Blank means |
+|---|---|---|
+| `ownership` | `suggested \| paper \| live \| declined` | (new rows default to `suggested`) |
+| `user_entry_date` | ISO date | use scanner's `entry_date` |
+| `user_entry_price` | float | use scanner's `entry_price` |
+| `user_shares` | int | use scanner's `shares_total` |
+| `user_notes` | free-form | (none) |
 
-`positions_view.py` uses `user_*` if present, else scanner's values —
-tolerant reader on both sides. `weekly.py` and `outcome.py` skip
-`declined` rows. Guidance re-anchors immediately on save.
+**Routing** in `backend/positions_view.py`:
 
-UI: `Take (paper)` / `Take (live)` / `Decline` buttons on each
-`suggested` row; "Take" opens a small form; blank fields = accept
-scanner's numbers.
+```
+entry_effective   = user_entry_date  or scanner entry_date
+price_effective   = user_entry_price or scanner entry_price
+shares_effective  = user_shares      or scanner shares_total
+days_held         = today − entry_effective
+pnl_pct           = (close_today − price_effective) / price_effective
+day-45/90/180     = counted from entry_effective
+stop / T1 / T2    = scanner's absolute price levels (unchanged)
+```
 
-**Not shipping in this pass.** Design captured for a future PR. Two
-sequencing options:
+Stop / T1 / T2 stay at the scanner's absolute prices — they're targets
+on the tape, not offsets from the fill. Trajectory anchoring also stays
+on the scanner's entry date.
 
-1. **Bundle** `ownership` + `user_entry_*` in one PR (~150 lines across
-   `portfolio.py`, `positions_view.py`, `PositionsPage.tsx`). Coherent
-   story — day-one guidance already speaks to the user's fill.
-2. **Ownership only first**, then user-fill in a follow-up. Smaller PR
-   but forces a two-week gap where "I took it" is captured but guidance
-   still speaks to the scanner's assumption.
+**Downstream filters** — `positions_view.list_active_positions`,
+`portfolio.update_open_picks`, and `stages/outcome.py` all skip
+`ownership="declined"`; no cycles spent monitoring rejected picks and
+no realized-return noise in `outcomes.jsonl` from picks nobody held.
 
-**Invariants preserved (both options)**
+**API**
 
-- No scanner change.
-- `pipeline.py`, `config/stage_weights.json`, τ, and `HARD_GATE_IDS`
-  untouched.
+- `POST /api/positions/{pick_id}/take` — body:
+  `{ownership: "paper"|"live", user_entry_date?, user_entry_price?,
+  user_shares?, user_notes?}`. Returns the refreshed
+  `PositionsResponse`.
+- `POST /api/positions/{pick_id}/decline` — no body.
+
+**UI** (`frontend/src/pages/PositionsPage.tsx`)
+
+Two sections: **Suggested** (Take paper / Take live / Decline; Take
+opens an inline form) and **Held** (ownership badge + "Your fill" strip
+showing user's inputs vs. scanner's whenever they diverge).
+
+**Invariants preserved**
+
+- `pipeline.py:HARD_GATE_IDS = {U, I, HR}` — untouched.
+- `config/stage_weights.json`, composite weights, and τ — untouched.
+- Scanner unchanged; the pick set is byte-identical to what it emitted
+  yesterday.
 - Data survives code changes: additive schema, tolerant reader treats
   missing `user_*` fields as blank → fall back to scanner's numbers.
+  Older rows created before this ship load without modification.
 - Deterministic — user-fill fields are manual inputs; no live data
   fetch, no LLM, no external API.
 
-## 2026-07-12 (decision) — PB/BR split reviewed; 5 of 6 steps rejected, step 5 approved
+**Files changed**
 
-No code change. Records the outcome of a design review triggered by the
-CHANGELOG 2026-07-12 "Deferred" line for the `PB` (pre-breakout) / `BR`
-(SOS-only) split. Proposal was staged as six steps; each was validated
-against PRINCIPLES.md before any code was touched.
+```
+backend/portfolio.py            (schema, record_picks, update_open_picks, set_ownership)
+backend/positions_view.py       (user-fill fallback routing)
+backend/stages/outcome.py       (skip declined)
+middleware/schemas.py           (Position DTO, TakePositionRequest DTO)
+middleware/main.py              (POST /api/positions/{id}/take, /decline)
+frontend/src/types.ts           (PositionOwnership, Position fields, TakePositionRequest)
+frontend/src/api.ts             (takePosition, declinePosition)
+frontend/src/components/PositionCard.tsx   (ownership badge, Suggested/Taken footers)
+frontend/src/pages/PositionsPage.tsx       (Suggested / Held sections)
+PROCESS_FLOW.md                 (§5b rewritten to reflect shipped state)
+```
 
-**Decisions**
+**Validation**
 
-| # | Step | Verdict | Reason |
-|---|---|---|---|
-| 1 | Verify BR is SOS-only | No work — already true | `stages/breakout.py:111-150` implements the three checks from PRINCIPLES §2.2 SOS bar rule; nothing folded in |
-| 2 | Build PB score from `vol_robust_z_50d`, `dry_up_streak_days_p25`, `anomaly_cluster_count_15d`, CS tightness, pocket-pivot, no-supply | **Rejected** | Hand-designed weights on 6 metrics. Violates §9 ("thresholds evolved by the tuner once ≥90d of outcomes accumulate — never hand-tuned to last quarter") and §2.5 ("no live gate consumes them yet — the tuner picks weights once we have enough outcome history"). Current spine has zero T+90 outcomes for the post-2026-07-04 pivot. First outcome cohort lands ~2026-10-02 (T+90) and ~2026-12-31 (T+180). |
-| 3 | Route: `clears τ ∧ BR fires` → Active Alert; `clears τ ∧ BR misses` → Watchlist ranked by PB | **Rejected** | Uses BR as the trigger, but per PRINCIPLES §2.2 the `[VSA]` trigger is **any of** SOS bar / pocket-pivot / no-supply test. Under the proposed rule, a pocket-pivot day (the "5-15 sessions earlier" lever §2.2 explicitly calls out) gets silently downgraded to Watchlist. Also adds a 4th UI surface (ClosestToFiringPanel + Active Alert + Watchlist + Positions) for information a single badge could carry. |
-| 4 | Reuse ClosestToFiringPanel patterns for the Watchlist | N/A | Step 3 not shipping, so this design instruction has no target. |
-| 5 | Log `trigger_state ∈ {sos, pocket_pivot, none}` in trace + bump `SCHEMA_VERSION 3 → 4` | **Approved** | Trace-only enrichment; zero effect on pick set today. Seeds the tuner with an explicit column for which of the three [VSA] triggers preceded each entry, so when outcomes land Oct–Dec 2026 the champion-challenger ratchet can weight trigger-presence explicitly instead of it being latent in the BR margin. No zero-picks risk (no gate change). |
-| 6 | Validate against `data/ohlcv/ABB.csv` | N/A without steps 2/3 | Nothing to validate beyond the current pipeline. |
-
-**Constraints honored**
-
-- `pipeline.py:HARD_GATE_IDS = {U, I, HR}` — untouched.
-- `config/stage_weights.json` — untouched (weights, τ = 0.28).
-- No ticker that clears τ today is newly rejected by any of the above.
-- No hand-fit weights added to any decision surface.
-
-**Implementation status**
-
-- Step 5 code lands in a subsequent commit. Scope: `PipelineResult` gets a
-  `trigger_state` field, computed once from BR pass ∨ existing
-  `_check_pocket_pivot_today` (in `stages/rank.py`, to be promoted to a
-  public predicate to avoid circular import with `pipeline.py`).
-  `append_final_trace` in `pipeline.py` includes it; `SCHEMA_VERSION`
-  bumps 3 → 4. Old v3 rows remain readable. No-supply-test is not
-  wired (not currently implemented anywhere in `backend/`) — deferred
-  until the [VSA] stage lands per AGENT_HANDOFF.md.
-
-**Not shipped from the original proposal**
-
-- PB score construct — will not ship. If future outcomes justify weighting
-  the advisory metrics, the tuner adds them; no hand-fit path.
-- Watchlist UI surface — will not ship. The pick-card badge added by step 5
-  carries the same information at 1/10 the surface area.
+- `python -m compileall backend middleware` — clean.
+- `npm run build` in `frontend` — clean (734 kB main bundle, +8 kB
+  for the inline take-fill form).
+- No live pipeline run performed (corporate firewall constraint).
+- Browser flow not executed by CI; type check + build pass.
 
 ## 2026-07-12 (docs) — My Positions lifecycle documented
 
@@ -112,10 +109,10 @@ summarize into learning?"
 - **Learning loop.** `outcomes.jsonl` → `scripts/tune_weights.py`
   champion-challenger ratchet against `config/stage_weights.json`
   (accuracy monotone-non-decreasing).
-- **Documented gap.** No `suggested vs held` distinction today — every
-  pick enters as `status=open` and is monitored equally. Proposed base
-  V1 (add `ownership` column + Watching/Holding/Closed tabs) captured
-  as roadmap in §5b "Known limitation"; not implemented.
+- **Documented gap (closed 2026-07-13).** At publish time there was no
+  `suggested vs held` distinction — every pick entered as `status=open`
+  and was monitored equally. The V1 ship on 2026-07-13 (top entry)
+  closed this gap with an `ownership` column + user-fill fields.
 
 Validation:
 - doc-only; no code, config, or data touched.

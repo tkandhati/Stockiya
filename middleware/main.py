@@ -40,6 +40,7 @@ from .schemas import (  # noqa: E402
     PositionsResponse,
     StockDetail,
     StrategySignalDTO,
+    TakePositionRequest,
 )
 
 logging.basicConfig(
@@ -180,6 +181,39 @@ def get_positions() -> PositionsResponse:
         count=len(items),
         positions=[Position(**p) for p in items],
     )
+
+
+@app.post("/api/positions/{pick_id}/take", response_model=PositionsResponse)
+def take_position(pick_id: str, req: TakePositionRequest) -> PositionsResponse:
+    """Mark a suggested pick as taken (paper or live), with optional
+    user-actual fill. Blank user_* fields fall back to the scanner's
+    numbers; positions_view re-anchors monitoring off whichever entry is
+    populated.
+    """
+    from backend.portfolio import set_ownership
+    updated = set_ownership(
+        pick_id,
+        req.ownership,
+        user_entry_date=req.user_entry_date or "",
+        user_entry_price=float(req.user_entry_price or 0),
+        user_shares=int(req.user_shares or 0),
+        user_notes=req.user_notes or "",
+    )
+    if updated is None:
+        raise HTTPException(status_code=404, detail=f"pick_id {pick_id} not found")
+    return get_positions()
+
+
+@app.post("/api/positions/{pick_id}/decline", response_model=PositionsResponse)
+def decline_position(pick_id: str) -> PositionsResponse:
+    """Mark a suggested pick as declined. Monitoring/outcome trackers skip
+    declined rows going forward; the row stays in portfolio.csv for audit.
+    """
+    from backend.portfolio import set_ownership
+    updated = set_ownership(pick_id, "declined")
+    if updated is None:
+        raise HTTPException(status_code=404, detail=f"pick_id {pick_id} not found")
+    return get_positions()
 
 
 def _todays_pick_for(symbol: str) -> Pick | None:

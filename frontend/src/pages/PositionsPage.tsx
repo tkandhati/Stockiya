@@ -1,10 +1,21 @@
+import { useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { ArrowLeft, Briefcase } from 'lucide-react'
 import { fetchPositions } from '../api'
 import { PositionCard } from '../components/PositionCard'
 import { Disclaimer } from '../components/Disclaimer'
+import type { Position } from '../types'
 
+/**
+ * My Positions.
+ *
+ * Two sections (V1 — ownership + user-actual entry):
+ *   Suggested — scanner emitted, user hasn't acted. Take / Decline.
+ *   Held      — user marked paper / live. Monitored with real-fill guidance.
+ *
+ * Declined rows are filtered server-side and never rendered here.
+ */
 export function PositionsPage() {
   const { data, isLoading, isError, error } = useQuery({
     queryKey: ['positions'],
@@ -13,7 +24,17 @@ export function PositionsPage() {
   })
 
   const positions = data?.positions ?? []
-  const actionCounts = positions.reduce<Record<string, number>>((acc, p) => {
+  const { suggested, held } = useMemo(() => {
+    const s: Position[] = []
+    const h: Position[] = []
+    for (const p of positions) {
+      if (p.ownership === 'suggested') s.push(p)
+      else h.push(p) // paper | live
+    }
+    return { suggested: s, held: h }
+  }, [positions])
+
+  const actionCounts = held.reduce<Record<string, number>>((acc, p) => {
     acc[p.action] = (acc[p.action] || 0) + 1
     return acc
   }, {})
@@ -33,13 +54,16 @@ export function PositionsPage() {
           My positions
         </h1>
         <p className="mt-1 text-sm text-slate-700">
-          Open holdings with today&apos;s recommended action. Picks come and go;
-          positions persist for months.
+          Scanner suggestions on top; positions you took below. Guidance
+          re-anchors on your actual fill if you enter one.
         </p>
         {data && (
           <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
-            <span className="rounded bg-slate-100 px-2 py-1 font-mono text-slate-700">
-              {data.count} open
+            <span className="rounded bg-slate-200 px-2 py-1 font-mono text-slate-800">
+              {suggested.length} suggested
+            </span>
+            <span className="rounded bg-indigo-100 px-2 py-1 font-mono text-indigo-900">
+              {held.length} held
             </span>
             {Object.entries(actionCounts).map(([action, n]) => (
               <span
@@ -60,7 +84,7 @@ export function PositionsPage() {
         <Disclaimer />
       </div>
 
-      <main className="mt-6">
+      <main className="mt-6 space-y-8">
         {isLoading && (
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
             {[0, 1].map((i) => (
@@ -87,23 +111,64 @@ export function PositionsPage() {
               📭
             </div>
             <h2 className="mt-4 text-lg font-semibold text-slate-900">
-              No open positions
+              No positions yet
             </h2>
             <p className="mx-auto mt-2 max-w-xl text-sm text-slate-600">
-              Once a buy alert clears all four gates and is acted on, it will
-              appear here with daily guidance until you exit it.
+              Once a buy alert is emitted, it appears here as a suggestion.
+              Confirm you took it (paper or live) to lock in your actual
+              fill and start monitored guidance.
             </p>
           </div>
         )}
 
-        {data && positions.length > 0 && (
-          <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-            {positions.map((p) => (
-              <PositionCard key={p.pick_id} position={p} />
-            ))}
-          </div>
+        {data && suggested.length > 0 && (
+          <Section
+            title="Suggested"
+            subtitle="Scanner emitted, you haven't acted. Take (paper / live) or Decline."
+          >
+            <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+              {suggested.map((p) => (
+                <PositionCard key={p.pick_id} position={p} />
+              ))}
+            </div>
+          </Section>
+        )}
+
+        {data && held.length > 0 && (
+          <Section
+            title="Held"
+            subtitle="Guidance below reflects your actual fill where you entered one."
+          >
+            <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+              {held.map((p) => (
+                <PositionCard key={p.pick_id} position={p} />
+              ))}
+            </div>
+          </Section>
         )}
       </main>
     </div>
+  )
+}
+
+function Section({
+  title,
+  subtitle,
+  children,
+}: {
+  title: string
+  subtitle: string
+  children: React.ReactNode
+}) {
+  return (
+    <section>
+      <div className="mb-3 flex items-baseline justify-between gap-4">
+        <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-800">
+          {title}
+        </h2>
+        <span className="text-xs text-slate-500">{subtitle}</span>
+      </div>
+      {children}
+    </section>
   )
 }

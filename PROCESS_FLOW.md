@@ -243,65 +243,63 @@ if the candidate's replay metric strictly beats the current champion's**.
 Champion-challenger ratchet — accuracy is monotone-non-decreasing by
 construction. This is the "learning" that closes back into future picks.
 
-### Known limitations — "suggested vs held" and "user-actual entry" not captured
+### Ownership + user-actual entry
 
-Two related gaps in the current ledger, both about the user's real
-position vs the scanner's assumption:
+`portfolio.csv` carries five fields for the "did I take this pick, and
+at what fill?" question. All are optional; blank / 0 falls back to the
+scanner's numbers, so the schema is backward-compatible with any older
+rows that pre-date the fields.
 
-**1. No accept / decline gesture.** Every pick the scanner emits enters
-`portfolio.csv` with `status = open` and is monitored equally. There is
-no column recording whether the user actually **took** the position
-(paper / live) or **declined** it. All picks show up in `/api/positions`
-until they hit an exit condition — including ones the user never took.
+| Field | Values | Effect if blank |
+|---|---|---|
+| `ownership` | `suggested \| paper \| live \| declined` | defaults to `suggested` on pick creation |
+| `user_entry_date` | ISO date | `positions_view` uses scanner's `entry_date` |
+| `user_entry_price` | float | `positions_view` uses scanner's `entry_price` |
+| `user_shares` | int | `positions_view` uses scanner's `shares_total` |
+| `user_notes` | free-form string | (none) |
 
-**2. No user-actual entry.** `portfolio.record_picks`
-(`backend/portfolio.py:172`) auto-fills `entry_date = today` and
-`entry_price = close_from_[PS]` at pick time. Every downstream number
-— stop, T1, T2, day-45/90/180 checkpoints, P&L, and the "hold / sell at
-T1 / exit" action column in `positions_view.py` — is computed against
-the scanner's *assumed* entry, not the user's *real* fill. If the user
-actually bought a day later at a different price (slippage, limit
-order, discretionary timing), the guidance surface is speaking to a
-position they don't own.
-
-**Base V1 to close both gaps — additive, no schema break**
-
-Extend `portfolio.csv` with five optional columns; tolerant reader
-treats blanks as "use scanner's numbers":
-
-```
-ownership         : suggested | paper | live | declined
-user_entry_date   : ISO date or ""      (blank = use scanner's)
-user_entry_price  : float or 0
-user_shares       : int or 0
-user_notes        : free-form string
-```
-
-`positions_view.py` routing when computing action + P&L:
+**Routing** in `positions_view.list_active_positions`:
 
 ```
 entry_effective   = user_entry_date  or scanner entry_date
 price_effective   = user_entry_price or scanner entry_price
 shares_effective  = user_shares      or scanner shares_total
-stop / T1 / T2    = recomputed off price_effective + original R math
-day-45/90/180     = counted from entry_effective
-pnl_pct           = (close_today - price_effective) / price_effective
+days_held         = today − entry_effective
+pnl_pct           = (close_today − price_effective) / price_effective
+day_45 / 90 / 180 = entry_effective + N days
+stop / T1 / T2    = scanner's absolute price levels (unchanged)
 ```
 
-UI: on any `ownership = suggested` row, offer
-`[Take (paper)] [Take (live)] [Decline]`. "Take" opens a small form
-(entry_date / entry_price / shares / notes); blank fields = accept
-scanner's numbers. Save re-anchors monitoring immediately.
+Stop / T1 / T2 stay at the scanner's absolute prices — they're targets
+on the tape, not offsets from the fill. Trajectory anchoring also stays
+on the scanner's `entry_date`; that's when the setup was scored.
 
-Downstream: `weekly.py` and `outcome.py` skip `ownership = declined`
-rows so cycles aren't burned monitoring rejected picks. `outcomes.jsonl`
-can record both scanner-entry and user-entry price so realized returns
-are tracked against both surfaces (the algorithm's assumption vs. the
-user's actual fill).
+**Downstream filters**
 
-Neither gap is implemented today. Both are flagged here as roadmap. See
-CHANGELOG 2026-07-12 (design) for the decision trail and sequencing
-options.
+- `positions_view.list_active_positions` skips `ownership="declined"` —
+  `/api/positions` never returns declined rows.
+- `portfolio.update_open_picks` (weekly close updater) skips declined.
+- `backend/stages/outcome.py` skips declined — no realized-return
+  tracking for picks the user rejected.
+
+**API endpoints**
+
+- `POST /api/positions/{pick_id}/take` — body:
+  `{ownership: "paper"|"live", user_entry_date?, user_entry_price?,
+  user_shares?, user_notes?}`. Returns the refreshed `PositionsResponse`.
+- `POST /api/positions/{pick_id}/decline` — no body. Returns the
+  refreshed `PositionsResponse` (declined pick already filtered out).
+
+**UI** (`frontend/src/pages/PositionsPage.tsx`)
+
+Renders two sections:
+
+- **Suggested** — cards show scanner's ladder + `Take (paper)` /
+  `Take (live)` / `Decline` buttons. Take opens an inline form
+  (entry date / entry price / shares / notes); blanks accept scanner
+  defaults. Decline fires immediately.
+- **Held** — cards show ownership badge (`PAPER` / `LIVE`) plus a
+  "Your fill" strip when user-entered values diverge from scanner's.
 
 ---
 

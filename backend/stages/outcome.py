@@ -73,6 +73,12 @@ def run_outcome_tracker(
     summary = {"checked": 0, "appended": 0, "skipped_already_logged": 0, "no_price": 0}
 
     for r in rows:
+        # Skip picks the user explicitly declined — they never entered a
+        # real (or paper) position, so their realized-return is noise
+        # against the tuner's target of "did the scanner's judgment work?"
+        if r.get("ownership") == "declined":
+            continue
+
         entry_iso = r.get("entry_date")
         if not entry_iso:
             continue

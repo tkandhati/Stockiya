@@ -161,6 +161,10 @@ def list_active_positions(
     for r in rows:
         if r.get("status") not in ("open", "partial_t1"):
             continue
+        # Skip picks the user explicitly declined.
+        ownership = (r.get("ownership") or "suggested").strip() or "suggested"
+        if ownership == "declined":
+            continue
 
         sym = r["symbol"]
         try:
@@ -168,13 +172,38 @@ def list_active_positions(
         except Exception:
             close = None
 
+        # Scanner's assumed entry (always populated by record_picks).
         try:
-            entry_d = date.fromisoformat(r["entry_date"])
+            scanner_entry_d = date.fromisoformat(r["entry_date"])
         except (KeyError, ValueError):
             continue
+        scanner_entry_px = float(r.get("entry_price") or 0)
+        scanner_shares = int(r.get("shares_total") or 0)
 
+        # User's actual fill (blank / 0 => fall back to scanner's numbers).
+        user_entry_iso = (r.get("user_entry_date") or "").strip()
+        try:
+            user_entry_px = float(r.get("user_entry_price") or 0)
+        except (TypeError, ValueError):
+            user_entry_px = 0.0
+        try:
+            user_shares_val = int(float(r.get("user_shares") or 0))
+        except (TypeError, ValueError):
+            user_shares_val = 0
+
+        entry_d = scanner_entry_d
+        if user_entry_iso:
+            try:
+                entry_d = date.fromisoformat(user_entry_iso)
+            except ValueError:
+                entry_d = scanner_entry_d
+
+        entry = user_entry_px if user_entry_px > 0 else scanner_entry_px
+        shares_total = user_shares_val if user_shares_val > 0 else scanner_shares
+
+        # Stop / T1 / T2 stay at the scanner's absolute price levels
+        # (they're targets on the tape, not offsets from the fill).
         days_held = (today - entry_d).days
-        entry = float(r.get("entry_price") or 0)
         stop = float(r.get("stop_price") or 0)
         t1 = float(r.get("t1_price") or 0)
         t2 = float(r.get("t2_price") or r.get("target_price") or 0)
@@ -184,7 +213,10 @@ def list_active_positions(
 
         # ---- Signal trajectory (Q2) ----
         # Compare entry-time institutional indicators to today's values; if
-        # any flipped, escalate the action to exit.
+        # any flipped, escalate the action to exit. Trajectory anchors on
+        # the scanner's entry date (that's when the setup was scored); user's
+        # actual fill day doesn't change the setup's baseline institutional
+        # signals.
         try:
             traj = compute_trajectory(sym, r["entry_date"])
         except Exception:
@@ -215,7 +247,7 @@ def list_active_positions(
             "trace_id": r.get("trace_id", ""),
             "symbol": sym,
             "company": r.get("company") or sym,
-            "entry_date": r["entry_date"],
+            "entry_date": entry_d.isoformat(),
             "days_held": days_held,
             "entry_price": entry,
             "stop_price": stop,
@@ -226,7 +258,7 @@ def list_active_positions(
             "status": r.get("status", "open"),
             "hit_t1": hit_t1,
             "hit_t1_date": r.get("hit_t1_date", ""),
-            "shares_total": int(r.get("shares_total") or 0),
+            "shares_total": shares_total,
             "shares_at_t1": shares_at_t1,
             "shares_at_t2": shares_at_t2,
             "confirmation_score": float(r.get("confirmation_score") or 0),
@@ -246,6 +278,15 @@ def list_active_positions(
             "days_to_expected_t1": days_to_expected_t1,
             # ---- Q2 trajectory fields ----
             "trajectory": traj.as_dict() if traj else None,
+            # ---- Ownership + user-fill (V1) ----
+            "ownership": ownership,
+            "scanner_entry_date": scanner_entry_d.isoformat(),
+            "scanner_entry_price": scanner_entry_px,
+            "scanner_shares": scanner_shares,
+            "user_entry_date": user_entry_iso,
+            "user_entry_price": user_entry_px if user_entry_px > 0 else None,
+            "user_shares": user_shares_val if user_shares_val > 0 else None,
+            "user_notes": r.get("user_notes") or "",
         })
 
     # Sort: action urgency first (exits before holds), then by days_held desc

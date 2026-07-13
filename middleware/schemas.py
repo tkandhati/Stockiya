@@ -290,12 +290,40 @@ class Position(BaseModel):
     days_to_expected_t1: Optional[int] = None
     # Q2 -- signal trajectory since entry
     trajectory: Optional[TrajectoryDTO] = None
+    # V1 -- ownership + user-actual fill.
+    # `ownership` = suggested | paper | live | declined (`declined` never
+    # returned by /api/positions). `entry_date`, `entry_price`, `shares_total`
+    # above are the *effective* values (user's if given, scanner's otherwise);
+    # the raw scanner values are also carried so the UI can show both.
+    ownership: Literal["suggested", "paper", "live"] = "suggested"
+    scanner_entry_date: str = ""
+    scanner_entry_price: float = 0.0
+    scanner_shares: int = 0
+    user_entry_date: str = ""
+    user_entry_price: Optional[float] = None
+    user_shares: Optional[int] = None
+    user_notes: str = ""
 
 
 class PositionsResponse(BaseModel):
     date_ist: str
     count: int
     positions: list[Position] = []
+
+
+class TakePositionRequest(BaseModel):
+    """Body for POST /api/positions/{pick_id}/take.
+
+    All user_* fields are optional — blanks fall back to the scanner's
+    numbers. `ownership` must be either "paper" or "live"; use the
+    /decline endpoint for "declined" so the two lifecycles don't share
+    input validation.
+    """
+    ownership: Literal["paper", "live"]
+    user_entry_date: str = ""
+    user_entry_price: Optional[float] = None
+    user_shares: Optional[int] = None
+    user_notes: str = ""
 
 
 class StockDetail(BaseModel):

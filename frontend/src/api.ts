@@ -5,6 +5,7 @@ import type {
   PicksResponse,
   PositionsResponse,
   StockDetail,
+  TakePositionRequest,
 } from './types'
 
 async function jsonOrThrow<T>(res: Response): Promise<T> {
@@ -25,6 +26,23 @@ export function refreshPicks(): Promise<PicksResponse> {
 
 export function fetchPositions(): Promise<PositionsResponse> {
   return fetch('/api/positions').then(jsonOrThrow<PositionsResponse>)
+}
+
+export function takePosition(
+  pickId: string,
+  req: TakePositionRequest,
+): Promise<PositionsResponse> {
+  return fetch(`/api/positions/${encodeURIComponent(pickId)}/take`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+  }).then(jsonOrThrow<PositionsResponse>)
+}
+
+export function declinePosition(pickId: string): Promise<PositionsResponse> {
+  return fetch(`/api/positions/${encodeURIComponent(pickId)}/decline`, {
+    method: 'POST',
+  }).then(jsonOrThrow<PositionsResponse>)
 }
 
 export function fetchStockDetail(symbol: string): Promise<StockDetail> {

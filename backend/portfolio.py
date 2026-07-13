@@ -66,6 +66,12 @@ PORTFOLIO_FIELDS = [
     "weinstein_stage",
     "entry_timing",
     "risk_headline",
+    # ---- User ownership + actual fill (blank = use scanner's numbers) ----
+    "ownership",                 # suggested | paper | live | declined
+    "user_entry_date",           # ISO date or ""; blank -> use scanner's entry_date
+    "user_entry_price",          # float or 0;    0     -> use scanner's entry_price
+    "user_shares",               # int or 0;      0     -> use scanner's shares_total
+    "user_notes",                # free-form
     # ---- Lifecycle / outcome ----
     "status",                    # open | partial_t1 | target_hit | stopped | timed_out | hypothesis_broken
     "hit_t1",                    # 'true' once T1 has been crossed
@@ -76,6 +82,11 @@ PORTFOLIO_FIELDS = [
     "pnl_pct",
     "last_updated",
 ]
+
+# Valid values for the `ownership` column. "suggested" = scanner emitted it,
+# user hasn't acted. "paper" / "live" = user took it (with or without capital).
+# "declined" = user rejected it; weekly / outcome trackers skip these.
+OWNERSHIP_VALUES = frozenset({"suggested", "paper", "live", "declined"})
 
 WEEKLY_FIELDS = [
     "pick_id", "symbol", "week_ending", "close",
@@ -113,6 +124,11 @@ class PortfolioRow:
     weinstein_stage: str = ""
     entry_timing: str = ""
     risk_headline: str = ""
+    ownership: str = "suggested"
+    user_entry_date: str = ""
+    user_entry_price: float = 0.0
+    user_shares: int = 0
+    user_notes: str = ""
     status: str = "open"
     hit_t1: str = ""
     hit_t1_date: str = ""
@@ -232,6 +248,7 @@ def record_picks(picks_payload: dict) -> int:
             weinstein_stage=p.get("weinstein_stage", ""),
             entry_timing=p.get("entry_timing", ""),
             risk_headline=p.get("risk_headline", ""),
+            ownership="suggested",
             last_updated=datetime.now(IST).isoformat(timespec="seconds"),
         )
         rows.append(row.__dict__)
@@ -265,6 +282,9 @@ def update_open_picks(close_price_for: callable) -> dict:
 
     for r in rows:
         if r.get("status") not in ("open", "partial_t1"):
+            continue
+        # Skip picks the user explicitly declined — no point tracking them.
+        if r.get("ownership") == "declined":
             continue
 
         sym = r["symbol"]
@@ -344,3 +364,50 @@ def update_open_picks(close_price_for: callable) -> dict:
 def list_open_pick_symbols() -> list[str]:
     """Helper for ad-hoc price refreshes."""
     return [r["symbol"] for r in _read_portfolio() if r.get("status") == "open"]
+
+
+# --------------------------------------------------------------------------- #
+# User-ownership operations
+# --------------------------------------------------------------------------- #
+
+def set_ownership(
+    pick_id: str,
+    ownership: str,
+    *,
+    user_entry_date: str = "",
+    user_entry_price: float = 0.0,
+    user_shares: int = 0,
+    user_notes: str = "",
+) -> Optional[dict]:
+    """Update ownership + optional user-fill fields for a single pick_id.
+
+    Returns the updated row dict on success, or None if pick_id was not found.
+    Raises ValueError if `ownership` is not one of OWNERSHIP_VALUES.
+    """
+    if ownership not in OWNERSHIP_VALUES:
+        raise ValueError(
+            f"invalid ownership {ownership!r}; must be one of {sorted(OWNERSHIP_VALUES)}"
+        )
+
+    rows = _read_portfolio()
+    updated: Optional[dict] = None
+    for r in rows:
+        if r.get("pick_id") != pick_id:
+            continue
+        r["ownership"] = ownership
+        if user_entry_date:
+            r["user_entry_date"] = user_entry_date
+        if user_entry_price:
+            r["user_entry_price"] = f"{float(user_entry_price):.4f}"
+        if user_shares:
+            r["user_shares"] = str(int(user_shares))
+        if user_notes:
+            r["user_notes"] = user_notes
+        r["last_updated"] = datetime.now(IST).isoformat(timespec="seconds")
+        updated = r
+        break
+
+    if updated is not None:
+        _write_portfolio(rows)
+        log.info("Updated ownership for %s -> %s", pick_id, ownership)
+    return updated

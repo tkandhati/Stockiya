@@ -192,6 +192,8 @@ export interface TimeStops {
   day_180: string
 }
 
+export type PositionOwnership = 'suggested' | 'paper' | 'live'
+
 export interface Position {
   pick_id: string
   trace_id: string
@@ -224,6 +226,26 @@ export interface Position {
   days_to_expected_t1?: number
   // Q2 — signal trajectory since entry
   trajectory?: Trajectory | null
+  // V1 — ownership + user-actual fill.
+  // `entry_date` / `entry_price` / `shares_total` above are the *effective*
+  // values (user's if given, scanner's otherwise); scanner_* fields carry
+  // the raw scanner numbers so the UI can show both.
+  ownership: PositionOwnership
+  scanner_entry_date?: string
+  scanner_entry_price?: number
+  scanner_shares?: number
+  user_entry_date?: string
+  user_entry_price?: number | null
+  user_shares?: number | null
+  user_notes?: string
+}
+
+export interface TakePositionRequest {
+  ownership: 'paper' | 'live'
+  user_entry_date?: string
+  user_entry_price?: number | null
+  user_shares?: number | null
+  user_notes?: string
 }
 
 export interface PositionsResponse {
