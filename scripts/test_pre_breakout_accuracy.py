@@ -301,6 +301,249 @@ def test_volume_stage_healing_tilts_margin_up() -> None:
     print("PASS VD stage surfaces inflection feature")
 
 
+# --------------------------------------------------------------------------- #
+# Exit-rule tests: healing-velocity override + failed-breakout micro-stop
+# --------------------------------------------------------------------------- #
+
+from backend.signal_trajectory import (  # noqa: E402
+    FAILED_BR_VOLUME_MULT,
+    FAILED_BR_WINDOW_TRADING_DAYS,
+    HEALING_GRACE_TRADING_DAYS,
+    _build_report,
+    _classify_failed_breakout,
+    _classify_healing_flip,
+)
+
+
+def _base_lt_features() -> dict:
+    """Entry-time LT features that neither strong nor weak — neutral baseline
+    so the healing/B1.5 indicators dominate in the aggregate."""
+    return {
+        "obv_90d_slope_pct": 6.0,
+        "up_down_vol_ratio_90d": 1.3,
+        "ma150_slope_pct": 1.5,
+    }
+
+
+def _base_current(**overrides) -> dict:
+    """Current features that pass all standard indicators — same values as
+    entry so those states are all 'stable'."""
+    base = {
+        "obv_90d_slope_pct": 6.0,
+        "up_down_vol_ratio_90d": 1.3,
+        "ma150_slope_pct": 1.5,
+        "volume_event_direction": "neutral",
+        "volume_event_kind": "neutral",
+        "volume_event_score": 0.0,
+        "volume_event_label": "No event",
+        "volume_event_detail": "No event.",
+        "obv_flow_inflection": "neutral",
+        "obv_slope_short_pct": 0.0,
+        "obv_slope_long_pct": 0.0,
+        "last_close": 500.0,
+        "last_volume": 900_000,
+        "trailing_20d_high": 495.0,
+        "adv_50d": 1_000_000,
+    }
+    base.update(overrides)
+    return base
+
+
+def test_healing_flip_hemorrhaging_inside_grace() -> None:
+    """entry=healing, current=hemorrhaging inside grace -> flipped."""
+    state = _classify_healing_flip("healing", "hemorrhaging", trading_days_since_entry=3)
+    assert state == "flipped", state
+    print("PASS healing->hemorrhaging inside grace = flipped")
+
+
+def test_healing_flip_healing_inside_grace() -> None:
+    """entry=healing, current=healing inside grace -> strong."""
+    state = _classify_healing_flip("healing", "healing", trading_days_since_entry=3)
+    assert state == "strong", state
+    print("PASS healing->healing inside grace = strong")
+
+
+def test_healing_flip_neutral_inside_grace() -> None:
+    """entry=healing, current=neutral inside grace -> stable."""
+    state = _classify_healing_flip("healing", "neutral", trading_days_since_entry=3)
+    assert state == "stable", state
+    print("PASS healing->neutral inside grace = stable")
+
+
+def test_healing_flip_after_grace_still_healing() -> None:
+    """entry=healing, current=healing but grace expired -> stable (thesis
+    intact but no longer gets divergent-entry benefit-of-doubt)."""
+    state = _classify_healing_flip(
+        "healing", "healing", trading_days_since_entry=HEALING_GRACE_TRADING_DAYS + 5,
+    )
+    assert state == "stable", state
+    print(f"PASS grace expired ({HEALING_GRACE_TRADING_DAYS}d) with healing intact = stable")
+
+
+def test_healing_flip_after_grace_neutral() -> None:
+    """entry=healing, current=neutral after grace -> weakening."""
+    state = _classify_healing_flip(
+        "healing", "neutral", trading_days_since_entry=HEALING_GRACE_TRADING_DAYS + 1,
+    )
+    assert state == "weakening", state
+    print("PASS grace expired with neutral = weakening")
+
+
+def test_healing_flip_non_divergent_entry_returns_unknown() -> None:
+    """entry=neutral -> classifier stays out; standard rules own the call."""
+    state = _classify_healing_flip("neutral", "hemorrhaging", trading_days_since_entry=3)
+    assert state == "unknown", state
+    print("PASS non-divergent entry short-circuits to unknown")
+
+
+def test_failed_breakout_fires_inside_window() -> None:
+    """close < resistance AND vol >= 1.0x ADV50 within window -> flipped."""
+    state = _classify_failed_breakout(
+        resistance_20d_at_entry=500.0,
+        current_close=490.0,
+        current_volume=1_400_000,
+        current_adv50=1_000_000,
+        trading_days_since_entry=3,
+    )
+    assert state == "flipped", state
+    print("PASS failed-breakout micro-stop fires inside window")
+
+
+def test_failed_breakout_close_above_resistance() -> None:
+    """close still above resistance -> stable (micro-stop not fired)."""
+    state = _classify_failed_breakout(
+        resistance_20d_at_entry=500.0,
+        current_close=510.0,
+        current_volume=1_400_000,
+        current_adv50=1_000_000,
+        trading_days_since_entry=3,
+    )
+    assert state == "stable", state
+    print("PASS breakout holding above resistance = stable")
+
+
+def test_failed_breakout_light_volume_no_fire() -> None:
+    """close < resistance but volume BELOW ADV50 -> stable (no distribution)."""
+    state = _classify_failed_breakout(
+        resistance_20d_at_entry=500.0,
+        current_close=490.0,
+        current_volume=800_000,
+        current_adv50=1_000_000,
+        trading_days_since_entry=3,
+    )
+    assert state == "stable", state
+    print("PASS close-below-resistance on light volume = stable (no B1.5)")
+
+
+def test_failed_breakout_outside_window() -> None:
+    """Same failure condition outside window -> unknown (defer to B2)."""
+    state = _classify_failed_breakout(
+        resistance_20d_at_entry=500.0,
+        current_close=490.0,
+        current_volume=1_400_000,
+        current_adv50=1_000_000,
+        trading_days_since_entry=FAILED_BR_WINDOW_TRADING_DAYS + 1,
+    )
+    assert state == "unknown", state
+    print(f"PASS outside {FAILED_BR_WINDOW_TRADING_DAYS}d window = unknown")
+
+
+def test_failed_breakout_missing_resistance() -> None:
+    """No 20d high on trace (non-BR pick) -> unknown."""
+    state = _classify_failed_breakout(
+        resistance_20d_at_entry=None,
+        current_close=490.0,
+        current_volume=1_400_000,
+        current_adv50=1_000_000,
+        trading_days_since_entry=3,
+    )
+    assert state == "unknown", state
+    print("PASS non-BR pick (no resistance) = unknown")
+
+
+def test_report_divergent_entry_flips_on_hemorrhaging() -> None:
+    """Full report: entry VD=healing, current inflection=hemorrhaging inside
+    grace -> exit_recommendation=True."""
+    entry_vd = {"obv_flow_inflection": "healing"}
+    entry_br = {}
+    current = _base_current(
+        obv_flow_inflection="hemorrhaging",
+        obv_slope_short_pct=-5.0, obv_slope_long_pct=-20.0,
+    )
+    report = _build_report(
+        entry_lt=_base_lt_features(),
+        entry_vd=entry_vd,
+        entry_br=entry_br,
+        current=current,
+        trading_days_since_entry=3,
+    )
+    assert report.exit_recommendation, report
+    names = [i.name for i in report.indicators]
+    assert "obv_flow_inflection" in names, names
+    print("PASS full trajectory: divergent entry with hemorrhaging -> exit")
+
+
+def test_report_divergent_entry_holds_on_healing() -> None:
+    """Same divergent entry, current still healing -> no exit."""
+    entry_vd = {"obv_flow_inflection": "healing"}
+    entry_br = {}
+    current = _base_current(
+        obv_flow_inflection="healing",
+        obv_slope_short_pct=+8.0, obv_slope_long_pct=-5.0,
+    )
+    report = _build_report(
+        entry_lt=_base_lt_features(),
+        entry_vd=entry_vd,
+        entry_br=entry_br,
+        current=current,
+        trading_days_since_entry=3,
+    )
+    assert not report.exit_recommendation, report
+    print("PASS full trajectory: divergent entry with intact healing -> hold")
+
+
+def test_report_breakout_micro_stop_fires() -> None:
+    """Full report: BR pick, close falls below 20d high on heavy vol day-3 -> exit."""
+    entry_vd = {"obv_flow_inflection": "neutral"}
+    entry_br = {"resistance_20d": 500.0}
+    current = _base_current(
+        last_close=490.0, last_volume=1_400_000, adv_50d=1_000_000,
+    )
+    report = _build_report(
+        entry_lt=_base_lt_features(),
+        entry_vd=entry_vd,
+        entry_br=entry_br,
+        current=current,
+        trading_days_since_entry=3,
+    )
+    assert report.exit_recommendation, report
+    names = [i.name for i in report.indicators]
+    assert "failed_breakout_micro_stop" in names, names
+    print("PASS full trajectory: failed breakout micro-stop fires")
+
+
+def test_report_breakout_holds_after_window() -> None:
+    """Same failure conditions but past the arming window -> no B1.5 exit
+    from the micro-stop (falls to standard rules)."""
+    entry_vd = {"obv_flow_inflection": "neutral"}
+    entry_br = {"resistance_20d": 500.0}
+    current = _base_current(
+        last_close=490.0, last_volume=1_400_000, adv_50d=1_000_000,
+    )
+    report = _build_report(
+        entry_lt=_base_lt_features(),
+        entry_vd=entry_vd,
+        entry_br=entry_br,
+        current=current,
+        trading_days_since_entry=FAILED_BR_WINDOW_TRADING_DAYS + 3,
+    )
+    # No indicator named failed_breakout_micro_stop, and standard indicators
+    # are all stable -> no exit.
+    micro = [i for i in report.indicators if i.name == "failed_breakout_micro_stop"]
+    assert not micro, micro
+    print(f"PASS full trajectory: past day-{FAILED_BR_WINDOW_TRADING_DAYS} the micro-stop is disarmed")
+
+
 def main() -> int:
     print("=" * 60)
     print("Pre-breakout accuracy tests")
@@ -318,6 +561,22 @@ def main() -> int:
         test_flow_inflection_bull_trap,
         test_flow_inflection_healthy_breakout,
         test_volume_stage_healing_tilts_margin_up,
+        # Exit-rule tests
+        test_healing_flip_hemorrhaging_inside_grace,
+        test_healing_flip_healing_inside_grace,
+        test_healing_flip_neutral_inside_grace,
+        test_healing_flip_after_grace_still_healing,
+        test_healing_flip_after_grace_neutral,
+        test_healing_flip_non_divergent_entry_returns_unknown,
+        test_failed_breakout_fires_inside_window,
+        test_failed_breakout_close_above_resistance,
+        test_failed_breakout_light_volume_no_fire,
+        test_failed_breakout_outside_window,
+        test_failed_breakout_missing_resistance,
+        test_report_divergent_entry_flips_on_hemorrhaging,
+        test_report_divergent_entry_holds_on_healing,
+        test_report_breakout_micro_stop_fires,
+        test_report_breakout_holds_after_window,
     ]
     failures = 0
     for t in tests:

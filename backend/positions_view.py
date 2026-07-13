@@ -216,9 +216,18 @@ def list_active_positions(
         # any flipped, escalate the action to exit. Trajectory anchors on
         # the scanner's entry date (that's when the setup was scored); user's
         # actual fill day doesn't change the setup's baseline institutional
-        # signals.
+        # signals. `trading_days_since_entry` powers the windowed rules —
+        # healing-velocity override (10d grace) and failed-breakout micro-stop
+        # (5d arming window). Uses scanner_entry_d so the window boundaries
+        # are consistent with the trace-time indicator values.
+        trading_days_since_entry = max(
+            0, _trading_days_between(scanner_entry_d, today)
+        )
         try:
-            traj = compute_trajectory(sym, r["entry_date"])
+            traj = compute_trajectory(
+                sym, r["entry_date"],
+                trading_days_since_entry=trading_days_since_entry,
+            )
         except Exception:
             traj = None
         trajectory_flip = bool(traj and traj.exit_recommendation)

@@ -24,8 +24,13 @@ from __future__ import annotations
 from typing import Optional
 
 from ..indicators import volume_spike_event
-from ..pipeline import PipelineResult
+from ..pipeline import PipelineResult, classify_trigger
 from ..position_sizer import size_position
+from ..signal_trajectory import (
+    FAILED_BR_VOLUME_MULT,
+    FAILED_BR_WINDOW_TRADING_DAYS,
+    HEALING_GRACE_TRADING_DAYS,
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -178,11 +183,51 @@ def build_pick_payload(
         },
     }
 
-    distribution_flip_note = (
-        "Exit immediately if any of the volume signals invert: OBV-30d turns "
-        "down, 5d/50d volume ratio re-expands above 1.0x, or close < 150d MA "
-        "on two consecutive sessions."
+    # Trigger-aware exit language. Divergent (pre-breakout) entries can't use
+    # the standard "OBV-30d turns down" rule because their 30d OBV was already
+    # weak at entry; instead the runtime signal_trajectory watches the 10d/30d
+    # inflection for a "healing -> hemorrhaging" flip inside a bounded grace.
+    # SOS-breakout entries additionally arm the failed-breakout micro-stop for
+    # the first FAILED_BR_WINDOW_TRADING_DAYS sessions.
+    regime = classify_trigger(result.stage_results)
+    vd = result.stage_results.get("VD")
+    entry_inflection = (
+        (vd.features or {}).get("obv_flow_inflection") if vd else None
     )
+    br = result.stage_results.get("BR")
+    resistance_20d = (br.features or {}).get("resistance_20d") if br else None
+
+    if entry_inflection == "healing":
+        distribution_flip_note = (
+            "Divergent entry (10d OBV up, 30d weak — 'healing'). Standard "
+            "OBV-30d exit rule is suspended for the first "
+            f"{HEALING_GRACE_TRADING_DAYS} sessions. Exit at next open only if "
+            "the 10d OBV rolls negative (inflection -> hemorrhaging) inside "
+            "that grace, or the 150d MA slope turns down."
+        )
+    else:
+        distribution_flip_note = (
+            "Exit immediately if any of the volume signals invert: OBV-90d "
+            "rolls into a downslope, up/down vol 90d falls below 1.0x, or "
+            "close < 150d MA on two consecutive sessions."
+        )
+
+    if regime == "sos_breakout" and resistance_20d:
+        exit_schedule["day_5_failed_breakout"] = {
+            "milestone_days": FAILED_BR_WINDOW_TRADING_DAYS,
+            "action": "exit_market",
+            "trigger": (
+                f"close < 20d high ({resistance_20d:.2f}) "
+                f"AND volume >= {FAILED_BR_VOLUME_MULT:.2f}x ADV50"
+            ),
+            "resistance_20d": resistance_20d,
+            "note": (
+                f"Micro-stop (B1.5) armed for the first "
+                f"{FAILED_BR_WINDOW_TRADING_DAYS} sessions. A breakout that "
+                "falls back below its own resistance on heavy volume is "
+                "institutional distribution — exit before the -8% B2 stop."
+            ),
+        }
 
     return {
         # ---- New shape (primary) ----

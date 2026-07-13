@@ -1,5 +1,94 @@
 # Changelog
 
+## 2026-07-13 — Exit-rule accuracy: healing-velocity override (B1') + failed-breakout micro-stop (B1.5)
+
+Two additive exit rules that close accuracy gaps opened by the earlier
+pre-breakout entry work — no changes to entry gates, no changes to the
+composite scorer.
+
+**1. Healing-velocity override for divergent entries** (`backend/signal_trajectory.py`)
+
+The standard B1 exit rule ("OBV rolls over → exit") is a category error
+for picks entered with `obv_flow_inflection == "healing"`: their long-window
+OBV was already negative when we bought — that's what defined the setup.
+Adopting B1 literally would mark them for exit on day 1. New classifier
+`_classify_healing_flip(entry_inflection, current_inflection, days)`:
+
+```
+entry            current            days                    state
+─────────────    ─────────────      ──────────────────      ─────────────
+healing          hemorrhaging       any within grace        flipped (exit)
+healing          healing            within grace            strong  (hold)
+healing          neutral            within grace            stable  (hold)
+healing          healing            grace expired           stable
+healing          any non-healing    grace expired           weakening
+any other        —                  —                       unknown (no override)
+```
+
+`HEALING_GRACE_TRADING_DAYS` defaults to 10 sessions. After the grace
+expires we fall back to the standard 90d indicators — the divergent-entry
+benefit-of-the-doubt is time-bounded.
+
+**2. Failed-breakout micro-stop (B1.5)** (`backend/signal_trajectory.py`)
+
+New rule for SOS-breakout picks: within the first
+`FAILED_BR_WINDOW_TRADING_DAYS` (default 5) sessions, if `close < 20d high`
+(the entry-day resistance level captured in the BR stage's features) AND
+`today's volume >= FAILED_BR_VOLUME_MULT × ADV50` (default 1.0×), exit at
+next open. A breakout that closes back below its own resistance on heavy
+volume is institutional distribution — the -8% B2 stop gives back too much.
+
+Both rules integrate into the existing `compute_trajectory(...)` pipeline
+as new `IndicatorDelta` entries, so any `flipped` state surfaces through
+the same `exit_recommendation` bit that already drives
+`positions_view._action_for(..., trajectory_flip=True)`. No new plumbing.
+
+**Wiring** (`backend/positions_view.py`)
+
+`compute_trajectory` now accepts `trading_days_since_entry`, computed from
+the scanner entry date via the existing `_trading_days_between` helper.
+Both windowed rules receive that value on every daily positions refresh.
+
+**Payload changes** (`backend/stages/hypothesis.py`)
+
+`distribution_flip_note` is now trigger-aware — divergent entries get the
+healing-velocity wording, standard entries get the OBV-90d wording.
+SOS-breakout picks additionally get an `exit_schedule.day_5_failed_breakout`
+milestone with the exact resistance level and volume threshold.
+
+**Tests** — 15 new cases in `scripts/test_pre_breakout_accuracy.py` (27
+total, all pass). All in-memory synthetic fixtures — no network calls
+(corporate firewall blocks live fetches per project constraints):
+
+```
+healing->hemorrhaging inside grace   -> flipped
+healing->healing inside grace         -> strong
+healing->neutral inside grace         -> stable
+grace expired + healing intact        -> stable
+grace expired + neutral               -> weakening
+non-divergent entry                   -> unknown (no override)
+close < resistance + heavy vol in 5d  -> flipped (B1.5)
+close > resistance                    -> stable
+close < resistance + light vol        -> stable (no B1.5)
+outside 5d window                     -> unknown (defer to B2)
+non-BR pick (no resistance)           -> unknown
+full trajectory: divergent + hemorrhaging -> exit
+full trajectory: divergent + healing       -> hold
+full trajectory: failed breakout day-3     -> exit
+full trajectory: failed conditions day-8   -> no B1.5 fire
+```
+
+**Considered and rejected:**
+
+- *CMF < -0.05 exit threshold* — CMF is not wired into the live
+  `signal_trajectory` pipeline (legacy `volume_signals.py` only, harvested
+  and not carried forward). Rule targets a signal the exit path doesn't
+  consume; moot.
+- *21d EMA trailing stop post-T1* — improves risk management but doesn't
+  fix a bug or contradiction; would add a new indicator and post-T1
+  runtime mode. Deferred until we have outcome data to justify the
+  additional complexity.
+
 ## 2026-07-13 — Pre-breakout accuracy: trigger-contextual weighting + OBV flow velocity
 
 Two targeted changes to raise the hit-rate on Pocket-Pivot / No-Supply-Test

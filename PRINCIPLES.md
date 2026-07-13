@@ -183,6 +183,46 @@ Runs daily against every open pick. **Any one** of the following fires an exit a
 
 Exit-watch is the mirror of [WY] + [VSA]: same volume language, opposite direction. We don't wait for the 8 % stop when the tape says institutions are leaving.
 
+### 5.1 Trigger-aware exit rules (2026-07-13)
+
+The base B1 rule ("any volume signal inverts → exit") is unchanged, but two
+additive rules close accuracy gaps opened by the pre-breakout entry work in
+§2.5. Both live in `backend/signal_trajectory.py` and integrate into the
+existing `TrajectoryReport.exit_recommendation` bit, which already drives
+`positions_view._action_for(trajectory_flip=True)`.
+
+**Healing-velocity override (B1')** — for picks whose entry-time VD stage
+recorded `obv_flow_inflection == "healing"`. Their 30d OBV was already
+negative at entry, so the standard "OBV rolls over" rule would mark them
+for exit on day 1. Instead:
+
+```
+Within HEALING_GRACE_TRADING_DAYS (default 10 sessions):
+    current == hemorrhaging   →  flipped  (10d rolled negative → exit)
+    current == healing        →  strong   (thesis intact and firming)
+    current == neutral        →  stable
+After the grace expires: no more benefit-of-the-doubt; standard indicators own it.
+```
+
+**Failed-breakout micro-stop (B1.5)** — armed for SOS-breakout picks
+during the first `FAILED_BR_WINDOW_TRADING_DAYS` sessions (default 5). Reads
+the 20d resistance level from the entry-day BR trace:
+
+```
+if close < resistance_20d AND today's volume >= FAILED_BR_VOLUME_MULT × ADV50:
+    exit at next open
+```
+
+A breakout that closes back below its own resistance on heavy volume is
+distribution-into-FOMO. B1.5 fires strictly earlier than the -8% B2 stop
+and only inside the small window where a genuine breakout must hold its
+level. Outside the window the rule disarms; B2 owns the trade again.
+
+Fix points at the top of `signal_trajectory.py`:
+`HEALING_GRACE_TRADING_DAYS`, `FAILED_BR_WINDOW_TRADING_DAYS`,
+`FAILED_BR_VOLUME_MULT`. Both rules cost one trace lookup and one
+`obv_flow_inflection` recompute per open position per daily refresh.
+
 ---
 
 ## 6. Confirmation ranking — most-confirmed is #1
