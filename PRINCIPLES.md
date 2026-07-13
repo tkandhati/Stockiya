@@ -87,7 +87,45 @@ Every threshold that involves a **volume ratio** or a **range %** is normalized 
 
 The regime multiplier is set once per day from a NIFTY 100 realized-vol reading, not per-ticker.
 
-### 2.5 Advisory pre-breakout volume metrics (2026-07-12)
+### 2.5 Trigger-contextual weighting + OBV flow velocity (2026-07-13)
+
+Two changes that target pre-breakout accuracy without loosening any gate.
+
+**Trigger-contextual composite reweighting** — the composite scorer used a
+fixed weight vector for every setup. That penalised pre-breakouts (Pocket
+Pivot / No-Supply Test) for the property that *defines* them: quiet
+mid-term flow. At composite time we now classify the trigger regime from
+which gates fired and rebalance the weights (sum-preserving):
+
+```
+pre_breakout   AC pass AND BR fail    →  VD × 0.5; freed share → LT + AC
+sos_breakout   BR pass                →  no change (a new-high on weak flow IS a trap)
+neutral        neither                →  no change
+```
+
+Implementation is in `backend/pipeline.py::classify_trigger` and
+`_reweight_for_trigger`. Fix points at the top of the file:
+`TRIGGER_MT_STAGE_ID`, `TRIGGER_MT_SHRINK_FRAC`, `TRIGGER_MT_REDISTRIBUTE`.
+
+**OBV flow-velocity inflection** — a negative 30d OBV tells you flow is
+weak, not *when* it got weak. Comparing a 10d slope against a 30d slope
+separates healing accumulation from continued distribution:
+
+```
+healing        30d slope < 0  AND  10d slope > 0     (multi-week weakness, last 2w up)
+hemorrhaging   30d slope < 0  AND  10d slope < 0     (both windows negative)
+neutral        anything else
+```
+
+Implemented as pure `indicators.obv_flow_inflection(...)` using
+`obv_norm_slope_pct` so short and long slopes are on the same scale.
+Wired into `[VD]` as a bounded ±10% margin tilt — not a hard gate. Fix
+points at the top of `backend/stages/volume.py`: `VELOCITY_SHORT_WIN`,
+`VELOCITY_LONG_WIN`, `VELOCITY_MARGIN_BONUS`. Surfaces
+`obv_flow_inflection`, `obv_slope_short_pct`, `obv_slope_long_pct` in
+StageResult features, so every trace row records the classification.
+
+### 2.6 Advisory pre-breakout volume metrics (2026-07-12)
 
 Additive companions to the multi-lookback machinery above. **No live gate
 consumes them yet** — they surface in `backend/stages/breakout.py`'s features

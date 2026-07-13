@@ -23,7 +23,7 @@ Fix points:
 
 from __future__ import annotations
 
-from ..indicators import adv, obv_bullish_divergence
+from ..indicators import adv, obv_bullish_divergence, obv_flow_inflection
 from ..pipeline import PipelineContext, StageResult
 
 stage_id = "VD"
@@ -36,6 +36,22 @@ VOLUME_DRYUP_RATIO_MAX: float = 0.70   # tunable
 ADV_RECENT_WINDOW: int = 5             # tunable
 ADV_LONG_WINDOW: int = 50              # tunable
 DIVERGENCE_LOOKBACK: int = 20          # tunable
+
+# --------------------------------------------------------------------------- #
+# OBV flow-velocity adjustment (pre-breakout inflection signal).
+#
+# Adds a bounded ±adjustment to the VD margin based on the 10d-vs-30d OBV
+# slope inflection. Healing flow (long weak, short turning up) is the classic
+# pre-breakout tell — reward it. Hemorrhaging flow (both windows negative)
+# is bull-trap territory — penalize. Neutral leaves the margin unchanged.
+#
+# Bounded by VELOCITY_MARGIN_BONUS so it can't dominate the raw dry-up +
+# divergence signal; it only tilts the ranking within a plausible band.
+# --------------------------------------------------------------------------- #
+
+VELOCITY_SHORT_WIN: int = 10           # tunable — recent slope window
+VELOCITY_LONG_WIN: int = 30            # tunable — background slope window
+VELOCITY_MARGIN_BONUS: float = 0.10    # tunable — ±10% of [0,1] margin range
 
 
 def run(ctx: PipelineContext) -> StageResult:
@@ -64,6 +80,11 @@ def run(ctx: PipelineContext) -> StageResult:
 
     div = obv_bullish_divergence(df, lookback=DIVERGENCE_LOOKBACK)
 
+    inflection, short_slope, long_slope = obv_flow_inflection(
+        df["Close"], df["Volume"],
+        short=VELOCITY_SHORT_WIN, long=VELOCITY_LONG_WIN,
+    )
+
     ratio = None
     if adv_recent is not None and adv_long is not None and adv_long > 0:
         ratio = adv_recent / adv_long
@@ -81,6 +102,13 @@ def run(ctx: PipelineContext) -> StageResult:
             "obv_at_recent_low": div.obv_at_recent_low,
             "detail": div.detail,
         },
+        "obv_flow_inflection": inflection,
+        "obv_slope_short_pct": (
+            round(short_slope, 2) if short_slope is not None else None
+        ),
+        "obv_slope_long_pct": (
+            round(long_slope, 2) if long_slope is not None else None
+        ),
     }
 
     evidence: list[str] = []
@@ -123,6 +151,22 @@ def run(ctx: PipelineContext) -> StageResult:
             else (0.5 if div.form == "flat-price" else 0.0)
         )
         margin = (dryup_margin + div_margin) / 2.0
+
+        # OBV flow-velocity adjustment. Bounded tilt within [0, 1].
+        if inflection == "healing":
+            margin = min(1.0, margin + VELOCITY_MARGIN_BONUS)
+            evidence.append(
+                f"flow inflection healing "
+                f"(OBV {VELOCITY_SHORT_WIN}d {short_slope:+.1f}% > 0, "
+                f"{VELOCITY_LONG_WIN}d {long_slope:+.1f}% < 0)"
+            )
+        elif inflection == "hemorrhaging":
+            margin = max(0.0, margin - VELOCITY_MARGIN_BONUS)
+            evidence.append(
+                f"flow inflection hemorrhaging "
+                f"(OBV {VELOCITY_SHORT_WIN}d {short_slope:+.1f}%, "
+                f"{VELOCITY_LONG_WIN}d {long_slope:+.1f}%)"
+            )
 
     return StageResult(
         stage_id=stage_id,

@@ -1,5 +1,74 @@
 # Changelog
 
+## 2026-07-13 — Pre-breakout accuracy: trigger-contextual weighting + OBV flow velocity
+
+Two targeted changes to raise the hit-rate on Pocket-Pivot / No-Supply-Test
+pre-breakout setups without loosening any gate.
+
+**1. Trigger-contextual composite reweighting** (`backend/pipeline.py`)
+
+The composite scorer previously applied a fixed weight vector to every
+survivor regardless of setup type. That penalised pre-breakouts for the
+property that defines them: quiet mid-term flow. New helper
+`classify_trigger(stage_results)` derives the regime from which gates
+fired, and `_reweight_for_trigger(...)` rebalances at composite time.
+
+```
+regime            trigger conditions             weight change (sum-preserving)
+─────────────     ──────────────────────────     ──────────────────────────────
+pre_breakout      AC pass AND BR fail            VD × 0.5; freed share → LT + AC
+sos_breakout      BR pass                        no change
+neutral           neither                         no change
+```
+
+Fix points at the top of `pipeline.py`:
+`TRIGGER_MT_STAGE_ID`, `TRIGGER_MT_SHRINK_FRAC`, `TRIGGER_MT_REDISTRIBUTE`.
+
+**2. OBV flow-velocity inflection** (`backend/indicators.py`, `backend/stages/volume.py`)
+
+New pure indicator `obv_flow_inflection(close, volume, short=10, long=30)`
+compares the short-window OBV slope against the long-window slope and
+labels the tape as `healing | hemorrhaging | neutral | unavailable`.
+Semantics:
+
+```
+healing        long slope < 0  AND  short slope > 0   (multi-week weakness, last 2w up)
+hemorrhaging   long slope < 0  AND  short slope < 0   (both windows negative, still bleeding)
+neutral        anything else                          (no adjustment)
+```
+
+Wired into `[VD]` as a bounded ±10% margin tilt. Not a hard gate — only
+tilts the ranker inside a plausible band. Fix points at the top of
+`backend/stages/volume.py`: `VELOCITY_SHORT_WIN`, `VELOCITY_LONG_WIN`,
+`VELOCITY_MARGIN_BONUS`. The stage also surfaces
+`obv_flow_inflection`, `obv_slope_short_pct`, `obv_slope_long_pct` as
+features on the StageResult (readable in every trace row).
+
+**Tests** — `scripts/test_pre_breakout_accuracy.py`, 12 cases, all pass:
+
+```
+weight-sum invariance across all three regimes
+pre_breakout composite gain vs fixed-weight: +11% on the canonical fixture
+sos_breakout composite unchanged from fixed weights
+classifier: pre_breakout / sos_breakout / neutral triage
+synthetic ABB-like fixture → healing         (short +80.4%, long -15.0%)
+synthetic bull-trap fixture → hemorrhaging   (short -11.5%, long -29.8%)
+synthetic healthy-BR fixture → neutral       (short  +4.2%, long +13.8%)
+VD stage surfaces inflection feature on real fixture
+```
+
+Deterministic; no live fetches. Fixtures are constructed in-memory with
+seeded numpy RNGs so re-runs are byte-identical.
+
+**Considered and rejected:**
+
+- *Full-alignment ranker bonus* — required VD > 0.6 to fire, which by
+  definition excludes every pre-breakout. Adopting it alongside (1) would
+  give with one hand and take with the other.
+- *Signal-adjusted position sizing* — changes P&L not hit-rate. Also
+  contradicts the thesis that pre-breakouts are the highest-conviction
+  setup. Revisit only after (1)+(2) accumulate outcome data.
+
 ## 2026-07-13 — My Positions V1: ownership + user-actual fill capture
 
 The "did I actually take this pick, and at what fill?" story is now

@@ -116,15 +116,94 @@ def _load_weight_config() -> tuple[frozenset[str], dict[str, float], float]:
 HARD_GATE_IDS, COMPOSITE_WEIGHTS, COMPOSITE_TAU = _load_weight_config()
 
 
+# --------------------------------------------------------------------------- #
+# Trigger-contextual reweighting (pre-breakout Pocket-Pivot exemption).
+#
+# Pocket Pivot and No-Supply Test are pre-breakout setups: *by construction*
+# their mid-term flow (VD) is quiet. Penalizing them with a full 15% weight
+# for having low VD score is a category error — it punishes them for the
+# property that defines them. Full-weight VD is correct only for the SOS
+# breakout case (BR pass), where quiet mid-term flow really is a bull-trap.
+#
+# Implementation: at composite time, classify the trigger regime from stage
+# results and rebalance the weight vector. Sum stays exactly 1.0 — we only
+# move weight between stages, never mint or destroy it.
+#
+# Fix points:
+#     TRIGGER_MT_STAGE_ID     : the mid-term-flow stage id (default "VD")
+#     TRIGGER_MT_SHRINK_FRAC  : fraction of MT weight redistributed on
+#                                pre-breakout (default 0.5 = halve MT)
+#     TRIGGER_MT_REDISTRIBUTE : ordered stage ids to receive the freed weight;
+#                                split equally (default ("LT", "AC"))
+# --------------------------------------------------------------------------- #
+
+TRIGGER_MT_STAGE_ID: str = "VD"
+TRIGGER_MT_SHRINK_FRAC: float = 0.5
+TRIGGER_MT_REDISTRIBUTE: tuple[str, ...] = ("LT", "AC")
+
+TriggerRegime = str  # "pre_breakout" | "sos_breakout" | "neutral"
+
+
+def classify_trigger(stage_results: dict[str, "StageResult"]) -> TriggerRegime:
+    """Derive the trigger regime from which gates fired.
+
+    pre_breakout : AC passed AND BR did NOT pass  (coiled spring, no new-high)
+    sos_breakout : BR passed                       (resistance cleared today)
+    neutral      : neither                         (no reweighting)
+    """
+    br = stage_results.get("BR")
+    ac = stage_results.get("AC")
+    br_pass = br is not None and br.passed
+    ac_pass = ac is not None and ac.passed
+    if br_pass:
+        return "sos_breakout"
+    if ac_pass:
+        return "pre_breakout"
+    return "neutral"
+
+
+def _reweight_for_trigger(
+    weights: dict[str, float],
+    regime: TriggerRegime,
+) -> dict[str, float]:
+    """Return an adjusted copy of `weights` given the trigger regime.
+
+    Only pre_breakout adjusts today. sos_breakout and neutral are pass-through.
+    The sum is preserved to within 1e-9 (invariant we assert on).
+    """
+    if regime != "pre_breakout":
+        return dict(weights)
+    mt_id = TRIGGER_MT_STAGE_ID
+    w_mt = float(weights.get(mt_id, 0.0))
+    if w_mt <= 0.0:
+        return dict(weights)
+    receivers = [s for s in TRIGGER_MT_REDISTRIBUTE if weights.get(s, 0.0) > 0.0]
+    if not receivers:
+        return dict(weights)
+    freed = w_mt * TRIGGER_MT_SHRINK_FRAC
+    share = freed / len(receivers)
+    adjusted = dict(weights)
+    adjusted[mt_id] = w_mt - freed
+    for r in receivers:
+        adjusted[r] = float(adjusted.get(r, 0.0)) + share
+    return adjusted
+
+
 def compute_composite(stage_results: dict[str, "StageResult"]) -> float:
     """S = Σᵢ wᵢ · mᵢ  over scored stages.
 
     A stage that didn't run, or ran-and-failed, contributes 0. A stage with
     no configured weight is ignored (weight = 0). Mathematically this is the
     LLR detector under Gaussian noise assumptions on the margins.
+
+    Weights are trigger-contextual: for a pre-breakout setup (AC pass, BR
+    fail) the mid-term-flow weight is halved and redistributed to LT/AC. See
+    _reweight_for_trigger for the exact mapping and rationale.
     """
+    regime = classify_trigger(stage_results)
+    weights = _reweight_for_trigger(COMPOSITE_WEIGHTS, regime)
     s = 0.0
-    for sid, w in COMPOSITE_WEIGHTS.items():
+    for sid, w in weights.items():
         if w == 0.0:
             continue
         sr = stage_results.get(sid)

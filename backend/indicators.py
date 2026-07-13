@@ -434,6 +434,56 @@ def obv_norm_slope_pct(obv_series: pd.Series, n: int) -> Optional[float]:
     return float(slope_per_bar * len(window) * 100.0)
 
 
+# --------------------------------------------------------------------------- #
+# OBV flow velocity — the derivative of OBV.
+#
+# A negative 30d OBV slope tells you flow is weak but not *when* it got weak.
+# Comparing a short-window slope (10d) to a long-window slope (30d) separates
+# "healing" flow (long weak, short turning up — pre-breakout inflection) from
+# "hemorrhaging" flow (long weak, short still down — bull-trap territory).
+#
+# Uses obv_norm_slope_pct so short and long windows are on the same scale
+# and comparable across tickers. Pure; deterministic.
+# --------------------------------------------------------------------------- #
+
+FlowInflection = Literal["healing", "hemorrhaging", "neutral", "unavailable"]
+
+
+def obv_flow_inflection(
+    close: pd.Series,
+    volume: pd.Series,
+    *,
+    short: int = 10,
+    long: int = 30,
+    long_threshold_pct: float = 0.0,
+    short_threshold_pct: float = 0.0,
+) -> tuple[FlowInflection, Optional[float], Optional[float]]:
+    """Classify OBV inflection from short-window vs long-window slope.
+
+    Returns (label, short_slope_pct, long_slope_pct).
+
+      healing       long_slope <  long_threshold  AND short_slope >  short_threshold
+                      (multi-week weakness, but the last ~2 weeks are turning up)
+      hemorrhaging  long_slope <  long_threshold  AND short_slope <  short_threshold
+                      (both windows negative — flow still bleeding)
+      neutral       neither condition
+      unavailable   not enough bars to compute either slope
+
+    Thresholds default to 0.0 (sign check). Non-zero thresholds let callers
+    require magnitude, e.g. only count "healing" if short_slope >= +2%.
+    """
+    obv_series = obv(close, volume)
+    s_short = obv_norm_slope_pct(obv_series, short)
+    s_long = obv_norm_slope_pct(obv_series, long)
+    if s_short is None or s_long is None:
+        return "unavailable", s_short, s_long
+    if s_long < long_threshold_pct and s_short > short_threshold_pct:
+        return "healing", s_short, s_long
+    if s_long < long_threshold_pct and s_short < short_threshold_pct:
+        return "hemorrhaging", s_short, s_long
+    return "neutral", s_short, s_long
+
+
 @dataclass
 class DivergenceResult:
     is_bullish: bool
