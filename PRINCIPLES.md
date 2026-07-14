@@ -98,14 +98,19 @@ mid-term flow. At composite time we now classify the trigger regime from
 which gates fired and rebalance the weights (sum-preserving):
 
 ```
-pre_breakout   AC pass AND BR fail    →  VD × 0.5; freed share → LT + AC
-sos_breakout   BR pass                →  no change (a new-high on weak flow IS a trap)
-neutral        neither                →  no change
+pre_breakout   AC.score ≥ 0.6  AND  BR fail   →  VD × 0.5; freed share → LT + AC
+sos_breakout   BR pass                        →  no change (a new-high on weak flow IS a trap)
+neutral        neither                        →  no change
 ```
+
+The `AC.score ≥ 0.6` floor (added 2026-07-14 after the Bajaj-Auto incident)
+is the fragility guard: only strong-base coils earn the VD weight relief. A
+marginal AC pass no longer earns short-window benefit-of-the-doubt.
 
 Implementation is in `backend/pipeline.py::classify_trigger` and
 `_reweight_for_trigger`. Fix points at the top of the file:
-`TRIGGER_MT_STAGE_ID`, `TRIGGER_MT_SHRINK_FRAC`, `TRIGGER_MT_REDISTRIBUTE`.
+`TRIGGER_MT_STAGE_ID`, `TRIGGER_MT_SHRINK_FRAC`, `TRIGGER_MT_REDISTRIBUTE`,
+`TRIGGER_AC_MIN_SCORE`.
 
 **OBV flow-velocity inflection** — a negative 30d OBV tells you flow is
 weak, not *when* it got weak. Comparing a 10d slope against a 30d slope
@@ -119,9 +124,11 @@ neutral        anything else
 
 Implemented as pure `indicators.obv_flow_inflection(...)` using
 `obv_norm_slope_pct` so short and long slopes are on the same scale.
-Wired into `[VD]` as a bounded ±10% margin tilt — not a hard gate. Fix
-points at the top of `backend/stages/volume.py`: `VELOCITY_SHORT_WIN`,
-`VELOCITY_LONG_WIN`, `VELOCITY_MARGIN_BONUS`. Surfaces
+Wired into `[VD]` as a bounded **±5% advisory margin tilt** (reduced from
+±10% on 2026-07-14) — not a hard gate, not decision-sized. It can tiebreak
+between strong candidates but cannot tip a marginal pick over the composite
+threshold. Fix points at the top of `backend/stages/volume.py`:
+`VELOCITY_SHORT_WIN`, `VELOCITY_LONG_WIN`, `VELOCITY_MARGIN_BONUS`. Surfaces
 `obv_flow_inflection`, `obv_slope_short_pct`, `obv_slope_long_pct` in
 StageResult features, so every trace row records the classification.
 

@@ -135,11 +135,18 @@ HARD_GATE_IDS, COMPOSITE_WEIGHTS, COMPOSITE_TAU = _load_weight_config()
 #                                pre-breakout (default 0.5 = halve MT)
 #     TRIGGER_MT_REDISTRIBUTE : ordered stage ids to receive the freed weight;
 #                                split equally (default ("LT", "AC"))
+#     TRIGGER_AC_MIN_SCORE    : minimum AC.score for a pre_breakout admission
+#                                (default 0.6 — the marginal-base filter).
+#                                AC.passed alone is not enough; the coil must
+#                                be genuinely tight + dry + rising-ADI. See
+#                                CHANGELOG 2026-07-14 for the Bajaj-Auto
+#                                incident that motivated this filter.
 # --------------------------------------------------------------------------- #
 
 TRIGGER_MT_STAGE_ID: str = "VD"
 TRIGGER_MT_SHRINK_FRAC: float = 0.5
 TRIGGER_MT_REDISTRIBUTE: tuple[str, ...] = ("LT", "AC")
+TRIGGER_AC_MIN_SCORE: float = 0.6
 
 TriggerRegime = str  # "pre_breakout" | "sos_breakout" | "neutral"
 
@@ -147,17 +154,29 @@ TriggerRegime = str  # "pre_breakout" | "sos_breakout" | "neutral"
 def classify_trigger(stage_results: dict[str, "StageResult"]) -> TriggerRegime:
     """Derive the trigger regime from which gates fired.
 
-    pre_breakout : AC passed AND BR did NOT pass  (coiled spring, no new-high)
+    pre_breakout : AC passed AND AC.score >= TRIGGER_AC_MIN_SCORE AND BR fail
+                    (coiled spring — accumulation is not just present but
+                    strong; a marginal AC pass no longer earns weight relief)
     sos_breakout : BR passed                       (resistance cleared today)
     neutral      : neither                         (no reweighting)
+
+    The AC-score floor is the practical guard against admitting fragile
+    pre-breakouts on borderline evidence. It filters at the trigger classifier
+    rather than adding a new threshold to AC itself, so the ranker keeps
+    seeing every AC-passer while only the strong ones qualify for the VD
+    weight cut.
     """
     br = stage_results.get("BR")
     ac = stage_results.get("AC")
     br_pass = br is not None and br.passed
-    ac_pass = ac is not None and ac.passed
+    ac_strong = (
+        ac is not None
+        and ac.passed
+        and float(ac.score or 0.0) >= TRIGGER_AC_MIN_SCORE
+    )
     if br_pass:
         return "sos_breakout"
-    if ac_pass:
+    if ac_strong:
         return "pre_breakout"
     return "neutral"
 

@@ -51,7 +51,12 @@ DIVERGENCE_LOOKBACK: int = 20          # tunable
 
 VELOCITY_SHORT_WIN: int = 10           # tunable — recent slope window
 VELOCITY_LONG_WIN: int = 30            # tunable — background slope window
-VELOCITY_MARGIN_BONUS: float = 0.10    # tunable — ±10% of [0,1] margin range
+# Advisory-sized bump: enough to tiebreak between strong candidates, too
+# small to tip a marginal pick over the composite threshold. Reduced from
+# 0.10 on 2026-07-14 after the Bajaj-Auto incident — a decision-sized bump
+# on a single-bar-sensitive slope was admitting fragile pre-breakouts. See
+# CHANGELOG 2026-07-14.
+VELOCITY_MARGIN_BONUS: float = 0.05    # tunable — ±5% of [0,1] margin range
 
 
 def run(ctx: PipelineContext) -> StageResult:

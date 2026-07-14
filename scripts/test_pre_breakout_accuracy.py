@@ -30,11 +30,13 @@ sys.path.insert(0, str(_ROOT))
 from backend.indicators import obv_flow_inflection  # noqa: E402
 from backend.pipeline import (  # noqa: E402
     COMPOSITE_WEIGHTS,
+    TRIGGER_AC_MIN_SCORE,
     StageResult,
     _reweight_for_trigger,
     classify_trigger,
     compute_composite,
 )
+from backend.stages.volume import VELOCITY_MARGIN_BONUS  # noqa: E402
 
 
 # --------------------------------------------------------------------------- #
@@ -201,13 +203,27 @@ def test_sos_breakout_keeps_vd_weight() -> None:
 
 
 def test_classify_trigger_pre_breakout() -> None:
-    stages = _stages(ac_pass=True, br_pass=False)
+    stages = _stages(ac_pass=True, br_pass=False, ac_score=0.7)
     assert classify_trigger(stages) == "pre_breakout"
-    print("PASS classify pre_breakout")
+    print("PASS classify pre_breakout (AC.score=0.7)")
+
+
+def test_classify_trigger_pre_breakout_marginal_AC_denied() -> None:
+    """AC passed but score below TRIGGER_AC_MIN_SCORE -> no weight relief."""
+    stages = _stages(ac_pass=True, br_pass=False, ac_score=0.4)
+    assert classify_trigger(stages) == "neutral", stages
+    print(f"PASS marginal AC (score=0.4 < {TRIGGER_AC_MIN_SCORE}) denied weight relief")
+
+
+def test_classify_trigger_pre_breakout_at_threshold() -> None:
+    """AC.score exactly at TRIGGER_AC_MIN_SCORE -> pre_breakout (inclusive)."""
+    stages = _stages(ac_pass=True, br_pass=False, ac_score=TRIGGER_AC_MIN_SCORE)
+    assert classify_trigger(stages) == "pre_breakout"
+    print(f"PASS AC.score == {TRIGGER_AC_MIN_SCORE} admits (inclusive threshold)")
 
 
 def test_classify_trigger_sos() -> None:
-    stages = _stages(ac_pass=True, br_pass=True)
+    stages = _stages(ac_pass=True, br_pass=True, ac_score=0.7)
     assert classify_trigger(stages) == "sos_breakout"
     stages2 = _stages(ac_pass=False, br_pass=True)
     assert classify_trigger(stages2) == "sos_breakout"
@@ -221,10 +237,10 @@ def test_classify_trigger_neutral() -> None:
 
 
 def test_composite_pre_breakout_gains_when_vd_weak() -> None:
-    """The whole point: a pre-breakout with strong AC+LT and weak VD should
-    score STRICTLY HIGHER under trigger-contextual weighting than under a
-    hypothetical fixed-weight world."""
-    # Weak VD (0.2), strong AC + LT (0.8) — the coiled-spring profile.
+    """A pre-breakout with STRONG AC (>= threshold) + strong LT and weak VD
+    should score strictly higher under trigger-contextual weighting than
+    under a fixed-weight world. Weight relief is earned by the AC score."""
+    # AC 0.8 (well above TRIGGER_AC_MIN_SCORE), weak VD (0.2), strong LT (0.8).
     stages = _stages(
         ac_pass=True, br_pass=False,
         ac_score=0.8, lt_score=0.8, vd_score=0.2, cs_score=0.7,
@@ -237,7 +253,15 @@ def test_composite_pre_breakout_gains_when_vd_weak() -> None:
         for k, w in COMPOSITE_WEIGHTS.items()
     )
     assert s_adjusted > s_fixed + 1e-9, (s_adjusted, s_fixed)
-    print(f"PASS composite pre_breakout: adjusted {s_adjusted:.4f} > fixed {s_fixed:.4f}")
+    print(f"PASS composite pre_breakout (AC=0.8): adjusted {s_adjusted:.4f} > fixed {s_fixed:.4f}")
+
+
+def test_velocity_margin_bonus_is_advisory_sized() -> None:
+    """Constants check: VELOCITY_MARGIN_BONUS was reduced from 0.10 to 0.05
+    on 2026-07-14 so the healing/hemorrhaging tilt is a tiebreaker, not a
+    decision. Guard against accidental regression to a decision-sized bump."""
+    assert VELOCITY_MARGIN_BONUS <= 0.05 + 1e-9, VELOCITY_MARGIN_BONUS
+    print(f"PASS VELOCITY_MARGIN_BONUS is advisory-sized ({VELOCITY_MARGIN_BONUS})")
 
 
 def test_composite_sos_breakout_unchanged() -> None:
@@ -253,6 +277,24 @@ def test_composite_sos_breakout_unchanged() -> None:
     )
     assert abs(s_adjusted - s_fixed) < 1e-9, (s_adjusted, s_fixed)
     print(f"PASS composite sos_breakout unchanged: {s_adjusted:.4f}")
+
+
+def test_composite_marginal_AC_no_weight_relief() -> None:
+    """Marginal AC (score < TRIGGER_AC_MIN_SCORE) + BR fail: even though AC
+    passed, the trigger classifier returns neutral, so composite is unchanged
+    from the fixed-weight baseline. This is the Bajaj-Auto guard: fragile
+    coils do NOT get the VD weight relief."""
+    stages = _stages(
+        ac_pass=True, br_pass=False,
+        ac_score=0.4, lt_score=0.7, vd_score=0.2, cs_score=0.6,
+    )
+    s_adjusted = compute_composite(stages)
+    s_fixed = sum(
+        w * (stages[k].score if k in stages and stages[k].passed else 0.0)
+        for k, w in COMPOSITE_WEIGHTS.items()
+    )
+    assert abs(s_adjusted - s_fixed) < 1e-9, (s_adjusted, s_fixed)
+    print(f"PASS composite marginal-AC pre_breakout: no relief, {s_adjusted:.4f} == fixed")
 
 
 def test_flow_inflection_pre_breakout_ABB_like() -> None:
@@ -553,10 +595,14 @@ def main() -> int:
         test_pre_breakout_reduces_vd_weight,
         test_sos_breakout_keeps_vd_weight,
         test_classify_trigger_pre_breakout,
+        test_classify_trigger_pre_breakout_marginal_AC_denied,
+        test_classify_trigger_pre_breakout_at_threshold,
         test_classify_trigger_sos,
         test_classify_trigger_neutral,
         test_composite_pre_breakout_gains_when_vd_weak,
         test_composite_sos_breakout_unchanged,
+        test_composite_marginal_AC_no_weight_relief,
+        test_velocity_margin_bonus_is_advisory_sized,
         test_flow_inflection_pre_breakout_ABB_like,
         test_flow_inflection_bull_trap,
         test_flow_inflection_healthy_breakout,

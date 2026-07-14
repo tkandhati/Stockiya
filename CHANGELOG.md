@@ -1,5 +1,80 @@
 # Changelog
 
+## 2026-07-14 — Fragile pre-breakout admission fix (Bajaj-Auto incident)
+
+Bajaj-Auto was recommended on 2026-07-13 as a Pocket-Pivot pre-breakout,
+then flagged for exit on 2026-07-14 after a routine −2.1% day flipped the
+10d/30d OBV inflection from `healing` to `hemorrhaging`. Diagnosis: the
+exit rule was not too aggressive — the entry was too lenient. A pick admitted
+on a barely-positive 10d slope has no safety margin against normal ATR
+noise, and any exit rule that respects the healing thesis will fire on that
+same noise. Fix belongs at entry.
+
+Two minimal edits, no new thresholds added, practical yield preserved.
+
+**1. Weight relief gated on AC strength** (`backend/pipeline.py`)
+
+`classify_trigger` previously returned `pre_breakout` on any `AC.passed`.
+A marginal AC scorer (e.g. score 0.30) earned the same VD weight cut as a
+strong-base coil (e.g. score 0.80). Now the classifier requires
+`AC.score >= TRIGGER_AC_MIN_SCORE` (default 0.6):
+
+```
+Before                                           After
+──────────────────────────────────────────       ────────────────────────────────────────────
+pre_breakout = AC.passed AND BR fail             pre_breakout = AC.score ≥ 0.6 AND BR fail
+
+any AC-passer earns VD weight relief             only strong coils earn VD weight relief
+→ fragile picks admitted                         → marginal coils fall back to fixed weights
+```
+
+The AC score already captures range tightness, volume dryness, and rising
+ADI slope — i.e. accumulated volume across the base. Anchoring the weight
+relief on it means the relief is earned by long-window evidence, not by a
+short-window inflection flag.
+
+**2. Healing margin bump reduced from 0.10 to 0.05** (`backend/stages/volume.py`)
+
+The `obv_flow_inflection` ±margin tilt in `[VD]` was decision-sized (±10%
+of the [0,1] margin range). On a single-bar-sensitive slope, that was
+enough to push marginal picks over the composite threshold. Reduced to
+advisory-sized (±5%) — enough to tiebreak between strong candidates, too
+small to admit a marginal one. The feature is still surfaced in traces for
+auditability.
+
+**Practical-yield sanity**: neither edit adds a new hurdle. Edit 1 restricts
+a *relaxation*; edit 2 shrinks a *bonus*. Picks that were passing on strong
+LT + strong AC keep passing; the ones losing admission are exactly the
+fragile-coil cases we want to filter.
+
+**What Bajaj-Auto looks like under the new rules**: if yesterday's AC score
+was ≥ 0.6, the pick is still recommended, but with a smaller short-window
+tailwind — today's −2.1% doesn't sit near the flip boundary. If AC was
+< 0.6, the pick isn't recommended in the first place. Either path is more
+coherent than the shipped 07-13 behaviour.
+
+**Tests** — 4 new cases in `scripts/test_pre_breakout_accuracy.py` (31
+total, all pass):
+
+```
+AC.score = 0.7 + BR fail        →  pre_breakout      (weight relief granted)
+AC.score = 0.4 + BR fail        →  neutral           (relief withheld)
+AC.score = 0.6 (threshold)      →  pre_breakout      (inclusive boundary)
+Composite: marginal-AC pick     →  adjusted == fixed (no relief)
+VELOCITY_MARGIN_BONUS <= 0.05                        (regression guard)
+```
+
+**Explicitly not changed** (asked at diagnosis time, rejected as
+non-root-cause):
+
+- B1' exit rule kept as-is. With fewer fragile entries admitted, it fires
+  less often on noise; the frame's twitchiness was a symptom, not the
+  disease.
+- No shielded-grace exit variant. Would mask the entry problem.
+- No stacked tightening (magnitude AND persistence AND corroboration on
+  the 10d slope). Would cross the practical-yield line for near-zero
+  benefit on top of edit 1.
+
 ## 2026-07-13 — Exit-rule accuracy: healing-velocity override (B1') + failed-breakout micro-stop (B1.5)
 
 Two additive exit rules that close accuracy gaps opened by the earlier
