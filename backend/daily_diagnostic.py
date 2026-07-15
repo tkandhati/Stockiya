@@ -110,6 +110,13 @@ def _portfolio_summary() -> dict[str, Any]:
         summary["read_error"] = str(e)
         return summary
 
+    # Integrity validator — surface warnings for the diagnostic snapshot.
+    try:
+        from .portfolio import validate_portfolio_integrity
+        summary["integrity_warnings"] = validate_portfolio_integrity(rows)
+    except Exception as e:
+        summary["integrity_warnings"] = [f"validator crashed: {e}"]
+
     summary["header_columns"] = len(headers)
     summary["header_has_end_date"] = "end_date" in headers
     summary["header_has_horizon_days"] = "horizon_days" in headers
@@ -301,6 +308,23 @@ def write_daily_diagnostic(
             add("```")
         else:
             add("_None. Every open symbol has exactly one open row._")
+        add("")
+
+        add("### 5d. Integrity warnings")
+        add("")
+        add(
+            "Warnings from `portfolio.validate_portfolio_integrity`. "
+            "R1 = multi-open-row rule, R2 = price plan order "
+            "(stop < entry < t1 ≤ t2), R3 = end_date sanity, "
+            "R4 = entry_date not in the future."
+        )
+        add("")
+        warns = portfolio.get("integrity_warnings") or []
+        if warns:
+            for w in warns:
+                add(f"- {w}")
+        else:
+            add("_No integrity warnings._")
         add("")
 
         add(f"## 6. Picks JSON (data/picks_{today_iso}.json)")

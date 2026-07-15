@@ -16,17 +16,29 @@ Friday after market close to fetch closes and check for exits.
 from __future__ import annotations
 
 import csv
+import json
 import logging
+import shutil
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Any, Iterable, Optional
 from zoneinfo import ZoneInfo
 
 IST = ZoneInfo("Asia/Kolkata")
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _DATA_DIR = _PROJECT_ROOT / "data"
+
+# ---- Safety precautions (2026-07-15) -----------------------------------
+# 1. Rotating backups before every portfolio.csv rewrite. Rollback is
+#    `cp portfolio.csv.bak.1 portfolio.csv`.
+# 2. Mutation audit log — every write is appended to a JSONL trail so we
+#    can always answer "why did row P-000X change on date Y?".
+# 3. Integrity validator — cheap consistency checks flagged into the
+#    daily diagnostic (no exceptions raised).
+PORTFOLIO_BACKUP_ROTATIONS: int = 5  # keep portfolio.csv.bak.1 .. .5
+MUTATIONS_JSONL = _DATA_DIR / "portfolio_mutations.jsonl"
 _DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 PORTFOLIO_CSV = _DATA_DIR / "portfolio.csv"
@@ -161,12 +173,195 @@ def _read_portfolio() -> list[dict]:
         return list(csv.DictReader(f))
 
 
-def _write_portfolio(rows: list[dict]) -> None:
-    with PORTFOLIO_CSV.open("w", encoding="utf-8", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=PORTFOLIO_FIELDS)
-        w.writeheader()
-        for r in rows:
-            w.writerow({k: r.get(k, "") for k in PORTFOLIO_FIELDS})
+def _rotate_backups() -> None:
+    """Rotate portfolio.csv.bak.{N-1} -> .N, drop the oldest. Cheap."""
+    if not PORTFOLIO_CSV.exists():
+        return
+    # Discard the oldest, shift each one up, then copy current to .1
+    for i in range(PORTFOLIO_BACKUP_ROTATIONS, 1, -1):
+        older = PORTFOLIO_CSV.with_suffix(f".csv.bak.{i}")
+        newer = PORTFOLIO_CSV.with_suffix(f".csv.bak.{i - 1}")
+        if newer.exists():
+            try:
+                if older.exists():
+                    older.unlink()
+                newer.rename(older)
+            except OSError as e:
+                log.warning("backup rotation %s -> %s failed: %s", newer, older, e)
+    try:
+        shutil.copy2(PORTFOLIO_CSV, PORTFOLIO_CSV.with_suffix(".csv.bak.1"))
+    except OSError as e:
+        log.warning("backup copy failed (continuing without): %s", e)
+
+
+def _append_mutation_log(
+    source: str,
+    row_count_before: int,
+    row_count_after: int,
+    summary: Optional[dict] = None,
+) -> None:
+    """Append one mutation event to data/portfolio_mutations.jsonl.
+    Never raises — if the audit log write fails we log and continue."""
+    payload = {
+        "ts": datetime.now(IST).isoformat(timespec="seconds"),
+        "source": source,
+        "rows_before": row_count_before,
+        "rows_after": row_count_after,
+        "delta": row_count_after - row_count_before,
+    }
+    if summary:
+        payload["summary"] = summary
+    try:
+        with MUTATIONS_JSONL.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    except OSError as e:
+        log.warning("mutation log write failed: %s", e)
+
+
+def _write_portfolio(
+    rows: list[dict],
+    *,
+    source: str = "unknown",
+    summary: Optional[dict] = None,
+) -> None:
+    """Rewrite data/portfolio.csv with three safety measures:
+
+    1. Rotate up to PORTFOLIO_BACKUP_ROTATIONS backups first so a bad
+       write can be rolled back with `cp portfolio.csv.bak.1
+       portfolio.csv`.
+    2. Write to a temp file then atomically rename — a crash mid-write
+       leaves the previous file intact rather than corrupting it.
+    3. Append one row to data/portfolio_mutations.jsonl summarising what
+       changed and who wrote it, so the audit trail survives across
+       sessions.
+
+    `source` is a free-form string naming the caller (e.g. "record_picks",
+    "update_open_picks", "set_ownership"). Kept optional-defaulted so any
+    call site that hasn't been updated still works.
+    """
+    row_count_before = 0
+    if PORTFOLIO_CSV.exists():
+        try:
+            with PORTFOLIO_CSV.open("r", encoding="utf-8", newline="") as f:
+                row_count_before = sum(1 for _ in f) - 1  # minus header
+                row_count_before = max(0, row_count_before)
+        except OSError:
+            row_count_before = 0
+
+    _rotate_backups()
+
+    tmp = PORTFOLIO_CSV.with_suffix(".csv.tmp")
+    try:
+        with tmp.open("w", encoding="utf-8", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=PORTFOLIO_FIELDS)
+            w.writeheader()
+            for r in rows:
+                w.writerow({k: r.get(k, "") for k in PORTFOLIO_FIELDS})
+        # Atomic-ish swap. On Windows, Path.replace() is atomic within
+        # a single filesystem; the previous file (if any) is overwritten.
+        tmp.replace(PORTFOLIO_CSV)
+    except OSError as e:
+        log.exception("portfolio write failed; leaving existing file intact: %s", e)
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
+
+    _append_mutation_log(source, row_count_before, len(rows), summary)
+
+
+# --------------------------------------------------------------------------- #
+# Integrity validator — cheap consistency checks flagged into diagnostics.
+#
+# NEVER raises. Returns a list of human-readable warning strings. Called by
+# `backend/daily_diagnostic.py` at snapshot time; the diagnostic surfaces
+# any warnings in Section 5d.
+#
+# Rules:
+#   R1  No >1 open row for the same symbol EXCEPT when exactly one is
+#       ownership in (paper, live) and the others are ownership=suggested.
+#       (That's the legitimate "user holds real capital + fresh signal
+#       alongside" pattern from picks_reconcile.)
+#   R2  Price plan order: stop < entry < t1 <= t2 (all where non-zero).
+#   R3  end_date >= entry_date if end_date is populated.
+#   R4  No negative days_held (entry_date must not be in the future).
+# --------------------------------------------------------------------------- #
+
+def validate_portfolio_integrity(rows: list[dict]) -> list[str]:
+    """Return a list of warnings. Empty means portfolio is consistent."""
+    warnings: list[str] = []
+    today = datetime.now(IST).date()
+
+    # R1: multi-open-row check
+    open_by_symbol: dict[str, list[dict]] = {}
+    for r in rows:
+        if r.get("status") in ("open", "partial_t1"):
+            open_by_symbol.setdefault(r.get("symbol", ""), []).append(r)
+
+    for sym, group in open_by_symbol.items():
+        if len(group) <= 1:
+            continue
+        ownerships = [
+            (r.get("ownership") or "suggested").strip() or "suggested"
+            for r in group
+        ]
+        taken = [o for o in ownerships if o in ("paper", "live")]
+        # Legitimate case: exactly one taken row + rest are suggested
+        if len(taken) == 1 and all(o in ("paper", "live", "suggested") for o in ownerships):
+            continue
+        # Otherwise flag it
+        pids = ", ".join(r.get("pick_id", "?") for r in group)
+        warnings.append(
+            f"R1: {sym} has {len(group)} open rows ({pids}); "
+            f"ownerships={ownerships}. Expected either 1 row OR "
+            f"1 taken + suggested siblings — investigate record_picks supersede."
+        )
+
+    # R2, R3, R4: per-row checks
+    for r in rows:
+        pid = r.get("pick_id", "?")
+        if r.get("status") not in ("open", "partial_t1"):
+            continue
+
+        # R2: price plan order
+        try:
+            entry = float(r.get("entry_price") or 0)
+            stop = float(r.get("stop_price") or 0)
+            t1 = float(r.get("t1_price") or 0)
+            t2 = float(r.get("t2_price") or r.get("target_price") or 0)
+        except (TypeError, ValueError):
+            entry = stop = t1 = t2 = 0.0
+        if entry > 0 and stop > 0 and stop >= entry:
+            warnings.append(f"R2: {pid} stop {stop} >= entry {entry}")
+        if entry > 0 and t1 > 0 and t1 <= entry:
+            warnings.append(f"R2: {pid} t1 {t1} <= entry {entry}")
+        if t1 > 0 and t2 > 0 and t2 < t1:
+            warnings.append(f"R2: {pid} t2 {t2} < t1 {t1}")
+
+        # R3: end_date sanity
+        end_iso = (r.get("end_date") or "").strip()
+        entry_iso = (r.get("entry_date") or "").strip()
+        if end_iso and entry_iso:
+            try:
+                if date.fromisoformat(end_iso) < date.fromisoformat(entry_iso):
+                    warnings.append(
+                        f"R3: {pid} end_date {end_iso} < entry_date {entry_iso}"
+                    )
+            except ValueError:
+                pass
+
+        # R4: entry_date not in the future
+        if entry_iso:
+            try:
+                if date.fromisoformat(entry_iso) > today:
+                    warnings.append(
+                        f"R4: {pid} entry_date {entry_iso} is in the future (today={today})"
+                    )
+            except ValueError:
+                pass
+
+    return warnings
 
 
 def _append_weekly(rows: Iterable[dict]) -> None:
@@ -326,7 +521,15 @@ def record_picks(picks_payload: dict) -> int:
         added += 1
 
     if added or superseded_count:
-        _write_portfolio(rows)
+        _write_portfolio(
+            rows,
+            source="record_picks",
+            summary={
+                "date": today,
+                "added": added,
+                "superseded": superseded_count,
+            },
+        )
         log.info(
             "portfolio.csv: added=%d superseded=%d (file=%s)",
             added, superseded_count, PORTFOLIO_CSV.name,
@@ -430,7 +633,7 @@ def update_open_picks(close_price_for: callable) -> dict:
 
     if weekly_rows:
         _append_weekly(weekly_rows)
-    _write_portfolio(rows)
+    _write_portfolio(rows, source="update_open_picks", summary=dict(summary))
     log.info("Weekly update: %s", summary)
     return summary
 
@@ -482,6 +685,10 @@ def set_ownership(
         break
 
     if updated is not None:
-        _write_portfolio(rows)
+        _write_portfolio(
+            rows,
+            source="set_ownership",
+            summary={"pick_id": pick_id, "ownership": ownership},
+        )
         log.info("Updated ownership for %s -> %s", pick_id, ownership)
     return updated
