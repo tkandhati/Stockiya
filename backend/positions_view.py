@@ -185,6 +185,35 @@ def _action_for(
     return ("hold", "Hold normally.", None)
 
 
+def _symbols_in_todays_picks(today_iso: str) -> set[str]:
+    """Return the set of symbols in `data/picks_<today>.json`, or empty
+    if the file doesn't exist or can't be parsed.
+
+    Used to hide open-*suggested* portfolio rows for symbols that are
+    being freshly picked today: those rows are about to be (or have
+    already been) superseded by portfolio.record_picks, and displaying
+    their stale exit signal alongside a fresh buy recommendation is
+    the trust-breaking contradiction we're closing.
+
+    Taken (paper/live) rows are NEVER hidden by this filter — the user's
+    real capital always shows, and picks_reconcile handles the
+    contradiction on the picks side.
+    """
+    import json
+    p = _PROJECT_ROOT / "data" / f"picks_{today_iso}.json"
+    if not p.exists():
+        return set()
+    try:
+        payload = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return set()
+    return {
+        pick.get("symbol", "")
+        for pick in (payload.get("picks") or [])
+        if pick.get("symbol")
+    }
+
+
 def list_active_positions(
     fetch_close: Callable[[str], Optional[float]],
     today: Optional[date] = None,
@@ -193,6 +222,13 @@ def list_active_positions(
     today = today or _ist_today()
     rows = _read_portfolio()
     out: list[dict] = []
+
+    # Defensive filter: hide open-suggested rows whose symbol also
+    # appears in today's picks. They're either already superseded (with
+    # a fresh row present) or about to be superseded on the next
+    # record_picks call; either way, showing their stale exit signal
+    # alongside a fresh buy recommendation is misleading.
+    picks_today_symbols = _symbols_in_todays_picks(today.isoformat())
 
     for r in rows:
         if r.get("status") not in ("open", "partial_t1"):
@@ -203,6 +239,17 @@ def list_active_positions(
             continue
 
         sym = r["symbol"]
+
+        # Trust-safety filter: same symbol in today's picks AND this row
+        # is still ownership=suggested means we're mid-transition. Hide it.
+        if (
+            ownership == "suggested"
+            and sym in picks_today_symbols
+            # Only hide if this row is older than today; a same-day fresh
+            # row must be visible so the position shows up in the UI.
+            and r.get("entry_date", "") != today.isoformat()
+        ):
+            continue
         try:
             close = fetch_close(sym)
         except Exception:

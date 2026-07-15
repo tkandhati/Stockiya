@@ -2,11 +2,14 @@ import { Link } from 'react-router-dom'
 import {
   ArrowUpRight,
   CheckCircle2,
+  Clock,
+  History,
   Layers,
   ShieldCheck,
   Target,
   TrendingDown,
   TrendingUp,
+  Wallet,
 } from 'lucide-react'
 import type { Pick } from '../types'
 import { fmtINR, fmtPct } from '../api'
@@ -78,6 +81,146 @@ export function PickCard({ pick }: { pick: Pick }) {
               {conf.bonuses_fired.length > 2 && ` +${conf.bonuses_fired.length - 2}`}
             </span>
           )}
+        </div>
+      )}
+
+      {/* 2b. Already-held banner — pick's symbol is a live position */}
+      {pick.already_held && (
+        <div className="mt-3 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+          <Wallet className="mt-0.5 h-3.5 w-3.5 flex-shrink-0" />
+          <div className="min-w-0 flex-1">
+            <div className="font-semibold uppercase tracking-wide">
+              Already held ({pick.already_held.ownership || 'unknown'})
+            </div>
+            <div className="mt-0.5 leading-snug">
+              Entry {pick.already_held.entry_date || '—'}
+              {typeof pick.already_held.days_held === 'number' && (
+                <> · day {pick.already_held.days_held}</>
+              )}
+              {typeof pick.already_held.pnl_pct === 'number' && (
+                <> · P&amp;L {fmtPct(pick.already_held.pnl_pct)}</>
+              )}
+            </div>
+            {pick.already_held.portfolio_action_note && (
+              <div className="mt-0.5 leading-snug opacity-85">
+                Portfolio says: <span className="font-mono">{pick.already_held.portfolio_action}</span>
+                {' — '}{pick.already_held.portfolio_action_note}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* 2c. Consecutive-pick diff — what changed since last time */}
+      {pick.change_since_prev_pick && (
+        <div className="mt-3 rounded-lg border border-sky-200 bg-sky-50/70 px-3 py-2 text-xs text-sky-900">
+          <div className="flex items-center gap-1.5 font-semibold uppercase tracking-wide">
+            <History className="h-3.5 w-3.5" />
+            Since last pick
+            <span className="font-normal opacity-80">
+              ({pick.change_since_prev_pick.prev_date}
+              {typeof pick.change_since_prev_pick.days_ago === 'number' &&
+                ` · ${pick.change_since_prev_pick.days_ago}d ago`})
+            </span>
+          </div>
+          <ul className="mt-1 space-y-0.5 leading-snug">
+            {pick.change_since_prev_pick.confirmation_score && (
+              <li>
+                Confirmation{' '}
+                <span className="font-mono">
+                  {pick.change_since_prev_pick.confirmation_score.was.toFixed(2)}
+                  {' → '}
+                  {pick.change_since_prev_pick.confirmation_score.now.toFixed(2)}
+                </span>
+                {' '}
+                <span
+                  className={
+                    (pick.change_since_prev_pick.confirmation_score.delta ?? 0) >= 0
+                      ? 'text-emerald-700'
+                      : 'text-rose-700'
+                  }
+                >
+                  ({(pick.change_since_prev_pick.confirmation_score.delta ?? 0) >= 0 ? '+' : ''}
+                  {(pick.change_since_prev_pick.confirmation_score.delta ?? 0).toFixed(2)})
+                </span>
+              </li>
+            )}
+            {pick.change_since_prev_pick.bonuses && (
+              <>
+                {pick.change_since_prev_pick.bonuses.added.length > 0 && (
+                  <li>
+                    Bonuses added:{' '}
+                    <span className="text-emerald-800">
+                      {pick.change_since_prev_pick.bonuses.added.join(', ')}
+                    </span>
+                  </li>
+                )}
+                {pick.change_since_prev_pick.bonuses.removed.length > 0 && (
+                  <li>
+                    Bonuses lost:{' '}
+                    <span className="text-rose-800">
+                      {pick.change_since_prev_pick.bonuses.removed.join(', ')}
+                    </span>
+                  </li>
+                )}
+              </>
+            )}
+            {pick.change_since_prev_pick.entry_timing && (
+              <li>
+                Entry timing:{' '}
+                <span className="font-mono">
+                  {pick.change_since_prev_pick.entry_timing.was || '—'}
+                  {' → '}
+                  {pick.change_since_prev_pick.entry_timing.now || '—'}
+                </span>
+              </li>
+            )}
+            {pick.change_since_prev_pick.weinstein_stage && (
+              <li>
+                Weinstein stage:{' '}
+                <span className="font-mono">
+                  {pick.change_since_prev_pick.weinstein_stage.was || '—'}
+                  {' → '}
+                  {pick.change_since_prev_pick.weinstein_stage.now || '—'}
+                </span>
+              </li>
+            )}
+            {pick.change_since_prev_pick.rank_change && (
+              <li>
+                Rank{' '}
+                <span className="font-mono">
+                  #{pick.change_since_prev_pick.rank_change.was}
+                  {' → '}
+                  #{pick.change_since_prev_pick.rank_change.now}
+                </span>
+                {pick.change_since_prev_pick.rank_change.delta !== 0 && (
+                  <span
+                    className={
+                      pick.change_since_prev_pick.rank_change.delta < 0
+                        ? 'ml-1 text-emerald-700'
+                        : 'ml-1 text-rose-700'
+                    }
+                  >
+                    ({pick.change_since_prev_pick.rank_change.delta < 0 ? 'climbed ' : 'dropped '}
+                    {Math.abs(pick.change_since_prev_pick.rank_change.delta)})
+                  </span>
+                )}
+              </li>
+            )}
+            {pick.change_since_prev_pick.headline_changed && (
+              <li className="italic opacity-80">Headline reworded</li>
+            )}
+          </ul>
+        </div>
+      )}
+
+      {/* 2d. Holding horizon badge */}
+      {pick.holding_horizon && (
+        <div className="mt-3 inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-2.5 py-1 text-xs text-slate-700">
+          <Clock className="h-3.5 w-3.5 text-slate-500" />
+          <span className="font-semibold">Horizon</span>
+          <span className="font-mono">{pick.holding_horizon.days}d</span>
+          <span className="opacity-70">· volume-based bucket</span>
         </div>
       )}
 

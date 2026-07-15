@@ -86,6 +86,52 @@ export interface VolumeEvent {
 // Pick — new + legacy fields all coexist; new shape is canonical.
 // --------------------------------------------------------------------------
 
+// ---- Volume-based dynamic horizon (2026-07-15) ----
+export interface HoldingHorizon {
+  days: number                   // one of 30 | 60 | 90 | 120 | 180
+  basis: string                  // audit string for how this bucket was chosen
+  source: 'entry_estimate' | 'revalidation_extension' | string
+}
+
+// ---- Reconciliation annotation on picks whose symbol is already held ----
+export interface AlreadyHeld {
+  pick_id?: string
+  ownership?: 'suggested' | 'paper' | 'live'
+  entry_date?: string
+  days_held?: number
+  portfolio_action?: string          // hold | tighten_stop_45 | extend_horizon | ...
+  portfolio_action_note?: string
+  pnl_pct?: number | null
+}
+
+// ---- Consecutive-pick diff vs. the last time this symbol was picked ----
+export interface PickDelta<T> {
+  was: T
+  now: T
+  delta?: T
+  delta_pct?: number | null
+}
+export interface BonusDiff {
+  added: string[]
+  removed: string[]
+}
+export interface RankChange {
+  was: number
+  now: number
+  delta: number                  // negative = climbed
+}
+export interface ChangeSincePrevPick {
+  prev_date: string
+  days_ago: number | null
+  confirmation_score?: PickDelta<number>
+  bonuses?: BonusDiff
+  entry_timing?: PickDelta<string>
+  weinstein_stage?: PickDelta<string>
+  headline_changed?: boolean
+  price_plan_delta?: Record<string, PickDelta<number>>
+  rank_change?: RankChange
+}
+
 export interface Pick {
   symbol: string
   rank?: number | null
@@ -102,6 +148,19 @@ export interface Pick {
   gates_evidence?: GatesEvidence
   gate_confirmation_status?: GateConfirmationStatus
   volume_event?: VolumeEvent | null
+
+  // ---- New in schema_version 6 (2026-07-15) ----
+  holding_horizon?: HoldingHorizon
+  already_held?: AlreadyHeld
+  change_since_prev_pick?: ChangeSincePrevPick
+  // `suppressed_from_ui` is only present on picks written to portfolio.csv
+  // (not to picks_<date>.json), so the UI shouldn't normally see it.
+  suppressed_from_ui?: {
+    reason: string
+    portfolio_action?: string
+    portfolio_action_note?: string
+    portfolio_pick_id?: string
+  }
 
   // ---- Legacy aliases (still populated by build_pick_payload) ----
   best_buy_at?: number
