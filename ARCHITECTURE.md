@@ -743,6 +743,48 @@ row for a symbol appearing in today's picks is hidden from the
 positions view (unless it is a same-day fresh row), closing the mid-day
 transient window between pipeline runs.
 
+### Multi-day `pick_history` trail (2026-07-15)
+
+`change_since_prev_pick` only carries the delta vs the SINGLE most
+recent prior appearance. For symbols picked N days in a row, users
+want the whole trajectory. `backend/picks_diff.py` gained
+`compute_pick_history` + `attach_pick_history`:
+
+- Walks `data/picks_<date>.json` backwards up to
+  `PICK_HISTORY_LOOKBACK_DAYS` (default 30) days.
+- Collects up to `PICK_HISTORY_MAX_ENTRIES` (default 7) prior
+  appearances, newest first.
+- Each entry: `date, rank, score, entry, bonus_count, headline,
+  direction, score_delta`.
+- `direction` compares the entry's score to the older neighbour and
+  is one of `positive` / `negative` / `neutral` / `first_appearance`.
+
+Wired into `orchestrator.py` alongside `attach_change_diffs`, before
+`split_visible_from_suppressed`. Middleware `Pick` DTO carries it as
+`Optional[list]`. Frontend renders it as a color-coded monospace
+table.
+
+### Middleware pass-through of schema-v6 fields (2026-07-15)
+
+`middleware/schemas.py:Pick` was silently stripping all schema-v6
+additions because Pydantic drops undeclared fields by default. Fixed
+by adding five `Optional` fields on the DTO: `holding_horizon`,
+`already_held`, `change_since_prev_pick`, `suppressed_from_ui`,
+`pick_history`. Kept as loose `dict` / `list` typing so the API
+remains tolerant of backend sub-field additions without a schema bump.
+
+### Daily diagnostic snapshot — `data/daily_diagnostic.md` (2026-07-15)
+
+`backend/daily_diagnostic.py` writes a self-contained markdown file at
+the end of every pipeline run (Phase 6 in `orchestrator.py`, after
+`record_picks`). It overwrites in place. Uploading this single file
+gives full context for remote diagnostics: environment, code
+fingerprints (proves which portfolio.py / horizon.py / render.py is
+actually loaded), pipeline summary, reconcile events, portfolio state
+including duplicate-open-symbol detection, per-pick presence of
+schema-v6 fields, and any errors captured. Fail-open — a diagnostic
+write failure never breaks the pipeline.
+
 ### HTTP API — `middleware/main.py`
 
 ```

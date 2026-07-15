@@ -45,6 +45,28 @@ against the user's actual fill for taken positions.
   `PickDelta<T>`, etc.). `PickCard.tsx` renders three new blocks:
   amber "Already held" banner, sky-blue "Since last pick" diff panel,
   and a "Horizon Nd" pill. `tsc --noEmit` clean.
+- **Middleware schema pass-through** — `middleware/schemas.py:Pick` had
+  no fields for the schema-v6 additions, so Pydantic was silently
+  dropping them during API serialization (that's why the picks JSON on
+  disk had the diff but the browser never saw it). Added
+  `holding_horizon`, `already_held`, `change_since_prev_pick`,
+  `suppressed_from_ui`, `pick_history` as `Optional[dict|list]` — kept
+  loose so the API remains tolerant of backend sub-field additions.
+- **Multi-day `pick_history` trail** — for symbols picked N days in a
+  row, `change_since_prev_pick` (single-day delta) was too thin. New
+  `backend/picks_diff.py:compute_pick_history` walks
+  `data/picks_<date>.json` backwards over up to 30 days and returns a
+  newest-first trail of prior appearances (cap 7). Each entry carries
+  `direction` = `positive | negative | neutral | first_appearance`,
+  computed vs. the older neighbour. Frontend renders a color-coded
+  monospace table with ▲ ▼ · ◇ glyphs.
+- **Daily diagnostic file** — `backend/daily_diagnostic.py` writes
+  `data/daily_diagnostic.md` at Phase 6 of every pipeline run
+  (overwrites in place). Self-contained: environment, code
+  fingerprints, pipeline summary, reconcile events, portfolio state
+  (with duplicate-open-symbol detection), picks JSON per-pick summary,
+  errors. When a user reports "something looks wrong", ask for this
+  single file rather than portfolio.csv + picks JSON + traces + logs.
 - **Not yet done** — auto-persist horizon extensions (belongs in
   `backend/weekly.py`); backfill `end_date` on pre-existing rows (they
   degrade to classic 45/90/180 rules).

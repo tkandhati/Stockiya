@@ -118,6 +118,78 @@ contradiction on the picks side via `suppressed_from_ui`.
 Pure additions; no changes to existing render paths. `tsc --noEmit`
 clean on `tsconfig.app.json`.
 
+### 2026-07-15 (follow-up 2) — Middleware schema pass-through, multi-day trail, daily diagnostic
+
+Three tightly-related additions surfaced from a debugging session on the
+running app:
+
+**1. Middleware Pydantic schema was stripping schema-v6 fields.**
+
+Symptom: picks_<date>.json on disk had `holding_horizon` /
+`change_since_prev_pick` populated, but the browser saw none of them —
+so the "Since last pick" panel never appeared even for symbols that had
+been picked days in a row. Root cause: `middleware/schemas.py:Pick` had
+no field declarations for the schema-v6 additions, so Pydantic
+silently dropped them during API serialization.
+
+Fix: five new optional fields on the `Pick` DTO, kept as
+`Optional[dict]` / `Optional[list]` rather than strict nested models so
+the API remains tolerant of backend sub-field additions:
+
+- `holding_horizon`, `already_held`, `change_since_prev_pick`,
+  `suppressed_from_ui`, `pick_history`.
+
+**2. Multi-day `pick_history` trail on every pick.**
+
+`change_since_prev_pick` only shows the delta vs the single most-recent
+prior appearance. For a symbol picked N days in a row, that's not
+enough — the user wants the full trajectory. New backend function
+`compute_pick_history` (`backend/picks_diff.py`) walks
+`data/picks_<date>.json` files backwards over
+`PICK_HISTORY_LOOKBACK_DAYS` (default 30) and returns up to
+`PICK_HISTORY_MAX_ENTRIES` (default 7) prior appearances, newest first.
+
+Each entry carries a `direction` tag comparing its score to the OLDER
+entry immediately below it:
+
+| direction | Meaning |
+|---|---|
+| `positive` | this day's score was higher than the day before |
+| `negative` | lower |
+| `neutral` | flat |
+| `first_appearance` | oldest entry in the trail (nothing to compare) |
+
+Wired into `orchestrator.py` alongside `attach_change_diffs`.
+
+Frontend renders a compact monospace table with color-coded rows
+(emerald / rose / slate) and glyphs (▲ ▼ · ◇). Legend inline.
+
+**3. `data/daily_diagnostic.md` — one file, everything.**
+
+New module `backend/daily_diagnostic.py` writes a self-contained
+markdown snapshot at the end of every pipeline run (Phase 6 in
+orchestrator, after `record_picks`). Overwrites in place. Uploading
+this single file gives a diagnostician:
+
+- Environment (Python, git HEAD, executable path)
+- Code fingerprints (loaded module paths, `PORTFOLIO_FIELDS` contents,
+  `PICKS_SCHEMA_VERSION` in the running process)
+- Pipeline run summary (universe, survivors, visible / suppressed
+  counts, regime status)
+- Reconcile events (from trace JSONLs)
+- Portfolio state (by-status breakdown, open positions table,
+  duplicate-symbol detection)
+- Picks JSON per-pick summary (which schema-v6 fields are present)
+- Errors captured during the run
+
+Fail-open — a diagnostic write failure never breaks the pipeline.
+
+Fix points:
+- `PICK_HISTORY_LOOKBACK_DAYS`, `PICK_HISTORY_MAX_ENTRIES`
+  (`backend/picks_diff.py`)
+- `DIAGNOSTIC_PATH` (`backend/daily_diagnostic.py`) — change if you
+  want to keep history rather than overwrite.
+
 ## 2026-07-14 — Fragile pre-breakout admission fix (Bajaj-Auto incident)
 
 Bajaj-Auto was recommended on 2026-07-13 as a Pocket-Pivot pre-breakout,

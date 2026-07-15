@@ -43,7 +43,7 @@ from .picks_reconcile import (
     reconcile_picks_against_portfolio,
     split_visible_from_suppressed,
 )
-from .picks_diff import attach_change_diffs
+from .picks_diff import attach_change_diffs, attach_pick_history
 from .horizon import estimated_horizon_days
 from .universe import UNIVERSE
 
@@ -403,6 +403,11 @@ def run_universe(
     # signal even when we're not surfacing it in the buy list).
     attach_change_diffs(pick_payloads, today_iso)
 
+    # Attach multi-day `pick_history` trail — one snapshot per prior day
+    # this symbol was picked, newest first, with day-over-day direction
+    # tag (positive/negative/neutral). Complements the single-day diff.
+    attach_pick_history(pick_payloads, today_iso)
+
     # Split: only visible picks go into picks_<date>.json; the portfolio
     # ledger records the full set so suppressed picks still land as fresh
     # suggested rows alongside the taken position with the exit signal.
@@ -428,6 +433,7 @@ def run_universe(
     # as a duplicate suggested row (different entry_date) alongside the
     # user's taken position, without contradicting the exit signal in
     # today's UI.
+    run_errors: list[str] = []
     try:
         from .portfolio import record_picks
         record_payload = dict(response)
@@ -435,8 +441,28 @@ def run_universe(
         added = record_picks(record_payload)
         if added:
             log.info("portfolio.csv: appended %d new picks", added)
-    except Exception:
+    except Exception as e:
         log.exception("portfolio recording failed (non-fatal)")
+        run_errors.append(f"record_picks: {type(e).__name__}: {e}")
+
+    # ---- Phase 6: daily diagnostic snapshot ----
+    # Overwrites data/daily_diagnostic.md. Self-contained: uploading this
+    # single file gives full context (code fingerprints, pipeline results,
+    # portfolio state, picks state, reconcile events).
+    try:
+        from .daily_diagnostic import write_daily_diagnostic
+        orchestrator_summary = {
+            "universe_count": len(results),
+            "survivors_passed_gates": sum(1 for r in results if r.passed_gates),
+            "visible_picks": len(visible_picks),
+            "suppressed_picks": len(suppressed_picks),
+            "regime_passed": regime.passed,
+            "regime_summary": regime.summary,
+            "top_pick_symbols": [p.get("symbol") for p in visible_picks[:5]],
+        }
+        write_daily_diagnostic(today_iso, orchestrator_summary, run_errors)
+    except Exception:
+        log.exception("daily_diagnostic write failed (non-fatal)")
 
     return response
 

@@ -94,6 +94,26 @@ class Pick(BaseModel):
     gates_evidence: GatesEvidenceDTO
     volume_event: Optional[VolumeEventDTO] = None
 
+    # ---- Schema v6 additions (2026-07-15) — pass-through to frontend.
+    # Kept as Optional[dict] rather than strict nested models so the API
+    # doesn't reject a payload if the backend adds sub-fields later. The
+    # frontend has TypeScript types that describe the shape.
+    #
+    # holding_horizon        — {days, basis, source} volume-based bucket
+    # already_held           — annotation when symbol has a taken open row
+    # change_since_prev_pick — delta struct vs. the last time the symbol
+    #                          was picked (score, bonuses, timing, plan)
+    # suppressed_from_ui     — normally NOT in picks_<date>.json (filtered
+    #                          before write); declared here so it round-trips
+    #                          if a caller sends the full reconciled list.
+    holding_horizon: Optional[dict] = None
+    already_held: Optional[dict] = None
+    change_since_prev_pick: Optional[dict] = None
+    suppressed_from_ui: Optional[dict] = None
+    # pick_history: list of prior-day snapshots (newest first) with
+    # direction=positive|negative|neutral|first_appearance per entry
+    pick_history: Optional[list] = None
+
     # Legacy aliases — populated by build_pick_payload for transition-period
     # frontends that still expect the old field names.
     best_buy_at: Optional[float] = None

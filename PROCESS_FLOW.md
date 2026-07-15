@@ -243,7 +243,7 @@ by `picks_reconcile` via `suppressed_from_ui`.
 
 ### Frontend rendering of the new pick fields (2026-07-15)
 
-`frontend/src/components/PickCard.tsx` renders three blocks derived
+`frontend/src/components/PickCard.tsx` renders four blocks derived
 from the schema-v6 fields (`frontend/src/types.ts`):
 
 - **Amber "Already held" banner** — when `pick.already_held` is set
@@ -255,8 +255,43 @@ from the schema-v6 fields (`frontend/src/types.ts`):
   days-ago, plus per-field deltas: confirmation score (color-coded),
   bonuses added / lost, entry_timing / weinstein_stage transitions,
   rank climb/drop, and a headline-changed indicator.
+- **"Last N appearances" trail table** — when `pick.pick_history` is
+  set. Compact monospace table, newest-first, one row per prior day
+  the symbol was picked. Each row is color-coded by day-over-day
+  direction (emerald ▲ / rose ▼ / slate · flat / slate-dim ◇ for the
+  oldest entry). Columns: Date, Rank, Score, Δ vs prior day, Entry,
+  Bonus count.
 - **"Horizon Nd" pill badge** — when `pick.holding_horizon` is set.
   Shows the volume-based bucket (30 / 60 / 90 / 120 / 180 days).
+
+Middleware pass-through (`middleware/schemas.py:Pick`): all schema-v6
+fields are declared as `Optional[dict|list]` on the Pick DTO. Without
+these declarations Pydantic silently drops unknown fields at the API
+boundary, so the picks_<date>.json on disk would carry the data but
+the browser would never see it. Loose typing (dict / list) keeps the
+API tolerant of backend sub-field additions.
+
+### Daily diagnostic file — `data/daily_diagnostic.md` (2026-07-15)
+
+`backend/daily_diagnostic.py` writes ONE markdown snapshot at Phase 6
+of every pipeline run (overwrites in place). It is fully
+self-contained; a single upload gives full diagnostic context:
+
+- Environment (Python, git HEAD, executable path)
+- Code fingerprints (loaded module paths, `PORTFOLIO_FIELDS` state,
+  `PICKS_SCHEMA_VERSION` in the running process) — catches stale
+  bytecode / stale process bugs
+- Pipeline run summary (universe, survivors, visible / suppressed
+  counts, regime status)
+- Reconcile events (harvested from trace JSONLs)
+- Portfolio state (by-status breakdown, open positions table,
+  duplicate-symbol detection — flags any symbol with >1 open row,
+  which is direct evidence that `record_picks` supersede did not run)
+- Picks JSON per-pick summary (which schema-v6 fields are populated)
+- Errors captured during the run
+
+Fail-open — a diagnostic write failure never breaks the pipeline.
+Configure via `DIAGNOSTIC_PATH` in `backend/daily_diagnostic.py`.
 
 ### Lifecycle state machine
 

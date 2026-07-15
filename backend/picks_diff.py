@@ -33,6 +33,14 @@ PICK_DIFF_LOOKBACK_DAYS: int = 30
 PICK_DIFF_SCORE_ROUND: int = 3
 PICK_DIFF_PRICE_ROUND: int = 2
 
+# ---- Multi-day trail (pick_history) ----
+# Distinct from change_since_prev_pick, which shows only the delta vs
+# the SINGLE most recent prior appearance. `pick_history` returns a
+# chronological list (most recent first) of every prior day this symbol
+# was picked within the lookback window, capped at max_entries.
+PICK_HISTORY_LOOKBACK_DAYS: int = 30
+PICK_HISTORY_MAX_ENTRIES: int = 7
+
 
 def _load_picks_for_date(iso: str) -> Optional[dict]:
     p = _DATA_DIR / f"picks_{iso}.json"
@@ -195,3 +203,88 @@ def attach_change_diffs(pick_payloads: list[dict], today_iso: str) -> None:
             diff = None
         if diff is not None:
             p["change_since_prev_pick"] = diff
+
+
+def compute_pick_history(
+    today_pick: dict,
+    today_iso: str,
+    lookback_days: int = PICK_HISTORY_LOOKBACK_DAYS,
+    max_entries: int = PICK_HISTORY_MAX_ENTRIES,
+) -> list[dict]:
+    """Return a chronological (newest-first) list of prior appearances of
+    this symbol, one entry per day, with day-over-day direction tag.
+
+    Each entry:
+        {
+          date, rank, score, entry, bonus_count, headline,
+          direction:  "positive" | "negative" | "neutral" | "first_appearance",
+          score_delta: float or null
+        }
+
+    `direction` compares the entry's score to the OLDER entry immediately
+    below it in the list (i.e. the previous appearance). The oldest entry
+    in the trail carries `direction="first_appearance"` because there is
+    nothing older within the window to compare against.
+
+    Excludes today's pick. Capped at `max_entries` (default 7 days).
+    """
+    sym = today_pick.get("symbol")
+    if not sym:
+        return []
+    try:
+        today = date.fromisoformat(today_iso)
+    except ValueError:
+        return []
+
+    trail: list[dict] = []
+    for delta in range(1, lookback_days + 1):
+        d_iso = (today - timedelta(days=delta)).isoformat()
+        payload = _load_picks_for_date(d_iso)
+        if payload is None:
+            continue
+        for p in payload.get("picks") or []:
+            if p.get("symbol") != sym:
+                continue
+            conf = p.get("confirmation") or {}
+            plan = p.get("price_plan") or {}
+            trail.append({
+                "date": d_iso,
+                "rank": p.get("rank"),
+                "score": round(float(conf.get("score") or 0.0), 2),
+                "entry": round(float(plan.get("entry") or 0.0), 2),
+                "bonus_count": len(conf.get("bonuses_fired") or []),
+                "headline": p.get("headline", "") or "",
+            })
+            break
+        if len(trail) >= max_entries:
+            break
+
+    # Annotate each entry with direction vs the older neighbour.
+    for i, entry in enumerate(trail):
+        older = trail[i + 1] if i + 1 < len(trail) else None
+        if older is None:
+            entry["direction"] = "first_appearance"
+            entry["score_delta"] = None
+            continue
+        delta_val = round(entry["score"] - older["score"], 2)
+        entry["score_delta"] = delta_val
+        if delta_val > 0:
+            entry["direction"] = "positive"
+        elif delta_val < 0:
+            entry["direction"] = "negative"
+        else:
+            entry["direction"] = "neutral"
+    return trail
+
+
+def attach_pick_history(pick_payloads: list[dict], today_iso: str) -> None:
+    """Mutate each pick in place, attaching `pick_history` when at least
+    one prior appearance exists in the lookback window. Safe on empty."""
+    for p in pick_payloads:
+        try:
+            trail = compute_pick_history(p, today_iso)
+        except Exception:
+            log.exception("pick history failed for %s", p.get("symbol"))
+            trail = []
+        if trail:
+            p["pick_history"] = trail

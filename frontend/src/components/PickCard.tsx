@@ -214,6 +214,68 @@ export function PickCard({ pick }: { pick: Pick }) {
         </div>
       )}
 
+      {/* 2c2. Multi-day pick trail — one snapshot per prior appearance */}
+      {pick.pick_history && pick.pick_history.length > 0 && (
+        <div className="mt-3 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs">
+          <div className="flex items-center gap-1.5 font-semibold uppercase tracking-wide text-slate-800">
+            <History className="h-3.5 w-3.5" />
+            Last {pick.pick_history.length} appearance{pick.pick_history.length === 1 ? '' : 's'}
+          </div>
+          <div className="mt-1 overflow-x-auto">
+            <table className="w-full text-left font-mono">
+              <thead className="text-slate-500">
+                <tr>
+                  <th className="pr-2 font-normal">Date</th>
+                  <th className="pr-2 font-normal">Rank</th>
+                  <th className="pr-2 font-normal">Score</th>
+                  <th className="pr-2 font-normal">Δ</th>
+                  <th className="pr-2 font-normal">Entry</th>
+                  <th className="pr-2 font-normal">Bonuses</th>
+                </tr>
+              </thead>
+              <tbody>
+                {pick.pick_history.map((h) => {
+                  const tone =
+                    h.direction === 'positive'
+                      ? 'text-emerald-700 bg-emerald-50/50'
+                      : h.direction === 'negative'
+                      ? 'text-rose-700 bg-rose-50/50'
+                      : h.direction === 'first_appearance'
+                      ? 'text-slate-500 bg-slate-50/60'
+                      : 'text-slate-700'
+                  const marker =
+                    h.direction === 'positive'
+                      ? '▲'
+                      : h.direction === 'negative'
+                      ? '▼'
+                      : h.direction === 'first_appearance'
+                      ? '◇'
+                      : '·'
+                  return (
+                    <tr key={h.date} className={tone}>
+                      <td className="pr-2 py-0.5">{h.date}</td>
+                      <td className="pr-2 py-0.5">{h.rank != null ? `#${h.rank}` : '—'}</td>
+                      <td className="pr-2 py-0.5 tabular-nums">{h.score.toFixed(2)}</td>
+                      <td className="pr-2 py-0.5 tabular-nums">
+                        <span className="mr-0.5">{marker}</span>
+                        {h.score_delta != null
+                          ? `${h.score_delta > 0 ? '+' : ''}${h.score_delta.toFixed(2)}`
+                          : '—'}
+                      </td>
+                      <td className="pr-2 py-0.5 tabular-nums">{fmtINR(h.entry)}</td>
+                      <td className="pr-2 py-0.5">{h.bonus_count}</td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+          <div className="mt-1 text-[10px] text-slate-500">
+            ▲ stronger than the day before · ▼ weaker · · flat · ◇ first appearance in window
+          </div>
+        </div>
+      )}
+
       {/* 2d. Holding horizon badge */}
       {pick.holding_horizon && (
         <div className="mt-3 inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-2.5 py-1 text-xs text-slate-700">

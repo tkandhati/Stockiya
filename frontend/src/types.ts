@@ -132,6 +132,24 @@ export interface ChangeSincePrevPick {
   rank_change?: RankChange
 }
 
+// ---- Multi-day trail: one snapshot per prior day this symbol was picked ----
+export type PickHistoryDirection =
+  | 'positive'
+  | 'negative'
+  | 'neutral'
+  | 'first_appearance'
+
+export interface PickHistoryEntry {
+  date: string
+  rank: number | null
+  score: number                  // confirmation.score, rounded
+  entry: number                  // price_plan.entry, rounded
+  bonus_count: number
+  headline: string
+  direction: PickHistoryDirection
+  score_delta: number | null     // vs the older entry immediately below
+}
+
 export interface Pick {
   symbol: string
   rank?: number | null
@@ -153,6 +171,7 @@ export interface Pick {
   holding_horizon?: HoldingHorizon
   already_held?: AlreadyHeld
   change_since_prev_pick?: ChangeSincePrevPick
+  pick_history?: PickHistoryEntry[]
   // `suppressed_from_ui` is only present on picks written to portfolio.csv
   // (not to picks_<date>.json), so the UI shouldn't normally see it.
   suppressed_from_ui?: {
