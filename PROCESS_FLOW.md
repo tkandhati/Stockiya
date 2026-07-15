@@ -293,6 +293,32 @@ self-contained; a single upload gives full diagnostic context:
 Fail-open — a diagnostic write failure never breaks the pipeline.
 Configure via `DIAGNOSTIC_PATH` in `backend/daily_diagnostic.py`.
 
+### Trajectory flip thresholds mirror LT admission floors (2026-07-15)
+
+Symptom on BAJAJ-AUTO: trajectory oscillated between "flipped" and
+"stable" on alternate days. Root cause: the exit classifier used a
+hair-trigger at zero-crossing while pick admission required
+meaningfully positive signals. `signal_trajectory` now defines three
+constants that mirror the LT gate admission floors:
+
+| Metric | Admission (LT) | Flip trigger (trajectory) |
+|---|---|---|
+| OBV-90d slope | `OBV_90D_SLOPE_MIN = 3.0` | `FLIP_THRESHOLD_OBV_90D_PCT = -3.0` |
+| Up/down vol ratio (90d) | `UPDOWN_90D_MIN = 1.1` | `FLIP_THRESHOLD_UP_DOWN_RATIO = 0.9` |
+| 150d MA slope | `MA150_SLOPE_MIN = 0.0` | `FLIP_THRESHOLD_MA150_PCT = -0.5` |
+
+Each classifier (`_classify_positive`, `_classify_ratio`) now accepts
+a `flip_threshold` keyword. Backward-compat: the defaults (0.0 for
+positive, 1.0 for ratio) reproduce the original zero-crossing
+behaviour, so any other caller is unaffected.
+
+Entry-value provenance for trajectory is per-pick-date:
+`_load_stage_features` reads
+`data/traces/run_<entry_date>_<symbol>.jsonl`; `positions_view`
+passes each row's own `r["entry_date"]`. Multiple open rows for the
+same symbol (e.g. taken paper row + fresh suggested row) each anchor
+to their own pick date's captured signals.
+
 ### Lifecycle state machine
 
 ```

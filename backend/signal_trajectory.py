@@ -49,6 +49,27 @@ _TRACES_DIR = _PROJECT_ROOT / "data" / "traces"
 _STRONG_RATIO = 1.20        # current >= entry * 1.20 -> strong
 _WEAKEN_RATIO = 0.50        # current <  entry * 0.50 -> weakening
 
+# ---- Metric-specific flip thresholds (mirror pick-admission thresholds).
+#
+# The old hair-trigger flip logic ("current crosses zero" for positive
+# metrics, "current crosses 1.0" for ratio metrics) caused day-to-day
+# oscillation between "flipped" and "stable" for borderline setups
+# (e.g., Bajaj-Auto). Each threshold below mirrors the corresponding
+# admission floor in the LT gate (backend/stages/lt_flow.py), so a
+# stock has to move *symmetrically* below the admission bar to be
+# classified as flipped — not merely nudge across zero.
+#
+# Fix points:
+#     FLIP_THRESHOLD_OBV_90D_PCT    : mirrors LT.OBV_90D_SLOPE_MIN=3.0
+#     FLIP_THRESHOLD_UP_DOWN_RATIO  : mirrors LT.UPDOWN_90D_MIN=1.1
+#                                     (so 0.9 = 0.1 below neutral 1.0)
+#     FLIP_THRESHOLD_MA150_PCT      : mirrors LT.MA150_SLOPE_MIN=0.0
+#                                     with a small negative buffer so
+#                                     a truly flat MA doesn't trip a flip
+FLIP_THRESHOLD_OBV_90D_PCT: float = -3.0
+FLIP_THRESHOLD_UP_DOWN_RATIO: float = 0.9
+FLIP_THRESHOLD_MA150_PCT: float = -0.5
+
 # --------------------------------------------------------------------------- #
 # Divergent-entry ("Pocket-Pivot / No-Supply-Test") exit rules — B1 override.
 #
@@ -212,11 +233,27 @@ def _current_features_from_df(df) -> dict:
 # Classifier
 # --------------------------------------------------------------------------- #
 
-def _classify_positive(entry: Optional[float], current: Optional[float]) -> SignalState:
-    """For 'higher is better' metrics like OBV slope and MA slope."""
+def _classify_positive(
+    entry: Optional[float],
+    current: Optional[float],
+    *,
+    flip_threshold: float = 0.0,
+) -> SignalState:
+    """For 'higher is better' metrics like OBV slope and MA slope.
+
+    `flip_threshold` is the value the current must fall AT OR BELOW to
+    trigger "flipped". It mirrors the pick-admission floor for the
+    corresponding metric so exits are symmetric with admissions: a
+    setup admitted at OBV-90d >= +3.0% only flips when OBV-90d <= -3.0%,
+    not when it merely nudges below zero. This eliminates day-to-day
+    oscillation on borderline setups.
+
+    Backward-compatible: `flip_threshold=0.0` reproduces the original
+    hair-trigger zero-crossing behaviour.
+    """
     if entry is None or current is None:
         return "unknown"
-    if current < 0 < entry or (entry > 0 and current <= 0):
+    if entry > 0 and current <= flip_threshold:
         return "flipped"
     if entry <= 0:
         # Entry was zero or negative; we shouldn't have entered, but classify
@@ -229,15 +266,26 @@ def _classify_positive(entry: Optional[float], current: Optional[float]) -> Sign
     return "stable"
 
 
-def _classify_ratio(entry: Optional[float], current: Optional[float]) -> SignalState:
-    """For ratio metrics where 1.0 is neutral; e.g. up/down vol ratio."""
+def _classify_ratio(
+    entry: Optional[float],
+    current: Optional[float],
+    *,
+    flip_threshold: float = 1.0,
+) -> SignalState:
+    """For ratio metrics where 1.0 is neutral; e.g. up/down vol ratio.
+
+    `flip_threshold` is the value the current must fall AT OR BELOW to
+    trigger "flipped". Mirrors the admission floor — for a setup admitted
+    at up/down ratio >= 1.1, we flip only when the ratio drops to 0.9 or
+    lower (symmetric 0.1 below neutral 1.0), not when it merely dips
+    below 1.0.
+    """
     if entry is None or current is None:
         return "unknown"
-    if current < 1.0 and entry > 1.0:
+    if entry > 1.0 and current <= flip_threshold:
         return "flipped"
     if entry <= 1.0:
         return "strong" if current > 1.0 else "stable"
-    # entry > 1.0; lift above 1 = how much over neutral
     entry_lift = entry - 1.0
     current_lift = current - 1.0
     if current_lift >= entry_lift * _STRONG_RATIO:
@@ -388,10 +436,10 @@ def _build_report(
     """Pure classifier — no I/O. Tests can drive this directly."""
     indicators: list[IndicatorDelta] = []
 
-    # 1. OBV-90d slope
+    # 1. OBV-90d slope — flip mirrors LT.OBV_90D_SLOPE_MIN (3.0)
     e = entry_lt.get("obv_90d_slope_pct")
     c = current.get("obv_90d_slope_pct")
-    state = _classify_positive(e, c)
+    state = _classify_positive(e, c, flip_threshold=FLIP_THRESHOLD_OBV_90D_PCT)
     indicators.append(IndicatorDelta(
         name="obv_90d_slope_pct",
         label="OBV-90d slope",
@@ -399,10 +447,10 @@ def _build_report(
         description=_fmt_pct_delta("OBV-90d", e, c),
     ))
 
-    # 2. Up/down vol ratio 90d
+    # 2. Up/down vol ratio 90d — flip mirrors LT.UPDOWN_90D_MIN (1.1)
     e = entry_lt.get("up_down_vol_ratio_90d")
     c = current.get("up_down_vol_ratio_90d")
-    state = _classify_ratio(e, c)
+    state = _classify_ratio(e, c, flip_threshold=FLIP_THRESHOLD_UP_DOWN_RATIO)
     indicators.append(IndicatorDelta(
         name="up_down_vol_ratio_90d",
         label="Up/Down vol (90d)",
@@ -410,10 +458,10 @@ def _build_report(
         description=_fmt_ratio_delta("Up/Down vol 90d", e, c),
     ))
 
-    # 3. 150d MA slope
+    # 3. 150d MA slope — flip mirrors LT.MA150_SLOPE_MIN (0.0) + buffer
     e = entry_lt.get("ma150_slope_pct")
     c = current.get("ma150_slope_pct")
-    state = _classify_positive(e, c)
+    state = _classify_positive(e, c, flip_threshold=FLIP_THRESHOLD_MA150_PCT)
     indicators.append(IndicatorDelta(
         name="ma150_slope_pct",
         label="150d MA slope",

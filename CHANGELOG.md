@@ -190,6 +190,58 @@ Fix points:
 - `DIAGNOSTIC_PATH` (`backend/daily_diagnostic.py`) — change if you
   want to keep history rather than overwrite.
 
+### 2026-07-15 (follow-up 3) — Trajectory metric-mirror flip thresholds
+
+Symptom: BAJAJ-AUTO trajectory oscillated between `flipped` and
+`stable` on alternate days for a stable position — visibly wrong.
+
+Root cause: `signal_trajectory._classify_positive` and
+`_classify_ratio` had a hair-trigger flip condition (`current <= 0`
+for positive metrics, `current < 1.0` for ratio metrics). For a
+setup admitted just above the LT admission floor (e.g. OBV-90d at
++6%), day-to-day OBV noise around zero would trigger "flipped" one
+day and un-flip the next. The exit logic was **asymmetric** with
+respect to admission: pick logic required meaningfully positive
+signals to admit, but exit logic fired on merely non-positive
+signals.
+
+Fix: metric-specific mirror. Each classifier now takes a
+`flip_threshold` keyword; each call site in `_build_report` passes
+a metric-specific constant that mirrors the corresponding LT
+admission floor from `backend/stages/lt_flow.py`:
+
+```
+Metric              Admission floor    Flip threshold    Constant
+─────────────────   ───────────────    ──────────────    ────────────
+OBV-90d slope       >= +3.0%           <= -3.0%          FLIP_THRESHOLD_OBV_90D_PCT
+Up/down vol ratio   >= 1.1             <= 0.9            FLIP_THRESHOLD_UP_DOWN_RATIO
+150d MA slope       >= 0.0%            <= -0.5%          FLIP_THRESHOLD_MA150_PCT
+                                       (0.0 + buffer)
+```
+
+Backward-compat: default `flip_threshold=0.0` (positive) /
+`flip_threshold=1.0` (ratio) reproduce the original behaviour, so
+any other caller of the classifiers is unaffected.
+
+Verified with a 7-day BAJAJ-AUTO-shaped simulation: entry OBV +6%,
+OBV oscillating between -1.5% and +3.1% never fires "flipped" now;
+only a genuine drop below -3.0% (the mirror threshold) triggers the
+exit signal.
+
+Entry-value provenance (already correct, called out for clarity):
+`_load_stage_features(symbol, entry_date_iso, "LT")` reads
+`data/traces/run_<entry_date>_<symbol>.jsonl` for the pick's
+specific entry date. `positions_view` passes each row's own
+`r["entry_date"]`, so every row's trajectory is anchored to its
+own scoring day's OBV / MA / ratio values.
+
+Fix points:
+- `FLIP_THRESHOLD_OBV_90D_PCT` — mirror of `LT.OBV_90D_SLOPE_MIN`
+- `FLIP_THRESHOLD_UP_DOWN_RATIO` — mirror of `LT.UPDOWN_90D_MIN`
+- `FLIP_THRESHOLD_MA150_PCT` — mirror of `LT.MA150_SLOPE_MIN` with
+  a small negative buffer (0.5 pp) so a barely-flat MA doesn't trip
+  a flip.
+
 ## 2026-07-14 — Fragile pre-breakout admission fix (Bajaj-Auto incident)
 
 Bajaj-Auto was recommended on 2026-07-13 as a Pocket-Pivot pre-breakout,

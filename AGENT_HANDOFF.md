@@ -67,6 +67,23 @@ against the user's actual fill for taken positions.
   (with duplicate-open-symbol detection), picks JSON per-pick summary,
   errors. When a user reports "something looks wrong", ask for this
   single file rather than portfolio.csv + picks JSON + traces + logs.
+- **Trajectory flip thresholds now mirror admission floors** — fixed
+  the BAJAJ-AUTO alternate-day flipped/stable oscillation. Root cause:
+  `signal_trajectory._classify_positive` used a hair-trigger flip at
+  zero-crossing while pick admission required meaningfully positive
+  signals — an asymmetry that let daily noise oscillate borderline
+  positions. Added three constants that mirror the LT gate admission
+  floors: `FLIP_THRESHOLD_OBV_90D_PCT=-3.0` (mirrors 3.0),
+  `FLIP_THRESHOLD_UP_DOWN_RATIO=0.9` (mirrors 1.1), and
+  `FLIP_THRESHOLD_MA150_PCT=-0.5` (mirrors 0.0 with a small buffer).
+  Backward-compat: classifier defaults reproduce the old behaviour.
+- **Portfolio precautions — proposed, not yet shipped** — pre-write
+  backup + atomic swap for `portfolio.csv`, integrity validator
+  (catches multi-open-row-per-symbol at load time), and mutation
+  audit log (`data/portfolio_mutations.jsonl`). Waiting on user
+  greenlight. Deferred (need policy decisions): hypothesis
+  revalidation, aggregate risk / concentration limits, OHLCV cache
+  staleness detector.
 - **Not yet done** — auto-persist horizon extensions (belongs in
   `backend/weekly.py`); backfill `end_date` on pre-existing rows (they
   degrade to classic 45/90/180 rules).

@@ -785,6 +785,32 @@ including duplicate-open-symbol detection, per-pick presence of
 schema-v6 fields, and any errors captured. Fail-open — a diagnostic
 write failure never breaks the pipeline.
 
+### Trajectory metric-mirror flip thresholds (2026-07-15)
+
+`backend/signal_trajectory.py` now aligns its exit-classifier thresholds
+with the LT gate's admission floors, eliminating the hair-trigger
+zero-crossing that caused day-to-day flipped/stable oscillation on
+borderline setups. Three module-level constants, each mirroring a
+corresponding `backend/stages/lt_flow.py` admission floor:
+
+- `FLIP_THRESHOLD_OBV_90D_PCT = -3.0`  mirrors `OBV_90D_SLOPE_MIN=3.0`
+- `FLIP_THRESHOLD_UP_DOWN_RATIO = 0.9`  mirrors `UPDOWN_90D_MIN=1.1`
+  (0.1 below neutral 1.0 = symmetric with 0.1 above)
+- `FLIP_THRESHOLD_MA150_PCT = -0.5`  mirrors `MA150_SLOPE_MIN=0.0`
+  plus a small buffer so a barely-flat MA doesn't trip a flip
+
+Classifier signatures gained a keyword-only `flip_threshold`
+parameter. Defaults (`0.0` / `1.0`) reproduce the original
+zero-crossing behaviour, so any legacy caller is unaffected.
+
+Entry-value provenance is per-pick-date and already correct:
+`_load_stage_features(symbol, entry_date_iso, "LT")` reads
+`data/traces/run_<entry_date>_<symbol>.jsonl` and `positions_view`
+passes each row's own `entry_date`. Every open row's trajectory
+anchors to its own scoring day's captured OBV / MA / ratio values —
+important for symbols with multiple open rows (taken paper + fresh
+suggested) or for a symbol re-picked days later.
+
 ### HTTP API — `middleware/main.py`
 
 ```
