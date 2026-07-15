@@ -1,10 +1,55 @@
 # Agent Handoff
 
-Last updated: 2026-07-13
+Last updated: 2026-07-15
 
 For proposals that have been analyzed but not shipped, see `WISHLIST.md`.
+For ideas parked pending trace evidence, see `ideas.md`.
 
-## Latest Change (2026-07-13) — My Positions V1: ownership + user-actual fill
+## Latest Change (2026-07-15) — Picks-vs-portfolio reconciliation + volume-based dynamic horizon
+
+Fixed the "same symbol appears as EXIT and BUY on the same day" trust
+bug. Also replaced the fixed 6-month `target_date` with a volume-based
+bucketed horizon (30/60/90/120/180 days) that continuously monitors
+against the user's actual fill for taken positions.
+
+- **New modules** — `backend/horizon.py` (bucketed estimator +
+  revalidation), `backend/picks_reconcile.py` (ownership-aware
+  annotation of picks vs. open portfolio positions),
+  `backend/picks_diff.py` (consecutive-pick delta for audit trail).
+- **Reconciliation rules** — taken (paper/live) row with `exit_*` action
+  gets `suppressed_from_ui` on today's pick; taken row with
+  hold/tighten/extend gets `already_held` annotation; suggested-only
+  rows pass through and are superseded at record time.
+- **Portfolio replace/duplicate** — `record_picks` now supersedes an
+  open `suggested` row when the same symbol re-fires; keeps a taken
+  row and adds a fresh `suggested` alongside (two rows with different
+  `entry_date` are legitimate — real capital vs. fresh signal).
+- **Dynamic horizon** — `end_date = entry_d + horizon_days`, computed at
+  entry from confirmation score + Weinstein stage + entry_timing. At
+  `end_date`, healthy trajectory → recommend extend to next bucket;
+  flipped or at max → recommend exit. `DAY_180` remains the hard cap.
+- **Continuous monitoring** — `positions_view` recomputes the effective
+  `end_date` from `user_entry_date + horizon_days`, so the horizon
+  clock starts from the user's real fill day for taken positions.
+- **Schema** — `PICKS_SCHEMA_VERSION` 5→6; `portfolio.csv` gains five
+  columns (`end_date`, `horizon_days`, `horizon_basis`, `horizon_source`,
+  `superseded_by`). Tolerant reader; older rows load unchanged.
+- **Not yet done** — auto-persist horizon extensions (belongs in
+  `backend/weekly.py`); backfill `end_date` on pre-existing rows (they
+  degrade to classic 45/90/180 rules).
+- **Invariants preserved** — no scanner scoring changes; τ, gate
+  weights, and `classify_trigger` untouched.
+- **Validation** — parse-check clean on all 7 modified files;
+  end-to-end scratch-portfolio test verified reconcile splits correctly,
+  DAY_180 hard cap fires before horizon logic, duplicate row lands
+  when taken position has active exit signal.
+
+See `CHANGELOG.md 2026-07-15` for full write-up. See `PROCESS_FLOW.md §5b`
+for the updated lifecycle rules.
+
+---
+
+## Prior Change (2026-07-13) — My Positions V1: ownership + user-actual fill
 
 Every pick the scanner emits now starts as `ownership="suggested"` in
 `data/portfolio.csv`. On the `My Positions` page the user can accept

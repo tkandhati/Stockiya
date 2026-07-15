@@ -39,6 +39,12 @@ from .stages.hypothesis import build_pick_payload
 from .stages.rank import rank_survivors
 from .stages.regime import check_regime
 from .stages.render import render_picks_response, write_picks_file
+from .picks_reconcile import (
+    reconcile_picks_against_portfolio,
+    split_visible_from_suppressed,
+)
+from .picks_diff import attach_change_diffs
+from .horizon import estimated_horizon_days
 from .universe import UNIVERSE
 
 # Stages in canonical order — used for the per-gate breakdown log.
@@ -372,22 +378,61 @@ def run_universe(
                 len(closest_to_firing["breakout"]),
                 len(closest_to_firing["overall"]),
             )
+    # Attach volume-based holding horizon to every pick BEFORE reconcile,
+    # so record_picks (and the UI) sees the same value.
+    for _p in pick_payloads:
+        try:
+            _days, _basis = estimated_horizon_days(_p)
+            _p["holding_horizon"] = {
+                "days": _days,
+                "basis": _basis,
+                "source": "entry_estimate",
+            }
+        except Exception:
+            log.exception("horizon estimation failed for %s", _p.get("symbol"))
+
+    # Reconcile picks against currently-held portfolio positions. Picks
+    # whose symbol has a taken (paper/live) row with an active exit_*
+    # action get `suppressed_from_ui` and are hidden from the UI, but
+    # they remain in the list so record_picks can persist them as a
+    # fresh suggested row alongside the taken one.
+    pick_payloads = reconcile_picks_against_portfolio(pick_payloads, today_iso)
+
+    # Attach `change_since_prev_pick` diffs on every pick (including
+    # UI-suppressed ones — the audit trail should reflect the fresh
+    # signal even when we're not surfacing it in the buy list).
+    attach_change_diffs(pick_payloads, today_iso)
+
+    # Split: only visible picks go into picks_<date>.json; the portfolio
+    # ledger records the full set so suppressed picks still land as fresh
+    # suggested rows alongside the taken position with the exit signal.
+    visible_picks, suppressed_picks = split_visible_from_suppressed(pick_payloads)
+
     response = render_picks_response(
-        pick_payloads, today_iso,
+        visible_picks, today_iso,
         demo_mode=demo_mode,
         regime=regime.as_dict(),
         message=message,
         closest_to_firing=closest_to_firing,
     )
     path = write_picks_file(response)
-    log.info("  [Phase 4/4] Wrote %s  (%d pick%s)",
-             path.name, len(pick_payloads), "" if len(pick_payloads) == 1 else "s")
+    log.info(
+        "  [Phase 4/4] Wrote %s  (visible=%d suppressed=%d)",
+        path.name, len(visible_picks), len(suppressed_picks),
+    )
     log.info("=" * 76)
 
     # ---- Phase 5: portfolio ledger ----
+    # Feed record_picks the FULL reconciled list, not just the visible
+    # ones. Suppressed picks are recorded so the fresh signal is tracked
+    # as a duplicate suggested row (different entry_date) alongside the
+    # user's taken position, without contradicting the exit signal in
+    # today's UI.
     try:
         from .portfolio import record_picks
-        added = record_picks(response)
+        record_payload = dict(response)
+        record_payload["picks"] = pick_payloads
+        added = record_picks(record_payload)
         if added:
             log.info("portfolio.csv: appended %d new picks", added)
     except Exception:

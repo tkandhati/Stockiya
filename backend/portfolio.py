@@ -62,6 +62,11 @@ PORTFOLIO_FIELDS = [
     "target_date",
     "target_min_date",
     "target_max_date",
+    # ---- Volume-based dynamic horizon (bucketed: 30/60/90/120/180) ----
+    "end_date",                  # active end-of-horizon date (may be extended at revalidation)
+    "horizon_days",               # last chosen bucket, in days
+    "horizon_basis",              # audit string: which inputs produced the bucket
+    "horizon_source",             # entry_estimate | revalidation_extension
     # ---- Legacy fields (kept so older rows still load) ----
     "weinstein_stage",
     "entry_timing",
@@ -73,13 +78,14 @@ PORTFOLIO_FIELDS = [
     "user_shares",               # int or 0;      0     -> use scanner's shares_total
     "user_notes",                # free-form
     # ---- Lifecycle / outcome ----
-    "status",                    # open | partial_t1 | target_hit | stopped | timed_out | hypothesis_broken
+    "status",                    # open | partial_t1 | superseded | target_hit | stopped | timed_out | hypothesis_broken
     "hit_t1",                    # 'true' once T1 has been crossed
     "hit_t1_date",
     "exit_date",
     "exit_price",
     "exit_reason",
     "pnl_pct",
+    "superseded_by",              # pick_id of the replacement row (only set when status=superseded)
     "last_updated",
 ]
 
@@ -121,6 +127,10 @@ class PortfolioRow:
     target_date: str = ""
     target_min_date: str = ""
     target_max_date: str = ""
+    end_date: str = ""
+    horizon_days: int = 0
+    horizon_basis: str = ""
+    horizon_source: str = ""
     weinstein_stage: str = ""
     entry_timing: str = ""
     risk_headline: str = ""
@@ -136,6 +146,7 @@ class PortfolioRow:
     exit_price: str = ""
     exit_reason: str = ""
     pnl_pct: str = ""
+    superseded_by: str = ""
     last_updated: str = ""
 
 
@@ -185,26 +196,56 @@ def _next_pick_id(rows: list[dict]) -> str:
     return f"P-{n+1:04d}"
 
 
-def record_picks(picks_payload: dict) -> int:
-    """Append today's picks to portfolio.csv if not already recorded.
+_OPEN_STATUSES: frozenset[str] = frozenset({"open", "partial_t1"})
+_TAKEN_OWNERSHIPS: frozenset[str] = frozenset({"paper", "live"})
 
-    `picks_payload` is the PicksResponse dict (date, picks, ...).
-    Returns the number of NEW picks added (0 if all already recorded for today).
+
+def record_picks(picks_payload: dict) -> int:
+    """Persist today's picks to portfolio.csv with replace/append/duplicate
+    semantics.
+
+    Rules for each incoming pick (by symbol):
+      1. Same (symbol, entry_date) already recorded  -> skip (idempotent).
+      2. Symbol has an OPEN "suggested" row (never taken):
+         -> SUPERSEDE it (status="superseded", exit_reason="superseded_by_<new>",
+            superseded_by=<new_pick_id>). Add the fresh row.
+      3. Symbol has an OPEN taken row (paper / live) and no suggested row:
+         -> ADD fresh suggested row alongside the taken one. Two rows for
+            the same symbol are legitimate: one is the user's real capital,
+            the other is the fresh signal.
+      4. Symbol has NO open rows -> ADD fresh row.
+
+    Also computes and stores the dynamic end_date (volume-based horizon
+    bucket from backend.horizon). Old target_date fields remain populated
+    for backward compat with the weekly updater.
+
+    Returns the number of NEW rows added (superseding does not count).
     """
+    # Local import so the module loads even if horizon has an issue.
+    from .horizon import estimated_horizon_days
+
     rows = _read_portfolio()
     today = picks_payload.get("date") or date.today().isoformat()
+    entry_d = date.fromisoformat(today)
+    now_iso = datetime.now(IST).isoformat(timespec="seconds")
 
-    # Avoid duplicates: skip any (symbol, entry_date) already in the ledger.
-    existing = {(r["symbol"], r["entry_date"]) for r in rows}
+    # Idempotency: (symbol, entry_date) already present -> skip that pick.
+    same_day_keys = {(r.get("symbol"), r.get("entry_date")) for r in rows}
+
+    # Group existing rows for lookup by symbol.
+    open_by_symbol: dict[str, list[dict]] = {}
+    for r in rows:
+        if r.get("status") in _OPEN_STATUSES:
+            open_by_symbol.setdefault(r.get("symbol", ""), []).append(r)
 
     added = 0
+    superseded_count = 0
     for p in picks_payload.get("picks", []):
-        key = (p["symbol"], today)
-        if key in existing:
+        sym = p["symbol"]
+        if (sym, today) in same_day_keys:
             continue
 
-        # Extract price plan from new payload (price_plan dict) or fall back
-        # to legacy top-level aliases so older payloads still load.
+        # Extract price plan (new shape) or fall back to legacy aliases.
         plan = p.get("price_plan") or {}
         entry_price = float(plan.get("entry") or p.get("best_buy_at") or 0)
         stop_price = float(plan.get("stop") or p.get("stop_loss") or 0)
@@ -214,20 +255,46 @@ def record_picks(picks_payload: dict) -> int:
         conf = p.get("confirmation") or {}
         bonuses_fired = conf.get("bonuses_fired") or []
 
+        # Legacy target window (kept populated for backward compat).
         tw = p.get("target_window") or {}
-        center = float(tw.get("center_months", 6.0))  # 6-month hold default
+        center = float(tw.get("center_months", 6.0))
         tol = float(tw.get("tolerance_months", 2.0))
-        entry_d = date.fromisoformat(today)
         target_d = entry_d + timedelta(days=int(center * 30))
         target_min = entry_d + timedelta(days=int((center - tol) * 30))
         target_max = entry_d + timedelta(days=int((center + tol) * 30))
 
+        # Volume-based dynamic horizon (the new primary exit clock).
+        horizon = p.get("holding_horizon") or {}
+        if horizon.get("days"):
+            horizon_days = int(horizon["days"])
+            horizon_basis = str(horizon.get("basis") or "")
+            horizon_source = str(horizon.get("source") or "entry_estimate")
+        else:
+            horizon_days, horizon_basis = estimated_horizon_days(p)
+            horizon_source = "entry_estimate"
+        end_d = entry_d + timedelta(days=horizon_days)
+
+        new_pick_id = _next_pick_id(rows)
+
+        # Supersede any open "suggested" rows for this symbol (rule 2).
+        existing_open = open_by_symbol.get(sym, [])
+        for r in existing_open:
+            r_owner = (r.get("ownership") or "suggested").strip()
+            if r_owner in _TAKEN_OWNERSHIPS:
+                continue  # rule 3: taken rows survive; duplicates OK
+            r["status"] = "superseded"
+            r["exit_date"] = today
+            r["exit_reason"] = f"superseded_by_{new_pick_id}"
+            r["superseded_by"] = new_pick_id
+            r["last_updated"] = now_iso
+            superseded_count += 1
+
         row = PortfolioRow(
-            pick_id=_next_pick_id(rows),
+            pick_id=new_pick_id,
             trace_id=str(p.get("trace_id") or ""),
             entry_date=today,
-            symbol=p["symbol"],
-            company=p.get("company") or p["symbol"],
+            symbol=sym,
+            company=p.get("company") or sym,
             entry_price=entry_price,
             stop_price=stop_price,
             target_price=t2_price,        # legacy alias used by weekly updater
@@ -245,18 +312,25 @@ def record_picks(picks_payload: dict) -> int:
             target_date=target_d.isoformat(),
             target_min_date=target_min.isoformat(),
             target_max_date=target_max.isoformat(),
+            end_date=end_d.isoformat(),
+            horizon_days=horizon_days,
+            horizon_basis=horizon_basis,
+            horizon_source=horizon_source,
             weinstein_stage=p.get("weinstein_stage", ""),
             entry_timing=p.get("entry_timing", ""),
             risk_headline=p.get("risk_headline", ""),
             ownership="suggested",
-            last_updated=datetime.now(IST).isoformat(timespec="seconds"),
+            last_updated=now_iso,
         )
         rows.append(row.__dict__)
         added += 1
 
-    if added:
+    if added or superseded_count:
         _write_portfolio(rows)
-        log.info("Recorded %d new picks to %s", added, PORTFOLIO_CSV.name)
+        log.info(
+            "portfolio.csv: added=%d superseded=%d (file=%s)",
+            added, superseded_count, PORTFOLIO_CSV.name,
+        )
     return added
 
 

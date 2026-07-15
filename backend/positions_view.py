@@ -79,12 +79,19 @@ def _action_for(
     *, close: Optional[float], entry: float, stop: float, t1: float, t2: float,
     hit_t1: bool, days_held: int, shares_at_t1: int, shares_at_t2: int,
     trajectory_flip: bool = False,
+    end_date_reached: bool = False,
+    horizon_days: int = 0,
+    horizon_extension: Optional[int] = None,
 ) -> tuple[str, str, Optional[float]]:
     """Decide today's action + note + (optional new_stop).
 
     A signal-trajectory flip (an institutional indicator turning negative)
     overrides all other actions short of an actual stop-hit -- volume turns
     before price, per PRINCIPLES Section 4.
+
+    end_date_reached means today >= the volume-based dynamic end_date.
+    horizon_extension (int days) is set when trajectory is healthy and the
+    horizon estimator recommends extending — used to phrase the note.
     """
     # Distribution-flip overrides everything except an already-hit stop
     if trajectory_flip and (close is None or close > stop):
@@ -96,13 +103,42 @@ def _action_for(
             None,
         )
 
-    # Time-stop overrides (most urgent first)
+    # Unconditional 180-day final exit — precedes both the dynamic horizon
+    # AND the day-90/T1 check. This is the hard cap on any holding.
     if days_held >= DAY_180:
         return (
             "exit_final",
             f"Day {days_held} (>= {DAY_180}). Unconditional final exit.",
             None,
         )
+
+    # Dynamic volume-based end-date reached. Trajectory-flip case handled
+    # above; here trajectory is healthy so we consider extending.
+    #
+    # Guard: `horizon_extension` must strictly exceed the current
+    # horizon_days (otherwise we're "extending" to the same bucket) AND
+    # must not push the effective end past DAY_180.
+    if end_date_reached:
+        extend_valid = (
+            horizon_extension is not None
+            and horizon_extension > horizon_days
+            and horizon_extension <= DAY_180
+        )
+        if extend_valid:
+            return (
+                "extend_horizon",
+                f"End of {horizon_days}d volume horizon reached, but "
+                f"trajectory still healthy. Recommend extending to "
+                f"{horizon_extension}d.",
+                None,
+            )
+        return (
+            "exit_end_date",
+            f"End of {horizon_days}d volume horizon reached; no valid "
+            "extension available. Exit at next open.",
+            None,
+        )
+
     if days_held >= DAY_90 and not hit_t1:
         return (
             "exit_time_stop",
@@ -232,11 +268,48 @@ def list_active_positions(
             traj = None
         trajectory_flip = bool(traj and traj.exit_recommendation)
 
+        # ---- Volume-based dynamic end date + revalidation ----
+        # Continuous monitoring rule: for TAKEN positions (paper/live),
+        # the effective end_date shifts to the user's entry_date +
+        # horizon_days. The user's real capital was deployed on their
+        # fill day, so the horizon clock starts from their fill, not
+        # from the scanner's original scoring day.
+        #
+        # For suggested rows (never taken), entry_d == scanner_entry_d,
+        # so the shift is a no-op and the stored end_date is used.
+        end_date_reached = False
+        horizon_extension: Optional[int] = None
+        try:
+            horizon_days = int(r.get("horizon_days") or 0)
+        except (TypeError, ValueError):
+            horizon_days = 0
+        stored_end_date_iso = (r.get("end_date") or "").strip()
+        effective_end_date_iso = stored_end_date_iso
+        if horizon_days > 0:
+            # Recompute end_date from the effective entry_d so it tracks
+            # the user's fill for taken positions.
+            effective_end_d = entry_d + timedelta(days=horizon_days)
+            effective_end_date_iso = effective_end_d.isoformat()
+            if today >= effective_end_d:
+                end_date_reached = True
+                trajectory_healthy = not trajectory_flip
+                try:
+                    from .horizon import revalidated_horizon_days
+                    new_days, _basis = revalidated_horizon_days(
+                        horizon_days, trajectory_healthy,
+                    )
+                except Exception:
+                    new_days = None
+                horizon_extension = new_days if new_days else None
+
         action, action_note, new_stop = _action_for(
             close=close, entry=entry, stop=stop, t1=t1, t2=t2,
             hit_t1=hit_t1, days_held=days_held,
             shares_at_t1=shares_at_t1, shares_at_t2=shares_at_t2,
             trajectory_flip=trajectory_flip,
+            end_date_reached=end_date_reached,
+            horizon_days=horizon_days,
+            horizon_extension=horizon_extension,
         )
 
         pnl_pct = ((close / entry - 1) * 100) if (close is not None and entry > 0) else None
@@ -280,6 +353,18 @@ def list_active_positions(
                 "day_90": (entry_d + timedelta(days=DAY_90)).isoformat(),
                 "day_180": (entry_d + timedelta(days=DAY_180)).isoformat(),
             },
+            # ---- Volume-based dynamic horizon (new) ----
+            # `end_date` is the EFFECTIVE end date (recomputed from the
+            # user's fill for taken positions). `stored_end_date` is the
+            # value on the CSV row (scanner-entry anchored) — kept so
+            # UI can show both when they differ.
+            "end_date": effective_end_date_iso,
+            "stored_end_date": stored_end_date_iso,
+            "horizon_days": horizon_days,
+            "horizon_source": r.get("horizon_source", ""),
+            "horizon_basis": r.get("horizon_basis", ""),
+            "end_date_reached": end_date_reached,
+            "horizon_extension_days": horizon_extension,
             # ---- Q1 expected-T1 fields ----
             "expected_t1_date": expected_t1_date.isoformat(),
             "expected_t1_trading_days": EXPECTED_T1_TRADING_DAYS,
@@ -301,8 +386,9 @@ def list_active_positions(
     # Sort: action urgency first (exits before holds), then by days_held desc
     urgency = {
         "exit_stop": 0, "exit_distribution": 1, "exit_final": 2,
-        "exit_time_stop": 3, "exit_t2": 4, "exit_t1": 5,
-        "tighten_stop_45": 6, "hold": 7,
+        "exit_time_stop": 3, "exit_end_date": 4,
+        "exit_t2": 5, "exit_t1": 6,
+        "extend_horizon": 7, "tighten_stop_45": 8, "hold": 9,
     }
     out.sort(key=lambda x: (urgency.get(x["action"], 99), -x["days_held"]))
     return out

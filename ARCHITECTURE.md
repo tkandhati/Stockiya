@@ -644,6 +644,55 @@ each pick card.
 
 ## 8. Rendering and serving picks
 
+### Pre-render pipeline (2026-07-15)
+
+Between `[H] Hypothesis` (which produces `pick_payloads`) and
+`[R] Render` (which writes the file), the orchestrator runs three
+additive steps. All are deterministic, fail-open, and touch no gate
+scoring — they only annotate, filter, and record.
+
+```
+pick_payloads (from [H])
+        │
+        │  1. estimated_horizon_days (backend/horizon.py)
+        │     Bucketed volume-based holding window from
+        │     (confirmation.score, weinstein_stage, entry_timing).
+        │     Buckets: (30, 60, 90, 120, 180) days.
+        ▼
+pick.holding_horizon = {days, basis, source}
+        │
+        │  2. reconcile_picks_against_portfolio (backend/picks_reconcile.py)
+        │     Cross-references each pick against the current portfolio
+        │     via positions_view.list_active_positions:
+        │       taken row + exit_*  → suppressed_from_ui flag
+        │       taken row + hold/tighten/extend → already_held annotation
+        │       suggested-only row → pass through (record_picks supersedes)
+        ▼
+pick.suppressed_from_ui | pick.already_held  (as applicable)
+        │
+        │  3. attach_change_diffs (backend/picks_diff.py)
+        │     For every pick with a prior appearance within
+        │     PICK_DIFF_LOOKBACK_DAYS (30), compute delta:
+        │       confirmation_score, bonuses, entry_timing, weinstein_stage,
+        │       headline_changed, price_plan_delta, rank_change.
+        ▼
+pick.change_since_prev_pick = { prev_date, days_ago, ... deltas ... }
+        │
+        │  4. split_visible_from_suppressed
+        │     Two lists: visible (→ picks_<date>.json) and
+        │     full (→ portfolio.record_picks).
+        ▼
+render_picks_response(visible_picks, ...) → picks_<date>.json
+record_picks(full pick list)              → portfolio.csv
+```
+
+**Why the split**: the UI must never show "sell ABB" and "buy ABB" on
+the same day, but the fresh signal on a taken-position exit day is
+still a legitimate audit-worthy event. Suppressed picks land as new
+`suggested` rows in `portfolio.csv` with a different `entry_date`,
+alongside the user's taken row — so the record survives even though
+the recommendation is hidden.
+
 ### Stage [R] Render — `backend/stages/render.py`
 
 Writes one JSON file per day:
@@ -655,9 +704,16 @@ data/picks_2026-05-18.json
   "generated_at": "...",
   "source": "pipeline",
   "demo_mode": false,
+  "schema_version": 6,
   "picks": [ { ...pick payload... }, ... ]
 }
 ```
+
+`schema_version` was bumped 5 → 6 on 2026-07-15 for four additive
+per-pick fields: `holding_horizon`, `already_held`,
+`suppressed_from_ui`, and `change_since_prev_pick`. Tolerant readers on
+the middleware side ignore unknown fields, so old UI code renders v6
+files without change.
 
 ### HTTP API — `middleware/main.py`
 

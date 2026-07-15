@@ -1,5 +1,88 @@
 # Changelog
 
+## 2026-07-15 — Picks-vs-portfolio reconciliation + volume-based dynamic horizon
+
+Fixed a trust-breaking bug: the picks pipeline and `positions_view` were
+two independent code paths with no cross-reference, so the same symbol
+could appear in today's buy list AND today's exit list on the same day.
+Root cause: `record_picks` deduped only on `(symbol, entry_date)` and no
+downstream filter compared today's picks against currently-held positions.
+
+Four coordinated changes, all additive to the CSV/JSON schemas (tolerant
+readers preserved):
+
+**1. Picks reconciliation** (`backend/picks_reconcile.py` — new)
+
+Ownership-aware annotation of today's picks:
+
+| Existing row | Existing action | New pick behaviour |
+|---|---|---|
+| suggested (never taken) | any | pass through (record_picks supersedes old) |
+| paper / live | `exit_*` | `suppressed_from_ui` flag; hidden from render, still recorded |
+| paper / live | hold / tighten / extend_horizon | `already_held` annotation, kept visible |
+
+`split_visible_from_suppressed` separates the reconciled list. Only visible
+picks go into `picks_<date>.json`; `record_picks` gets the full list so
+the fresh signal on a taken-position exit day still lands as a new
+`suggested` row alongside the taken one (duplicate rows with different
+entry_dates are legitimate — one is the user's real capital, the other
+is the fresh signal).
+
+**2. Portfolio replace/duplicate/supersede** (`backend/portfolio.py`)
+
+`record_picks` rewritten with three rules:
+- Open **suggested** row for same symbol → `status="superseded"`,
+  `superseded_by=<new_pick_id>`. Add new row.
+- Open **taken** row for same symbol → survives untouched. Add new
+  `suggested` row alongside.
+- No open row → add new row.
+
+New status value: `superseded`. New CSV columns: `end_date`, `horizon_days`,
+`horizon_basis`, `horizon_source`, `superseded_by`.
+
+**3. Volume-based dynamic horizon** (`backend/horizon.py` — new)
+
+The fixed 6-month `target_date` is replaced with a bucketed end_date
+derived from confirmation strength + Weinstein stage + entry timing.
+Buckets: `(30, 60, 90, 120, 180)` days. Deterministic; no live data.
+
+At `end_date`, `positions_view` calls `revalidated_horizon_days`:
+- Trajectory healthy + not at max bucket → recommend `extend_horizon`
+- Trajectory flipped or at max bucket → recommend `exit_end_date`
+
+`DAY_180` remains an unconditional hard cap; `_action_for` was reordered
+so the 180-day final exit precedes any horizon-extension logic.
+
+**4. Consecutive-pick diff** (`backend/picks_diff.py` — new)
+
+Every pick that re-fires within a 30-day lookback carries a
+`change_since_prev_pick` block: confirmation score delta, bonuses
+added/removed, entry_timing / weinstein_stage changes, price_plan
+deltas, rank movement. Empty if the pick is new to the window.
+
+**Continuous monitoring on user fill** — `positions_view` now recomputes
+the effective `end_date` as `entry_d + horizon_days` where `entry_d`
+respects `user_entry_date` when set. Taken positions' horizon clocks
+start from the user's fill, not the scanner's original scoring day.
+Stored end_date is preserved on the row for audit (`stored_end_date`
+in the API response).
+
+**Schema bumps:**
+- `PICKS_SCHEMA_VERSION` 5 → 6 (adds per-pick `holding_horizon`,
+  `already_held`, `suppressed_from_ui`, `change_since_prev_pick`).
+- `portfolio.csv` gains 5 columns; old rows load fine (all optional).
+
+**Wiring in `backend/orchestrator.py`:** after `pick_payloads` are built,
+the pipeline attaches horizon → reconciles vs. portfolio → attaches diffs
+→ splits visible from suppressed → renders visible only → records all.
+
+Fix points:
+- `HORIZON_BUCKETS` — allowed horizon bucket set (`backend/horizon.py`).
+- `RECONCILE_HARD_FILTER_ACTION_PREFIXES` — which portfolio actions trigger
+  UI suppression (`backend/picks_reconcile.py`).
+- `PICK_DIFF_LOOKBACK_DAYS` — how far back to search for the previous pick
+  (`backend/picks_diff.py`).
+
 ## 2026-07-14 — Fragile pre-breakout admission fix (Bajaj-Auto incident)
 
 Bajaj-Auto was recommended on 2026-07-13 as a Pocket-Pivot pre-breakout,

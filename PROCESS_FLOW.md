@@ -160,32 +160,73 @@ That ledger is the single source of truth behind `/api/positions`, served by
 `positions_view.list_active_positions` and rendered at
 `frontend/src/pages/PositionsPage.tsx`.
 
-### Ledger key & dedupe rule (data/portfolio.csv)
+### Ledger key & dedupe rule (data/portfolio.csv) — 2026-07-15
 
-`portfolio.record_picks` is append-only with an **idempotency guard**:
+`portfolio.record_picks` applies four rules per incoming pick (by symbol):
 
-```python
-existing = {(r["symbol"], r["entry_date"]) for r in rows}
-for p in payload["picks"]:
-    if (p["symbol"], today) in existing:
-        continue        # already recorded — skip
-    rows.append(new_row); added += 1
-```
+1. **Idempotency** — `(symbol, entry_date)` already present → skip.
+2. **Open `suggested` row for same symbol** → SUPERSEDE it
+   (`status="superseded"`, `superseded_by=<new_pick_id>`,
+   `exit_reason="superseded_by_<new>"`). Add fresh row.
+3. **Open `paper` / `live` (taken) row for same symbol** → survives
+   untouched. Add fresh `suggested` row **alongside** the taken one.
+   Two rows for the same symbol with different `entry_date` are
+   legitimate: one is the user's real capital, the other is the fresh
+   signal.
+4. **No open rows for the symbol** → add fresh row.
 
 Consequences:
-- Same ticker, same day → **cannot** duplicate (guarded).
-- Same ticker, **different day** → new tranche row by design (allows
-  add-on-strength entries).
-- If duplicates ever appear in the CSV, root cause is either manual edits
-  or legacy rows from before the guard existed — not the pipeline.
+- Same ticker, same day → **cannot** duplicate (rule 1).
+- Same ticker, **different day**, only suggested history → old row is
+  **superseded**, replaced by the fresh row. No stacking of stale
+  suggestions.
+- Same ticker, **different day**, taken row exists → both rows survive.
+  Suggested history collapses per rule 2; taken row is protected.
+
+Picks that got the `suppressed_from_ui` flag from
+`picks_reconcile.reconcile_picks_against_portfolio` (taken position has
+active `exit_*` action) are hidden from `picks_<date>.json` but still
+recorded here as fresh `suggested` rows — so the audit trail captures
+the signal even when the UI correctly suppressed the buy recommendation.
 
 Key columns: `pick_id, trace_id, entry_date, symbol, entry_price,
 stop_price, t1_price, t2_price, shares_total, shares_at_t1, shares_at_t2,
 confirmation_score, target_date, target_min_date, target_max_date,
+end_date, horizon_days, horizon_basis, horizon_source,
 status, hit_t1, hit_t1_date, exit_date, exit_price, exit_reason, pnl_pct,
-last_updated`. Default holding window centered at **6 months** with ±2
-months tolerance (`portfolio.py:202-207`), aligning with `[O]` outcome
-horizons at T+90 and T+180.
+superseded_by, last_updated`. The `end_date` field replaces the fixed
+6-month `target_date` as the primary exit clock — see below.
+
+### Dynamic volume-based end_date (2026-07-15)
+
+The fixed 6-month `target_date` is replaced by a bucketed `end_date`
+derived from confirmation strength + Weinstein stage + entry timing.
+Buckets: `HORIZON_BUCKETS = (30, 60, 90, 120, 180)` days
+(`backend/horizon.py`).
+
+At entry (`portfolio.record_picks`):
+- `horizon_days, horizon_basis = estimated_horizon_days(pick_payload)`
+- `end_date = entry_d + timedelta(days=horizon_days)`
+- Old `target_date`/`target_min_date`/`target_max_date` fields remain
+  populated for backward compat with `weekly.py`.
+
+At `end_date` (`positions_view._action_for`):
+- Trajectory healthy AND `new_horizon > current_horizon` AND
+  `new_horizon <= 180` → action `extend_horizon`
+- Trajectory flipped OR at max bucket → action `exit_end_date`
+- `DAY_180` (unconditional final exit) precedes horizon logic — a
+  position at day 200 always fires `exit_final` regardless of horizon.
+
+**Continuous monitoring on user's fill**: for taken positions,
+`positions_view` recomputes the effective `end_date` as
+`user_entry_date + horizon_days`. The horizon clock starts from the
+user's real fill, not the scanner's original scoring day. Stored value
+is preserved as `stored_end_date` in the API response.
+
+Horizon extensions are surfaced by `positions_view` but **not**
+auto-persisted to `portfolio.csv` (that's a planned addition to
+`weekly.py`). The user extends by taking today's re-fired pick or by
+explicit action.
 
 ### Lifecycle state machine
 
@@ -203,6 +244,13 @@ horizons at T+90 and T+180.
       ├─ Day 45  (no T1) ─── tighten stop to entry × (1 − 4%)   (advisory)
       ├─ Day 90  (no T1) ──► status = timed_out          (forced exit)
       ├─ Day 180 ──────────► status = timed_out          (final exit)
+      │
+      ├─ end_date (dynamic, from horizon_days):
+      │     trajectory healthy + can extend → UI action = "extend_horizon"
+      │     trajectory flipped OR at max    → UI action = "exit_end_date"
+      │
+      ├─ Same symbol re-picked with only-suggested history
+      │     ── status = superseded  (row replaced by fresh pick_id)
       │
       └─ signal flip (OBV divergence /
          ≥3 distribution days /
