@@ -715,6 +715,34 @@ per-pick fields: `holding_horizon`, `already_held`,
 the middleware side ignore unknown fields, so old UI code renders v6
 files without change.
 
+### Frontend rendering (schema-v6)
+
+`frontend/src/types.ts` carries the TypeScript definitions for the new
+fields (`HoldingHorizon`, `AlreadyHeld`, `ChangeSincePrevPick`,
+`PickDelta<T>`, `BonusDiff`, `RankChange`). `PickCard.tsx` renders three
+blocks derived from them:
+
+- **Already-held banner** (amber) — surfaces when `pick.already_held`
+  is populated. Shows ownership, entry date, days held, P&L, and the
+  current portfolio action + note. Fires when reconcile has annotated
+  the pick because the symbol is a live position with a hold / tighten
+  / extend_horizon action.
+- **Since-last-pick diff panel** (sky) — surfaces when
+  `pick.change_since_prev_pick` is populated. Shows the previous pick
+  date + days ago, plus deltas: confirmation score (color-coded green
+  for up / red for down), bonuses added and lost, entry_timing and
+  weinstein_stage transitions, rank movement, and a headline-changed
+  flag. Empty diff means the symbol is new to the 30-day lookback.
+- **Horizon pill** — surfaces when `pick.holding_horizon` is
+  populated. Shows the bucketed holding window (30/60/90/120/180 days)
+  and a "volume-based bucket" subtitle.
+
+Trust-safety on the positions side is enforced by
+`backend/positions_view._symbols_in_todays_picks`: any open-suggested
+row for a symbol appearing in today's picks is hidden from the
+positions view (unless it is a same-day fresh row), closing the mid-day
+transient window between pipeline runs.
+
 ### HTTP API — `middleware/main.py`
 
 ```

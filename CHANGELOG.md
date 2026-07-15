@@ -83,6 +83,41 @@ Fix points:
 - `PICK_DIFF_LOOKBACK_DAYS` — how far back to search for the previous pick
   (`backend/picks_diff.py`).
 
+### 2026-07-15 (follow-up) — Trust-safety filter + frontend rendering
+
+Two problems surfaced after the initial ship: (1) the contradiction still
+appeared on-screen in the transient window BEFORE the daily pipeline had
+re-run to supersede the stale suggested row, and (2) the backend was
+emitting `change_since_prev_pick` / `already_held` / `holding_horizon`
+but the frontend had zero rendering code for them.
+
+**Backend — defensive filter in `positions_view.list_active_positions`**
+
+New helper `_symbols_in_todays_picks(today_iso)` reads
+`data/picks_<today>.json`. `list_active_positions` now skips any open
+row whose ownership is `suggested` AND whose symbol appears in today's
+picks AND whose entry_date is not today. This closes the mid-day window
+between pipeline runs where a stale suggested row would still surface
+its exit signal even though a fresh pick was already in the buy list.
+
+Taken (paper/live) rows are never hidden by this filter — the user's
+real capital always shows, and `picks_reconcile` handles the
+contradiction on the picks side via `suppressed_from_ui`.
+
+**Frontend — pick-card rendering for the new schema-v6 fields**
+
+- `frontend/src/types.ts`: added `HoldingHorizon`, `AlreadyHeld`,
+  `ChangeSincePrevPick`, `PickDelta<T>`, `BonusDiff`, `RankChange`, and
+  four new optional fields on `Pick`.
+- `frontend/src/components/PickCard.tsx`: three new blocks —
+  amber "Already held" banner (ownership + entry date + days held +
+  P&L + current portfolio action), sky-blue "Since last pick" diff
+  panel (score delta with color, bonuses added/lost, timing/stage
+  changes, rank climb/drop), and a "Horizon Nd" pill badge.
+
+Pure additions; no changes to existing render paths. `tsc --noEmit`
+clean on `tsconfig.app.json`.
+
 ## 2026-07-14 — Fragile pre-breakout admission fix (Bajaj-Auto incident)
 
 Bajaj-Auto was recommended on 2026-07-13 as a Pocket-Pivot pre-breakout,

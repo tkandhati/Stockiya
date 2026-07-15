@@ -228,6 +228,36 @@ auto-persisted to `portfolio.csv` (that's a planned addition to
 `weekly.py`). The user extends by taking today's re-fired pick or by
 explicit action.
 
+### Trust-safety filter in positions_view (2026-07-15)
+
+`positions_view.list_active_positions` also reads `data/picks_<today>.json`
+and hides any open row whose ownership is `suggested` AND whose symbol
+appears in today's picks AND whose entry_date is not today. This closes
+the transient window BEFORE the daily pipeline supersedes the stale
+suggested row, so the UI never shows an exit signal for a symbol that
+is simultaneously being picked as a fresh buy.
+
+Taken (paper/live) rows are never hidden by this filter — the user's
+real capital always shows. Contradictions on the picks side are handled
+by `picks_reconcile` via `suppressed_from_ui`.
+
+### Frontend rendering of the new pick fields (2026-07-15)
+
+`frontend/src/components/PickCard.tsx` renders three blocks derived
+from the schema-v6 fields (`frontend/src/types.ts`):
+
+- **Amber "Already held" banner** — when `pick.already_held` is set
+  (taken position exists with hold/tighten/extend action). Shows
+  ownership, entry date, days held, P&L, and the current portfolio
+  action + note.
+- **Sky-blue "Since last pick" diff panel** — when
+  `pick.change_since_prev_pick` is set. Shows the prev-pick date and
+  days-ago, plus per-field deltas: confirmation score (color-coded),
+  bonuses added / lost, entry_timing / weinstein_stage transitions,
+  rank climb/drop, and a headline-changed indicator.
+- **"Horizon Nd" pill badge** — when `pick.holding_horizon` is set.
+  Shows the volume-based bucket (30 / 60 / 90 / 120 / 180 days).
+
 ### Lifecycle state machine
 
 ```

@@ -34,6 +34,17 @@ against the user's actual fill for taken positions.
 - **Schema** — `PICKS_SCHEMA_VERSION` 5→6; `portfolio.csv` gains five
   columns (`end_date`, `horizon_days`, `horizon_basis`, `horizon_source`,
   `superseded_by`). Tolerant reader; older rows load unchanged.
+- **Trust-safety filter** — `positions_view.list_active_positions` now
+  reads `data/picks_<today>.json` and skips open-suggested rows whose
+  symbol is being picked today (unless it's a same-day fresh row).
+  Closes the mid-day window where a stale suggested-row exit signal
+  would surface alongside a fresh buy recommendation. Taken rows are
+  never hidden.
+- **Frontend rendering** — `frontend/src/types.ts` gained the schema-v6
+  types (`HoldingHorizon`, `AlreadyHeld`, `ChangeSincePrevPick`,
+  `PickDelta<T>`, etc.). `PickCard.tsx` renders three new blocks:
+  amber "Already held" banner, sky-blue "Since last pick" diff panel,
+  and a "Horizon Nd" pill. `tsc --noEmit` clean.
 - **Not yet done** — auto-persist horizon extensions (belongs in
   `backend/weekly.py`); backfill `end_date` on pre-existing rows (they
   degrade to classic 45/90/180 rules).
