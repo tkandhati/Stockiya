@@ -122,6 +122,110 @@ reactive read on today's spike.
 
 ---
 
+## 0.2b. Exit decision priority — `positions_view._action_for`
+
+The order in which exit checks fire determines which reason gets stamped
+onto every outcome label. Getting this wrong poisons the tuner. As of
+2026-07-17 the order is (highest priority first):
+
+    1.  close is None            → hold (data safety)
+    2.  close ≤ stop             → exit_stop
+    3.  close ≥ t2               → exit_t2 (take profit, remaining shares)
+    4.  close ≥ t1 (not hit_t1)  → exit_t1 (take profit, partial + BE stop)
+    5.  trajectory_flip          → exit_distribution
+    6.  days_held ≥ DAY_180      → exit_final (hard time-stop)
+    7.  days_held ≥ DAY_90       → exit_time_stop (pre-T1 recycle)
+    8.  end_date_reached         → extend_horizon | exit_end_date
+    9.  DAY_45 ≤ days_held < DAY_90 (not hit_t1) → tighten_stop_45
+    10. else                      → hold
+
+**Historical note (bug fixed 2026-07-17):** the pre-fix order ran
+`trajectory_flip` and `DAY_180` BEFORE the price-driven exits. That meant
+a position hitting its stop on day ≥ 180 was labeled `exit_final`, and a
+T2 hit on a distribution day was labeled `exit_distribution`. Both wrong
+— the tuner should see the HARDEST reason, not the first-in-file
+reason. The new order fixes label attribution across every outcome
+recorded from 2026-07-17 onward. Older `outcomes.jsonl` rows retain
+their v1 labels (see label-schema versioning below).
+
+**Anti-flip guardrail (parked in ideas.md as pillar D):** a single
+soft-negative session should not fire `exit_distribution` — the plan
+requires either (a) two consecutive finalized sessions with the same
+warning, or (b) two independent evidence families (price-structure +
+volume distribution) agreeing. Persistence of that warning count needs
+a new column on `data/portfolio.csv`. Until it lands, `trajectory_flip`
+alone still triggers `exit_distribution` at priority #5.
+
+---
+
+## 0.2c. Outcome label schema v2 — mark-to-market vs realized
+
+`data/traces/outcomes.jsonl` rows now carry `label_schema_version: 2`
+and separate two ideas the v1 schema conflated:
+
+| Field | Meaning |
+|---|---|
+| `mtm_return_pct` | Close-at-snapshot / entry − 1. Always defined. **This is what the tuner trains on.** Extension-friendly picks that keep running past their bucket score honestly here — the label doesn't require the position to be closed. |
+| `return_pct` | Legacy alias for `mtm_return_pct`. Kept so v1 readers (existing tuner) work unchanged. |
+| `is_open` | Position still open at snapshot day? `False` iff portfolio row's `status ∈ _CLOSED_STATUSES`. |
+| `realized_return_pct` | Populated only when `is_open=False`. Reads `exit_price` from the portfolio row (authoritative — the enforcer wrote it). Lifecycle-accurate ladder P&L is v3 (parked). |
+| `exit_reason_final` | The terminal exit reason if closed; `null` otherwise. |
+
+**Extension-friendly-by-design property.** A stock held past its
+`end_date` bucket, running to +40% by T+180, gets `mtm_return_pct = +40`
+at the T+180 snapshot even though the position is still open. The tuner
+correctly rewards setups that extend well. Realized P&L is written once,
+when the position eventually closes — decoupled from the snapshot
+horizon. See `CHANGELOG.md → 2026-07-17 (later-3)` for the full contract.
+
+---
+
+## 0.2d. Learning loop — sliding-window ⇒ champion-challenger
+
+```
+    outcome append (T+90)
+              │
+              ▼
+    sliding_window_learn.maybe_fire_event()
+              │
+              ├─► per-stage IC (Pearson r vs return over last 5)
+              │
+              └─► scripts.tune_weights.run_programmatic(apply=True)
+                                                            │
+                          ┌─────────────────────────────────┴───┐
+                          ▼                                     ▼
+                   n < MIN_OUTCOMES_TO_TUNE=20            n ≥ 20
+                          │                                     │
+                          ▼                                     ▼
+                   decision = refused_min_outcomes        ridge + mean-return fits
+                   config unchanged                       replay metric per candidate
+                                                                │
+                                                                ▼
+                                                      candidate_metric >
+                                                      champion_metric + EPSILON=0.001 ?
+                                                                │
+                                              yes ──► config_written = True
+                                              no  ──► config_written = False
+```
+
+**Two floors gate every write to `config/stage_weights.json`:**
+
+  a. `MIN_OUTCOMES_TO_TUNE = 20` — below this the tuner refuses. Prevents
+     noise-chasing at small n.
+  b. Strict-beat ratchet — even above the floor, only strict improvement
+     over the incumbent metric writes. Accuracy cannot regress.
+
+Every fire writes one event file to `data/learning_events/sliding_*.json`
+with both the IC block (visibility) and the CC decision (action). Full
+audit trail without touching git or the config log.
+
+Set `CHAMPION_CHALLENGER_MODE = "dry_run"` in
+`backend/sliding_window_learn.py` to observe decisions without writing.
+Set `"disabled"` to skip the CC step entirely and emit diagnostic-only
+events.
+
+---
+
 ## 0.3. Retired sections — archival reference only
 
 Everything below this line was written for the earlier weighted-composite spine

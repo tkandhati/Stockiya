@@ -92,9 +92,11 @@ All raw indicator math lives in `backend/indicators.py` as pure functions (no I/
 
 | Path | Written by | Contents |
 |---|---|---|
-| `data/picks_<YYYY-MM-DD>.json` | `[R] Render` | Today's 0–3 picks with full payload (entry, stop, T1, T2, shares, evidence, time stops, **accumulation_assessment**). `PICKS_SCHEMA_VERSION = 7`. |
+| `data/picks_<YYYY-MM-DD>.json` | `[R] Render` | Today's 0–3 picks with full payload (entry, stop, T1, T2, shares, evidence, time stops, **accumulation_assessment**, **date_labels**). `PICKS_SCHEMA_VERSION = 7`. |
 | `data/traces/run_<date>_<ticker>.jsonl` | every stage | Per-stage features, score, evidence — the RL feature dataset. Includes `[DV]` rows with `would_veto` / `veto_reasons` / `dist_day_count_15` even in shadow mode. |
-| `data/traces/outcomes.jsonl` | `[O] Outcome` | Realised return at T+90 / T+180 per pick — the RL reward labels |
+| `data/traces/outcomes.jsonl` | `[O] Outcome` | Per-pick return at T+90 / T+180. **Label schema v2** (2026-07-17): `mtm_return_pct` (always defined) + `is_open` + `realized_return_pct` (populated only when position closed) + `exit_reason_final` + `label_schema_version=2`. Legacy `return_pct` retained as MTM alias. |
+| `data/learning_events/sliding_*.json` | `sliding_window_learn` | One event per 5 T+90 outcomes. Contains per-stage IC (Pearson r) over the last 5 outcomes + champion-challenger decision (refused_min_outcomes / reject_ratchet / bootstrap / accept / would_accept_dry_run). Atomic write. Append-only across time. |
+| `data/learning_events/state.json` | `sliding_window_learn` | Idempotency state — `last_processed_count`, `events_written`, `last_event_ts`. |
 | `data/portfolio.csv` | `[H] Hypothesis` | Append-only ledger: `trace_id, entry_date, entry, stop, T1, T2, shares` |
 | `data/portfolio_weekly.csv` | `weekly.py` | Friday close prices for each open pick |
 | `data/deals/*.csv` | `block_deals.py` | Cached NSE block + bulk deal CSVs. Aggregator now emits classified fields (`institutional_*`, `has_disclosed_large_client`) alongside legacy totals — tolerant readers preserved. |
@@ -218,6 +220,22 @@ At `end_date` (`positions_view._action_for`):
 - Trajectory flipped OR at max bucket → action `exit_end_date`
 - `DAY_180` (unconditional final exit) precedes horizon logic — a
   position at day 200 always fires `exit_final` regardless of horizon.
+
+**Action-priority correction (2026-07-17, urgent).** Pre-fix, the
+`_action_for` check order ran `trajectory_flip` and `DAY_180` BEFORE the
+price-driven exits. That meant a stop hit on day ≥ 180 was labeled
+`exit_final`, polluting every downstream tuner label. New order (highest
+priority first): `data-safety → stop → t2 → t1 → distribution →
+day_180 → day_90 → end_date → day_45 → hold`. Hardest reason wins.
+Each active position dict now also carries `action_label` — a 9-state
+advisory ladder (`MAINTAIN_HEALTHY | MAINTAIN_DRY_UP |
+MONITOR_EARLY_WEAKNESS | REVIEW_WEAKNESS_CONFIRMED | EXTEND_5D |
+TAKE_PROFIT_T1 | TAKE_PROFIT_T2 | EXIT_STOP | EXIT_DISTRIBUTION |
+DATA_UNAVAILABLE`) mapped from the raw action via
+`backend/action_labels.py`. Advisory only — the raw `action` still drives
+enforcement. Two-session hysteresis for the soft MONITOR/REVIEW/DRY_UP
+states is parked in `ideas.md` (idea D — needs a persisted warning_count
+column on `portfolio.csv`).
 
 **Continuous monitoring on user's fill**: for taken positions,
 `positions_view` recomputes the effective `end_date` as

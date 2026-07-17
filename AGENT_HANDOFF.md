@@ -5,7 +5,59 @@ Last updated: 2026-07-17
 For proposals that have been analyzed but not shipped, see `WISHLIST.md`.
 For ideas parked pending trace evidence, see `ideas.md`.
 
-## Latest Change (2026-07-17) — Precision-first refit (pillars 1–5, dark-launch)
+## Latest Change (2026-07-17, commit `925a49a`) — Balanced-holding foundation
+
+Four small correctness/labeling fixes and one auto-invocation hook. Full
+narrative in `CHANGELOG.md → 2026-07-17 (later-3)`. Summary for the next
+agent:
+
+- **Action-priority correction** in `positions_view._action_for` — a real
+  bug: pre-fix, `stop hit @ days_held ≥ 180` was labeled `exit_final`.
+  New order: `close-safety → stop → t2 → t1 → distribution → day_180
+  → day_90 → end_date → day_45 → hold`. Regression-tested with 7 cases.
+- **Outcome label v2** (`backend/stages/outcome.py`) —
+  `LABEL_SCHEMA_VERSION = 2` splits `mtm_return_pct` from
+  `realized_return_pct` with `is_open` flag. Legacy `return_pct` kept as
+  MTM alias for v1 readers.
+- **Split-date advisory labels** on every pick — `next_review`,
+  `expected_breakout_window`, `hard_time_stop`. Advisory only.
+- **9-state action ladder** — new `backend/action_labels.py`.
+  Populated as `action_label` on each position dict. Soft states
+  (MONITOR/REVIEW/DRY_UP) currently degrade to MAINTAIN because the
+  two-session hysteresis persistence layer is parked (idea D).
+- **Sliding-window learning + champion-challenger auto-invocation** —
+  `backend/sliding_window_learn.py` fires every 5 T+90 outcomes. Each
+  fire computes per-stage IC + invokes `scripts.tune_weights.
+  run_programmatic(apply=True)`. Tuner's `MIN_OUTCOMES_TO_TUNE = 20`
+  floor + strict-beat ratchet remain the only writes-to-config safety.
+  Event log at `data/learning_events/sliding_*.json`, one file per fire,
+  contains both IC block and CC decision.
+
+**Parked in `ideas.md` under "Balanced-holding + honest-labels":** items
+D–P — persisted warning-count hysteresis, latched EXIT-Confirmed, unified
+finalized data source, NSE trading calendar, contextual extension
+formula, 270-day bucket + protect-the-runner enforcement, trailing-stop
+at T2, continuous hit-detection, multi-horizon snapshots, lifecycle-
+accurate realized P&L (v3 labels), frontend action-enum sync,
+ATR-adaptive sizing, learned survival model.
+
+**Promotion pathway for the next agent:**
+
+1. Once ≥ 20 T+90 outcomes have accumulated, the sliding-window trigger's
+   embedded CC starts actually ratcheting weights. Watch
+   `data/learning_events/sliding_*.json:champion_challenger.decision` —
+   until then it will always show `refused_min_outcomes`.
+2. If the ratchet accepts and `config_written: true` appears, weights
+   in `config/stage_weights.json` change. `updated_by` will read
+   `tune_weights.py:sliding_window:<ridge|mean-return>` to distinguish
+   from a manual `python -m scripts.tune_weights --apply`.
+3. To pause auto-CC (e.g. during a research sprint), set
+   `CHAMPION_CHALLENGER_MODE = "dry_run"` or `"disabled"` at the top of
+   `backend/sliding_window_learn.py`. Reversible in one edit.
+
+---
+
+## Previous Change (2026-07-17, commit `8f94711`) — Precision-first refit (pillars 1–5, dark-launch)
 
 Five additive changes aimed at pre-breakout precision, all shipping at
 weight 0 or in shadow mode so today's picks are byte-identical. Full
