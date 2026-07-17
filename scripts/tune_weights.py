@@ -349,6 +349,141 @@ def run(apply: bool, force: bool) -> int:
     return 0
 
 
+def run_programmatic(apply: bool = True, updated_by_tag: str = "tune_weights.py") -> dict:
+    """Programmatic wrapper around `run()` — no stdout side-effects; returns
+    a decision dict so callers (e.g. the sliding-window trigger) can log
+    the outcome to their own audit trail.
+
+    All safety invariants of `run()` are preserved:
+      • `MIN_OUTCOMES_TO_TUNE` floor — refuses to fit below the sample floor.
+      • Champion-challenger ratchet — writes config only on strict beat.
+      • `apply=False` short-circuits the write path even on accept.
+
+    Returns:
+        {
+          invoked_at, n_outcomes,
+          decision: refused_min_outcomes | reject_ratchet | bootstrap
+                    | accept | would_accept_dry_run | error,
+          reason: str,
+          champion_metric_recomputed: float | None,
+          best_candidate: str | None,
+          best_metric: float | None,
+          config_written: bool,
+        }
+    """
+    result: dict = {
+        "invoked_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "n_outcomes": 0,
+        "decision": "unknown",
+        "reason": "",
+        "champion_metric_recomputed": None,
+        "best_candidate": None,
+        "best_metric": None,
+        "config_written": False,
+    }
+    try:
+        cfg = load_config()
+    except SystemExit as e:
+        result["decision"] = "error"
+        result["reason"] = f"config unreadable: {e}"
+        return result
+
+    order = list(SCORED_STAGE_IDS)
+    X, y, _ = build_dataset()
+    n = len(y)
+    result["n_outcomes"] = n
+
+    if n < MIN_OUTCOMES_TO_TUNE:
+        result["decision"] = "refused_min_outcomes"
+        result["reason"] = (
+            f"need >= {MIN_OUTCOMES_TO_TUNE} outcomes, have {n}; "
+            "champion unchanged"
+        )
+        return result
+
+    champion_w = champion_weights(cfg, order)
+    champion_metric_recomputed = replay_metric(X, y, champion_w, TOP_N_FOR_METRIC)
+    result["champion_metric_recomputed"] = (
+        round(champion_metric_recomputed, 6)
+        if champion_metric_recomputed is not None else None
+    )
+
+    candidates: dict[str, list[float]] = {}
+    ridge = fit_ridge(X, y, RIDGE_LAMBDA)
+    if ridge is not None:
+        candidates["ridge"] = normalize(ridge)
+    candidates["mean-return"] = normalize(fit_mean_return_weighted(X, y, order))
+
+    best_name, best_w, best_metric = None, None, -float("inf")
+    for name, w in candidates.items():
+        m = replay_metric(X, y, w, TOP_N_FOR_METRIC)
+        if m is not None and m > best_metric:
+            best_name, best_w, best_metric = name, w, m
+
+    if best_name is None:
+        result["decision"] = "error"
+        result["reason"] = "no candidate produced a valid metric"
+        return result
+
+    result["best_candidate"] = best_name
+    result["best_metric"] = round(best_metric, 6)
+
+    if champion_metric_recomputed is None:
+        accept = True
+        result["decision"] = "bootstrap"
+        result["reason"] = "no prior champion metric — first-run seed"
+    elif best_metric > champion_metric_recomputed + EPSILON:
+        accept = True
+        result["decision"] = "accept"
+        result["reason"] = (
+            f"beats champion by {best_metric - champion_metric_recomputed:+.4f} "
+            f"(>= EPSILON={EPSILON})"
+        )
+    else:
+        accept = False
+        result["decision"] = "reject_ratchet"
+        result["reason"] = (
+            f"no beat: candidate {best_metric:.4f} vs "
+            f"champion {champion_metric_recomputed:.4f}"
+        )
+
+    if not accept:
+        return result
+
+    if not apply:
+        result["decision"] = "would_accept_dry_run"
+        return result
+
+    # ---- Ratchet forward — same body as run(), refactored here for reuse.
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    history = list(cfg.get("history") or [])
+    history.append({
+        "at": now,
+        "prior_weights": cfg.get("scored_stage_weights"),
+        "prior_metric_recomputed": champion_metric_recomputed,
+        "prior_metric_stored": (cfg.get("champion_metric") or {}).get("value"),
+        "new_metric": best_metric,
+        "n_outcomes": n,
+        "chosen_fit": best_name,
+        "updated_by": updated_by_tag,
+    })
+    cfg["scored_stage_weights"] = {sid: round(w, 6) for sid, w in zip(order, best_w)}
+    cfg["updated_at"] = now
+    cfg["updated_by"] = f"{updated_by_tag}:{best_name}"
+    cfg["champion_metric"] = {
+        "name": f"mean_return_{EVAL_HORIZON_DAYS}d_top{TOP_N_FOR_METRIC}",
+        "value": round(best_metric, 6),
+        "n_picks_evaluated": n,
+        "hit_rate_t1": None,
+        "sharpe_proxy": None,
+        "evaluated_at": now,
+    }
+    cfg["history"] = history[-50:]
+    save_config(cfg)
+    result["config_written"] = True
+    return result
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Champion-challenger tuner for stage weights")
     ap.add_argument("--apply", action="store_true",

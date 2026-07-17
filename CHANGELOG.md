@@ -1,5 +1,327 @@
 # Changelog
 
+## 2026-07-17 (later-3) — Balanced-holding foundation: action priority + label separation
+
+Four small changes that make the label pipeline correct + honest without
+tightening any existing exit rule. Everything larger (persisted
+hysteresis, latched confirmed-exits, protect-the-runner enforcement, ATR
+sizing, survival model) is parked in `ideas.md` with revisit signals.
+
+**1. URGENT — Action-priority correction** (`backend/positions_view.py`)
+
+The old order in `_action_for` was:
+```
+trajectory_flip → day_180 → end_date → day_90 → close-safety →
+stop → t2 → t1 → day_45 → hold
+```
+A stop hit on day ≥ 180 got labeled `exit_final`, poisoning every
+downstream tuner label. A T2 hit on a distribution day got labeled
+`exit_distribution`. Both wrong.
+
+New order (matches the user's ladder specification exactly):
+```
+close-safety → stop → t2 → t1 → distribution → day_180 →
+day_90 → end_date → day_45 → hold
+```
+
+Hardest reason wins. Verified with a 7-case regression test: `stop @
+day 200 → exit_stop`, `t2 @ day 200 → exit_t2`, `t1 @ day 200 →
+exit_t1`, `stop + distribution together → exit_stop`, and the pure
+`day 200 → exit_final` path still works when no price event fires.
+
+**2. Outcome label v2 — separate mark-to-market from realized**
+(`backend/stages/outcome.py`)
+
+`LABEL_SCHEMA_VERSION = 2`. Additive fields on every outcome row:
+
+- `mtm_return_pct` — mark-to-market return at snapshot day. Always defined.
+- `return_pct` — kept as alias to `mtm_return_pct` for v1 readers.
+- `is_open` — position still open at snapshot? False iff portfolio
+  row's `status ∈ _CLOSED_STATUSES` (13 exit statuses enumerated).
+- `realized_return_pct` — populated only when `is_open=False`, from
+  the portfolio row's authoritative `exit_price` (or snapshot close as
+  fallback). Lifecycle-accurate ladder P&L is v3 territory, parked.
+- `exit_reason_final` — the terminal exit reason if closed; else null.
+
+Tuner still trains on `return_pct` (= `mtm_return_pct` under v2), so
+today's `scripts/tune_weights.py` behavior is byte-identical. Once
+enough `realized_return_pct` rows accumulate, the tuner can filter to
+closed positions only for a cleaner (smaller-sample) training set.
+
+**3. Split-date advisory labels** (`backend/stages/hypothesis.py`)
+
+Every pick payload gains a `date_labels` dict:
+- `next_review` — operational checkpoint (5 sessions).
+- `expected_breakout_window` — setup clock (10–20 sessions).
+- `hard_time_stop` — capital cap from actual fill (DAY_180).
+
+Advisory only — the raw exit_schedule still drives enforcement. This
+gives the UI honest labels for the three orthogonal clocks the user
+watches, without changing runtime behavior.
+
+**4. 9-state action ladder** (`backend/action_labels.py` — new)
+
+New module maps raw `_action_for` outputs to a human-readable ladder:
+```
+MAINTAIN_HEALTHY | MAINTAIN_DRY_UP | MONITOR_EARLY_WEAKNESS
+REVIEW_WEAKNESS_CONFIRMED | EXTEND_5D | TAKE_PROFIT_T1 | TAKE_PROFIT_T2
+EXIT_STOP | EXIT_DISTRIBUTION | DATA_UNAVAILABLE
+```
+Populated on each position dict as `action_label`. The soft states
+(MONITOR / REVIEW / MAINTAIN_DRY_UP) require `soft_signal_count` /
+`is_dry_up` context that isn't persisted yet — today they map to
+`MAINTAIN_HEALTHY` unless the caller explicitly provides context.
+Persistence layer (idea D in ideas.md) is the next natural step.
+
+**Anti-over-tightening properties:**
+
+- Priority reorder can only re-classify events that WERE firing — no
+  ticker is newly exited because of this change.
+- Label v2 fields are all optional-typed / tolerant-read; every v1 reader
+  continues to work.
+- Split-date labels are advisory metadata, not enforcement.
+- 9-state ladder is advisory metadata, not enforcement.
+- Config unchanged. Weights unchanged. `distribution_veto_mode: "shadow"`
+  unchanged. `MIN_OUTCOMES_TO_TUNE = 20` unchanged.
+
+**Verified invariants (isolated tests, no live state touched):**
+
+Priority regression (7 cases):
+```
+stop-hit @ day 200:  exit_stop         (was exit_final)   PASS
+t2-hit  @ day 200:  exit_t2           (was exit_final)   PASS
+t1-hit  @ day 200:  exit_t1           (was exit_final)   PASS
+dist-flip @ day 50: exit_distribution (unchanged)        PASS
+stop+dist @ day 50: exit_stop         (stop wins)        PASS
+day 200 no events:  exit_final        (hard cap)         PASS
+close=None:         hold              (data safety)      PASS
+```
+
+Action label mapping (11 cases) — all PASS.
+
+**Parked in `ideas.md` under "Balanced-holding + honest-labels — deferred
+pillars":**
+
+D–P — persisted warning count, latched EXIT-Confirmed, unified data
+source, NSE calendar, contextual extension, 270-day bucket + protect-
+the-runner enforcement, trailing-stop at T2, continuous hit-detection,
+multi-horizon snapshots, lifecycle-accurate realized P&L, frontend enum
+sync, ATR-adaptive sizing, survival model.
+
+---
+
+## 2026-07-17 (later-2) — Sliding-window ⇒ champion-challenger auto-invocation
+
+Wired the sliding-window trigger to the existing champion-challenger tuner.
+Every fire (every 5 newly-matured T+90 outcomes) now:
+
+  1. Computes the per-stage IC diagnostic (as before).
+  2. **Invokes `scripts.tune_weights.run_programmatic(apply=True)`.**
+  3. Writes the tuner's full decision block into the same event file.
+
+The user's ethos: "learn from every closed pick, don't wait for a monthly
+retune." This closes the loop end-to-end while keeping the two safety
+floors the tuner already has:
+
+  a. `MIN_OUTCOMES_TO_TUNE = 20` — below this the tuner refuses to fit.
+     No matter how many events fire, weights stay untouched until enough
+     labels accumulate. Verified: at n=5, `config/stage_weights.json`
+     is byte-identical before and after the fire.
+  b. **Strict-beat ratchet** with `EPSILON = 0.001` — even above the floor,
+     the tuner overwrites weights ONLY if a fresh fit's mean-of-top-3
+     replay metric exceeds the incumbent by EPSILON. No beat, no write.
+     Verified: at n=25 with random outcomes, the ridge candidate beat the
+     bootstrap champion by +0.0248 and the ratchet accepted; had it not
+     beaten, `config_written` would be False.
+
+**New in `scripts/tune_weights.py`**
+
+- `run_programmatic(apply=True, updated_by_tag="tune_weights.py")` — pure
+  function that returns a decision dict, no stdout side-effects. Callers
+  can log the outcome to their own audit trail without needing to parse
+  text. The existing `run()`, `main()`, and `python -m scripts.tune_weights
+  --apply` CLI behavior are unchanged.
+- Decision values: `refused_min_outcomes | reject_ratchet | bootstrap |
+  accept | would_accept_dry_run | error`.
+- Returns: `{invoked_at, n_outcomes, decision, reason,
+  champion_metric_recomputed, best_candidate, best_metric,
+  config_written, ...}`.
+
+**New in `backend/sliding_window_learn.py`**
+
+- `CHAMPION_CHALLENGER_MODE` top-of-file constant. Values:
+    - `"apply"` (default) — tuner called with `apply=True`; ratchet writes on
+      strict beat.
+    - `"dry_run"` — tuner called with `apply=False`; decision logged but
+      config untouched even on beat. Useful for A/B observing what the
+      ratchet would have done.
+    - `"disabled"` — CC step skipped entirely; back to diagnostic-only events.
+- `_invoke_champion_challenger()` — defensive wrapper. Any tuner import
+  failure or crash returns an error-shaped dict; the event file is always
+  written even if the CC step fails.
+- Event schema bumped to `schema_version: 2` — adds
+  `champion_challenger: {invoked, mode, decision, reason,
+  champion_metric_recomputed, best_candidate, best_metric,
+  config_written, ...}` and sets `action_taken` to
+  `champion_challenger_applied` or `champion_challenger_no_op`.
+
+**Ratchet's `updated_by` tag** — when the CC accepts via the sliding-window
+path, the config's `updated_by` field becomes
+`tune_weights.py:sliding_window:<ridge|mean-return>` so weight changes
+driven by this trigger are distinguishable from a manual `python -m
+scripts.tune_weights --apply`. Same signal in `history[].updated_by` for
+each ratchet event.
+
+**What does NOT change:**
+
+- Tuner's math (`fit_ridge`, `fit_mean_return_weighted`, `replay_metric`,
+  `normalize`) — untouched.
+- `RIDGE_LAMBDA = 0.1`, `EPSILON = 0.001`, `TOP_N_FOR_METRIC = 3`,
+  `MIN_OUTCOMES_TO_TUNE = 20`, `EVAL_HORIZON_DAYS = 90` — untouched.
+- `SCORED_STAGE_IDS` — untouched. Weights sum to 1.0 preserved.
+- `distribution_veto_mode` — untouched (still `"shadow"`).
+- CLI behavior — `python -m scripts.tune_weights [--apply | --force-apply]`
+  behaves identically.
+
+**Verification (isolated in-repo tests, real config restored after):**
+
+At **n=5** (below floor):
+```
+cc.invoked            : True
+cc.mode               : apply
+cc.decision           : refused_min_outcomes
+cc.config_written     : False
+config_before == config_after : PASS  (byte-identical)
+```
+
+At **n=25** (above floor) with seeded fake trace files:
+```
+cc.invoked            : True
+cc.decision           : accept
+cc.reason             : beats champion by +0.0248 (>= EPSILON=0.001)
+cc.best_candidate     : ridge
+cc.best_metric        : 0.051333
+cc.champion_metric_recomputed : 0.026567
+cc.config_written     : True
+updated_by            : tune_weights.py:sliding_window:ridge
+```
+
+**Operator's runbook (updated):**
+
+1. Nothing to do daily — the trigger fires automatically every 5 T+90
+   outcomes.
+2. Weekly (see WEEKLY_TRACKING.md row 8): inspect
+   `data/learning_events/sliding_*.json`. Each file contains both the IC
+   block and the champion_challenger block — the audit trail is complete.
+3. If `champion_challenger.config_written: true` appears, a weight change
+   has landed. Cross-check `config/stage_weights.json:updated_by` and
+   `history[].chosen_fit` to see which fitter won and why.
+4. To pause auto-CC (e.g. during a research sprint), set
+   `CHAMPION_CHALLENGER_MODE = "dry_run"` or `"disabled"` in
+   `backend/sliding_window_learn.py`. Reversible in one edit.
+
+---
+
+## 2026-07-17 (later) — Sliding-window learning trigger (diagnostic-only)
+
+Event-driven per-stage IC (information coefficient) diagnostic that fires
+every 5 newly-matured T+90 outcomes. Purpose: give visibility into
+whether each stage's score is actually predicting T+90 return, **without
+touching live weights** until the cumulative matured count clears the
+existing `MIN_OUTCOMES_TO_TUNE = 20` ratchet floor.
+
+Motivation: the user's ethos is "learn from every closed pick, don't wait
+for a monthly retune." The honest constraint is that logistic-fit weights
+at n=5 thrash on noise — one lucky-winner window would push AC up 20 %,
+the next unlucky window would reverse it. Solution: separate *seeing*
+the signal (cheap, safe at n=5) from *acting* on it (still requires the
+20-outcome ratchet floor).
+
+**New module** — `backend/sliding_window_learn.py`
+
+- `maybe_fire_event(new_row)` — called from `stages/outcome.py` after
+  every outcome append. Guarded caller-side so a bug here can never break
+  outcome logging.
+- Trigger: counts total T+90 outcomes; fires when count advances past
+  `last_processed_count + TRIGGER_EVERY_N` (default 5). Idempotent —
+  re-invoking at the same count does not re-fire.
+- Filters to `horizon_days == 90` outcomes. T+180 appends never trigger
+  a diagnostic event (would double the event rate).
+- Reads the last `WINDOW_SIZE = 5` T+90 rows + their per-stage margins
+  from `data/traces/run_*.jsonl` (same loader pattern as
+  `scripts/tune_weights.py`, so an IC promoted here lines up 1:1 with
+  the tuner's feature vector).
+- Computes Pearson r per stage (stdlib math, no numpy dependency; matches
+  the tuner's zero-deps posture). Zero-variance series and all-zero
+  margins return `None` — no fake-positive ICs.
+- Emits `learning_hints` when `|IC| ≥ IC_STRONG_THRESHOLD = 0.5`. Positive
+  IC → "candidate to weight up"; strongly negative → "investigate;
+  possible over-fit or reversed convention". **Never** writes to
+  `config/stage_weights.json` — hints are text guidance for the human
+  operator running the manual tuner.
+
+**Event file schema** (`data/learning_events/sliding_<date>_n<count>.json`)
+
+Atomic write via `.tmp` rename. Append-only over time; each event is one
+file, never rewritten. Contents: `{ts, schema_version:1, trigger_every_n,
+window_size, matured_count_total, matured_count_since_last_event,
+samples[], mean_return_pct, ic_by_stage{}, learning_hints[],
+action_taken:"diagnose_only", recommendation}`.
+
+Plus a state file `data/learning_events/state.json` tracking
+`last_processed_count` and `events_written` for idempotency.
+
+**Wiring in `backend/stages/outcome.py`**
+
+Single addition after `_append_outcome(row)` writes the row: import the
+trigger and call it inside a broad try/except. The outcome-logging path
+must remain reliable regardless of any bug in the diagnostic layer.
+
+**Verification (deterministic tests, no live data):**
+
+Ran an in-repo smoke test with 5 seeded T+90 rows + 5 more, isolating
+`outcomes.jsonl` and `data/learning_events/`:
+
+- First fire at n=5 → one event file written. ✓
+- Second call at n=5 (idempotent) → NO re-fire. ✓
+- T+180 row appended → NO fire (only T+90 counts). ✓
+- 5 more T+90 rows appended → second event at n=10 with
+  `matured_count_since_last_event = 5`. ✓
+- `state.json` shows `events_written = 2`, `last_processed_count = 10`. ✓
+- Pearson math correct on perfect ±1, undefined on zero variance and
+  n < 3. ✓
+
+**Promotion pathway (unchanged):**
+
+1. Sliding-window emits an event every 5 closed picks.
+2. Operator reads `data/learning_events/sliding_*.json` weekly (see
+   WEEKLY_TRACKING.md row 8).
+3. When a stage shows consistent IC sign across ≥ 3 consecutive windows
+   AND cumulative matured count ≥ `MIN_OUTCOMES_TO_TUNE = 20`, run
+   `python -m scripts.tune_weights --apply` manually. The
+   champion-challenger ratchet decides whether the fresh outcomes have
+   enough signal to actually beat the current weights.
+
+**What did NOT change:**
+
+- `scripts/tune_weights.py` unchanged. Its `MIN_OUTCOMES_TO_TUNE = 20`
+  floor, ridge regression, mean-return-weighted candidate, and champion-
+  challenger ratchet all intact. Auto-invocation from the sliding-window
+  trigger was **deliberately not added** — the operator is the ratchet's
+  final gate.
+- `config/stage_weights.json` weights + `distribution_veto_mode`
+  unchanged. No code path in this commit mutates them.
+
+**Fix points:**
+
+- `backend/sliding_window_learn.py` top-of-file constants:
+  `TRIGGER_EVERY_N`, `WINDOW_SIZE`, `IC_STRONG_THRESHOLD`,
+  `MIN_SAMPLES_FOR_IC`, `EVAL_HORIZON_DAYS`, `SCORED_STAGE_IDS`.
+- Event log location: `data/learning_events/sliding_*.json` (git-ignored
+  under `data/*`).
+
+---
+
 ## 2026-07-17 — Precision-first refit (pillars 1–5, dark-launch)
 
 Extends the spine with **five additive changes** aimed at pre-breakout

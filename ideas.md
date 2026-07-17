@@ -109,3 +109,75 @@ Revisit **C** when: (i) `outcomes.jsonl` has ≥200 matured labels for `[HR]`-pa
 ### Advanced participant-flow (paid data path) — parked separately
 
 The plan mentions NSE's paid EOD order/trade dataset with Custodian / Proprietary / Client-Retail flags. That is materially stronger than any classifier we can build from block/bulk names. Not shipping because: (a) paid subscription, (b) firewall constraint on live fetch, (c) the classified block/bulk path in pillar 4 covers the same *intent* at a fraction of the cost. Revisit only if the classified path proves out AND the org is willing to buy the feed.
+
+---
+
+## Balanced-holding + honest-labels — deferred pillars
+
+**Date parked:** 2026-07-17
+**Status:** Correctness fix + advisory labels + schema separation shipped on 2026-07-17. Everything below needs medium/larger surgery.
+
+### What already shipped (context)
+
+- **URGENT — action-priority correction** in `positions_view._action_for`. Stop / T2 / T1 now precede distribution / DAY_180 / end_date. This was a real correctness bug: stop hits on day ≥ 180 were previously labeled `exit_final`, poisoning outcome labels.
+- **Outcome label v2** — additive columns `mtm_return_pct`, `is_open`, `realized_return_pct`, `exit_reason_final`, `label_schema_version = 2`. Legacy `return_pct` preserved as MTM alias.
+- **Split-date labels** on every pick — advisory metadata `date_labels.next_review / expected_breakout_window / hard_time_stop`.
+- **9-state action ladder** — `backend/action_labels.py` maps raw actions to `MAINTAIN_HEALTHY | MAINTAIN_DRY_UP | MONITOR_EARLY_WEAKNESS | REVIEW_WEAKNESS_CONFIRMED | EXTEND_5D | TAKE_PROFIT_T1/T2 | EXIT_STOP | EXIT_DISTRIBUTION | DATA_UNAVAILABLE`. Populated on each position dict as `action_label`. Advisory-only; the raw `action` still drives every enforcement decision.
+
+### The ideas (medium and larger, ranked by ROI)
+
+**D — Two-session hysteresis with persisted warning count.** Add a `warning_count` and `last_warning_ts` column to `data/portfolio.csv`. When any soft indicator (OBV weak, MA slope down, up/down vol < 1.0) fires: increment. On a clean session: decrement. Distribution / MONITOR / REVIEW states only fire when count crosses a threshold. Prevents the one-bar bearish → immediate exit → next-day back-to-hold whiplash the user flagged. Anti-flip pattern: `warning_count >= 2` before REVIEW, `>= 3` before an EXIT-Confirmed.
+
+**E — Latched EXIT-Confirmed state until user acknowledges.** Currently a confirmed distribution can flip back to Hold the next day if the signal is transient. Add a `confirmed_exit_at` column; once set, the action stays at `EXIT_DISTRIBUTION` until the user explicitly closes or acknowledges the position. Requires a `/api/positions/{id}/acknowledge` endpoint + a portfolio.py setter.
+
+**F — Unified finalized-data source.** `positions_view` currently fetches Yahoo separately via `fetch_close(symbol)`. That path may see a partial-session bar different from the pipeline's finalized `[I] Ingest` data. Route both through the same in-memory OHLCV cache and reuse the ingest hygiene guards. Same fix as the `[I]` finalized-bar hygiene from 2026-07-17, applied to the monitor path.
+
+**G — NSE trading-calendar arithmetic.** `_add_trading_days` / `_trading_days_between` currently approximate with weekdays. Wire the official NSE 2026 trading-holiday circular so `days_held` and `end_date` math are session-accurate. Small module: `backend/nse_calendar.py` loading a `config/nse_holidays_2026.json`. Refresh yearly.
+
+**H — Contextual extension formula.** Today `revalidated_horizon_days` extends any healthy position by one bucket. Refined rule per plan: extend 5–10 sessions only when *(support intact AND no confirmed distribution AND (signed pressure stable/improving OR relative strength improving OR price progressing to resistance OR breakout holding))*. Pressure-signal integration requires the signed-volume-pressure primitives from the earlier refit — they exist in `indicators.py` but are not yet plumbed into the trajectory checker.
+
+**I — 270-day bucket + protect-the-runner enforcement.** Add `270` to `HORIZON_BUCKETS`, replace `DAY_180` unconditional cap with `is_runner_healthy()` gate. A proven winner at day 180 (realized ≥ 1R, trajectory strong, no DV veto) extends to 270; anyone else exits at 180. Depends on D (persisted state) for reliable "trajectory strong" call.
+
+**J — Trailing-stop at T2.** Instead of hard sell at fixed +16%, activate a trailing stop = `max(current_stop, close − 2×ATR20)`. Position exits only when the trail is hit — a stock going to +40% keeps running. Needs ATR-adaptive sizing (parked as fix #1 in an earlier ideas block) to be honest.
+
+**K — Continuous lifecycle hit-detection.** Move `hit_t1` / `hit_t2` / `hit_stop` marking from "T+90 snapshot check" to "daily crossing detection" inside `[EX]` exit-watch. First-time-crossed wins; never un-marks. Fixes the false-negative on runners that hit T1 mid-window and pulled back.
+
+**L — Multi-horizon outcome snapshots.** Extend `HORIZONS_DAYS = [90, 180]` to include each position's own end_date bucket (30/60/90/120/180/270). New outcome row per horizon per pick. Tuner gains `--horizon` flag; default stays 90 so today's behavior is preserved.
+
+**M — Lifecycle-accurate `realized_return_pct` (v3 label schema).** Today v2's `realized_return_pct` uses the portfolio row's `exit_price` (snapshot honest). A v3 upgrade computes the actual ladder P&L: `0.5 × (T1_price/entry − 1) + 0.5 × (final_exit_price/entry − 1)` when T1 was hit lifecycle-wise. Requires K to fire honestly.
+
+**N — Frontend action-enum sync.** `frontend/src/types.ts` must know about the 9-state ladder AND every raw `action` value that `_action_for` can return. Backend actions absent from the type union render as "Hold" today — silent contract drift. Small once D-M land, but must be re-done every time a new action is introduced.
+
+**O — ATR-adaptive stop/T1/T2 (from earlier audit — restated here).** `position_sizer.size_position()` uses fixed `-8% / +8% / +16%`. Should be ATR-normalized: `stop = entry − max(2 × ATR20, 0.06 × entry)`, `t1 = entry + 1R`, `t2 = entry + 2R`. Biggest single label-quality lever. Needs a `POSITION_SIZER_MODE = "atr" | "fixed_pct"` config toggle + a `label_schema_version` bump so old and new labels don't get stitched into one training set.
+
+**P — Learned survival / time-to-event model.** Once ≥ 500 matured setups exist, replace linear T+90 label with a proper survival model — outputs a **time range** for expected T1/T2 hit, not a fixed date. Handles the fundamental truth that stock-price-completion time is a random duration. Large scope; comes after everything above stabilizes.
+
+### Signal to revisit
+
+Order roughly matches the user's own change-size ranking (Small → Medium → Large):
+
+- **D** (persisted warning count) — revisit after ≥ 4 weeks of the current action-priority fix has produced clean labels. The persistence layer is only useful if the base labels it feeds off are honest.
+- **E** (latched EXIT-Confirmed) — bundle with D; same portfolio.csv touch.
+- **F** (unified data source) — revisit when `positions_view` next needs a bug fix in its fetch path.
+- **G** (NSE calendar) — revisit before end of 2026 (the current weekday-arithmetic approximation gets worse across long holds and holiday-heavy months).
+- **H** (contextual extension) — after signed-pressure primitives (in `indicators.py` already) have shadow-trace evidence per the earlier ideas block.
+- **I / J / K / L / M** — sequenced. K unlocks M; I depends on D; J depends on O.
+- **N** (frontend enum) — every time D–M ships, N tags along.
+- **O** (ATR sizing) — revisit as a standalone project; biggest single improvement but breaks label continuity — schedule a label_schema_version bump.
+- **P** (survival model) — after ≥ 500 matured setups exist AND the current MTM-based ratchet has proven itself.
+
+### Fix-points if they ever ship
+
+- **D.** `data/portfolio.csv` new columns `warning_count`, `last_warning_ts`; new helper `positions_view._register_warning(row, kind)`; `_action_for` gains a `warning_count` param.
+- **E.** `data/portfolio.csv` new column `confirmed_exit_at`; new endpoint `POST /api/positions/{pick_id}/acknowledge` in `middleware/main.py`; setter in `backend/portfolio.py`.
+- **F.** Refactor `fetch_close` sites to route through a shared cache — same helper the pipeline uses for `[I] Ingest`.
+- **G.** New module `backend/nse_calendar.py`; new config `config/nse_holidays_2026.json`; replace weekday math in `positions_view._add_trading_days` / `_trading_days_between`.
+- **H.** New function `backend/signal_trajectory.py::is_runner_healthy(...)` that reads signed-pressure EWM + relative strength + resistance-progress signals; `_action_for` calls it to decide extension length.
+- **I.** `backend/horizon.py` add 270 to `HORIZON_BUCKETS`; `positions_view._action_for` `DAY_180` guard becomes conditional on `is_runner_healthy()`.
+- **J.** New advisory field `exit_schedule.trailing_stop_at_t2`; enforcement in `_action_for` uses `max(current_stop, close - 2 × ATR)`.
+- **K.** Extend `stages/exit_watch.py` with daily hit-detection loop; writes `hit_t1_date` etc. back to `data/portfolio.csv`.
+- **L.** `stages/outcome.py:HORIZONS_DAYS` gains per-position horizons; `scripts/tune_weights.py` gains `--horizon N` flag.
+- **M.** `stages/outcome.py:LABEL_SCHEMA_VERSION → 3`; realized calc uses hit_t1_date + hit_t2_date from portfolio row.
+- **N.** `frontend/src/types.ts` — one union type across the 9 ladder labels and every raw `action`. TypeScript exhaustive-check via `never` on any unknown branch.
+- **O.** `backend/position_sizer.py` new `POSITION_SIZER_MODE` toggle; ATR passed through from `[I] Ingest`.
+- **P.** New module `backend/survival.py`; scikit-survival dependency; trained on outcomes.jsonl v3 with time-to-event columns; endpoint that returns `(t1_low, t1_median, t1_high)` per pick.

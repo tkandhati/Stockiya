@@ -85,26 +85,82 @@ def _action_for(
 ) -> tuple[str, str, Optional[float]]:
     """Decide today's action + note + (optional new_stop).
 
-    A signal-trajectory flip (an institutional indicator turning negative)
-    overrides all other actions short of an actual stop-hit -- volume turns
-    before price, per PRINCIPLES Section 4.
+    Action priority (2026-07-17 correction):
+
+        1. Data safety     — close unavailable → hold (retain prior state)
+        2. Stop hit        — hardest exit; nothing overrides
+        3. T2 hit          — take profit (full or trailing setup)
+        4. T1 hit          — take profit (partial 50%), raise stop to BE
+        5. Distribution    — trajectory flip (still treated hard; hysteresis
+                              two-session confirmation parked in ideas.md —
+                              revisit once portfolio.csv persists warning
+                              count)
+        6. Hard time-stop  — days_held >= DAY_180 unconditional cap
+        7. Time-stop pre-T1 — days_held >= DAY_90 and T1 never hit
+        8. End-date review — dynamic horizon reached; extend or exit
+        9. Day-45 tighten  — risk mgmt on positions pre-T1
+       10. Hold            — the default maintain state
+
+    Pre-fix (through 2026-07-16), distribution and DAY_180 checks ran
+    BEFORE price-driven checks. That meant a position that hit its stop
+    on day 180 got labeled `exit_final`, and a position that hit T2 on
+    a day the trajectory happened to flip got labeled `exit_distribution`.
+    Both are wrong for the tuner: it needs to see the HARDEST reason
+    that fired, not the first one in file order. Correcting the order
+    fixes label quality across the entire outcome log going forward.
 
     end_date_reached means today >= the volume-based dynamic end_date.
     horizon_extension (int days) is set when trajectory is healthy and the
     horizon estimator recommends extending — used to phrase the note.
     """
-    # Distribution-flip overrides everything except an already-hit stop
-    if trajectory_flip and (close is None or close > stop):
+    # 1. Data safety — never invent an action when the tape is missing.
+    #    Anti-flip rules (parked): should return the prior confirmed state,
+    #    not "hold". For now "hold" is the safe default.
+    if close is None:
+        return ("hold", "Price unavailable today — hold and recheck.", None)
+
+    # 2. Stop hit — hardest exit.
+    if close <= stop:
+        return (
+            "exit_stop",
+            f"Stop hit (close {close:.2f} <= stop {stop:.2f}). Exit at next open.",
+            None,
+        )
+
+    # 3. T2 hit — take profit (remaining shares).
+    if t2 > 0 and close >= t2:
+        return (
+            "exit_t2",
+            f"T2 hit (close {close:.2f} >= T2 {t2:.2f}). "
+            f"Sell remaining {shares_at_t2} shares.",
+            None,
+        )
+
+    # 4. T1 hit — take partial profit + raise stop to BE.
+    if t1 > 0 and close >= t1 and not hit_t1:
+        return (
+            "exit_t1",
+            f"T1 hit (close {close:.2f} >= T1 {t1:.2f}). "
+            f"Sell {shares_at_t1} shares; raise stop to entry {entry:.2f} on the rest.",
+            entry,
+        )
+
+    # 5. Confirmed distribution — trajectory flip. Anti-flip hysteresis
+    #    (require two-session confirmation) is parked in ideas.md; today
+    #    a single flip still fires. The stop check above already caught
+    #    the case where price is already through — that guard is redundant
+    #    now but preserved for defence in depth.
+    if trajectory_flip and close > stop:
         return (
             "exit_distribution",
-            "Signal trajectory flipped -- an institutional indicator has "
+            "Signal trajectory flipped — an institutional indicator has "
             "turned negative since entry. Exit at next open before price "
             "catches up.",
             None,
         )
 
-    # Unconditional 180-day final exit — precedes both the dynamic horizon
-    # AND the day-90/T1 check. This is the hard cap on any holding.
+    # 6. Hard time-stop at DAY_180 — capital cap. Only fires if no
+    #    price-driven or distribution exit already fired above.
     if days_held >= DAY_180:
         return (
             "exit_final",
@@ -112,12 +168,16 @@ def _action_for(
             None,
         )
 
-    # Dynamic volume-based end-date reached. Trajectory-flip case handled
-    # above; here trajectory is healthy so we consider extending.
-    #
-    # Guard: `horizon_extension` must strictly exceed the current
-    # horizon_days (otherwise we're "extending" to the same bucket) AND
-    # must not push the effective end past DAY_180.
+    # 7. Pre-T1 time-stop at DAY_90.
+    if days_held >= DAY_90 and not hit_t1:
+        return (
+            "exit_time_stop",
+            f"Day {days_held} (>= {DAY_90}) and T1 never hit. "
+            "Exit at market — capital frozen in a non-moving trade.",
+            None,
+        )
+
+    # 8. Dynamic end-date reached — review, don't panic-exit.
     if end_date_reached:
         extend_valid = (
             horizon_extension is not None
@@ -139,40 +199,7 @@ def _action_for(
             None,
         )
 
-    if days_held >= DAY_90 and not hit_t1:
-        return (
-            "exit_time_stop",
-            f"Day {days_held} (>= {DAY_90}) and T1 never hit. "
-            "Exit at market — capital frozen in a non-moving trade.",
-            None,
-        )
-
-    # Price-driven exits
-    if close is None:
-        return ("hold", "Price unavailable today — hold and recheck.", None)
-
-    if close <= stop:
-        return (
-            "exit_stop",
-            f"Stop hit (close {close:.2f} <= stop {stop:.2f}). Exit at next open.",
-            None,
-        )
-    if t2 > 0 and close >= t2:
-        return (
-            "exit_t2",
-            f"T2 hit (close {close:.2f} >= T2 {t2:.2f}). "
-            f"Sell remaining {shares_at_t2} shares.",
-            None,
-        )
-    if t1 > 0 and close >= t1 and not hit_t1:
-        return (
-            "exit_t1",
-            f"T1 hit (close {close:.2f} >= T1 {t1:.2f}). "
-            f"Sell {shares_at_t1} shares; raise stop to entry {entry:.2f} on the rest.",
-            entry,
-        )
-
-    # Day-45 stop-tighten (only if still holding pre-T1)
+    # 9. Day-45 stop-tighten (only if still holding pre-T1).
     if DAY_45 <= days_held < DAY_90 and not hit_t1:
         new_stop = entry * (1 - DAY_45_TIGHTEN_PCT)
         return (
@@ -182,6 +209,7 @@ def _action_for(
             new_stop,
         )
 
+    # 10. Default — maintain.
     return ("hold", "Hold normally.", None)
 
 
@@ -359,6 +387,16 @@ def list_active_positions(
             horizon_extension=horizon_extension,
         )
 
+        # 9-state action-ladder label (2026-07-17). Advisory only — the
+        # raw `action` still drives every enforcement decision. Soft-state
+        # inputs (soft_signal_count, is_dry_up) are zero today; two-session
+        # hysteresis with persisted warning count is parked in ideas.md.
+        try:
+            from .action_labels import action_label as _label_fn
+            action_label_str = _label_fn(action, close_available=(close is not None))
+        except Exception:
+            action_label_str = "MAINTAIN_HEALTHY"
+
         pnl_pct = ((close / entry - 1) * 100) if (close is not None and entry > 0) else None
 
         # ---- Expected T1 day (Q1) ----
@@ -393,6 +431,7 @@ def list_active_positions(
             "confirmation_score": float(r.get("confirmation_score") or 0),
             "headline": r.get("headline", ""),
             "action": action,
+            "action_label": action_label_str,  # 9-state ladder — advisory
             "action_note": action_note,
             "new_stop": new_stop,
             "time_stops": {

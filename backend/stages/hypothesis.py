@@ -260,6 +260,35 @@ def build_pick_payload(
         as_of_iso=today_iso,
     )
 
+    # ---- Split-date labels (2026-07-17) — advisory metadata that separates
+    # the three orthogonal clocks the user reads. Enforcement still lives in
+    # positions_view._action_for; these are honest labels for the human/UI.
+    #
+    #   next_review       — operational checkpoint (5 sessions default).
+    #   expected_breakout — setup clock from entry (10–20 sessions).
+    #   hard_time_stop    — capital cap from entry (DAY_180 today).
+    #
+    # Actual enforcement of "next review" (soft, not exit) and a two-session
+    # hysteresis on review decisions is parked in ideas.md — this metadata
+    # is the honest label the UI can show now.
+    date_labels = {
+        "next_review": {
+            "trading_sessions": 5,
+            "meaning": "Operational checkpoint — reassess with fresh tape.",
+        },
+        "expected_breakout_window": {
+            "trading_sessions_low": 10,
+            "trading_sessions_high": 20,
+            "meaning": "Setup clock from original signal — when the thesis "
+                       "should have started paying if the setup is real.",
+        },
+        "hard_time_stop": {
+            "trading_days": DAY_180_FINAL_EXIT_MILESTONE,
+            "meaning": "Capital cap from actual fill date — enforced in "
+                       "positions_view._action_for (priority #6).",
+        },
+    }
+
     return {
         # ---- New shape (primary) ----
         "symbol": result.symbol,
@@ -281,6 +310,7 @@ def build_pick_payload(
         "gate_confirmation_status": _gate_confirmation_status(result),
         "volume_event": vol_event,
         "accumulation_assessment": assessment,
+        "date_labels": date_labels,
 
         # ---- Legacy aliases (so existing frontend keeps rendering) ----
         "best_buy_at": round(entry, 2),
