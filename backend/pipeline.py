@@ -99,10 +99,21 @@ def _load_weight_config() -> tuple[frozenset[str], dict[str, float], float]:
 
     Returning a frozenset + immutable copy makes it safe to share across
     threads; the orchestrator runs stages in parallel.
+
+    Distribution-veto auto-promotion: when `distribution_veto_mode` == "block",
+    the "DV" stage is added to the hard-gate set so a veto short-circuits
+    selection. In "shadow" mode (default), DV always passes, so hard-gate
+    membership is irrelevant — leaving it out keeps `hard_gates_passed`
+    identical to pre-refit behavior. One config knob controls both the
+    stage's own passed/failed decision AND its selection impact.
     """
     try:
         raw = json.loads(_CONFIG_PATH.read_text(encoding="utf-8"))
-        hard = frozenset(raw.get("hard_gate_stage_ids", []) or _DEFAULT_HARD_GATES)
+        hard_set = set(raw.get("hard_gate_stage_ids", []) or _DEFAULT_HARD_GATES)
+        veto_mode = str(raw.get("distribution_veto_mode", "shadow")).lower()
+        if veto_mode == "block":
+            hard_set.add("DV")
+        hard = frozenset(hard_set)
         weights = {k: float(v) for k, v in (raw.get("scored_stage_weights") or {}).items()}
         if not weights:
             weights = dict(_DEFAULT_COMPOSITE_WEIGHTS)

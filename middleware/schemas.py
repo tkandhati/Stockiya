@@ -114,6 +114,13 @@ class Pick(BaseModel):
     # direction=positive|negative|neutral|first_appearance per entry
     pick_history: Optional[list] = None
 
+    # Schema v7 (2026-07-17). Advisory envelope from
+    # backend/stages/render.py:build_accumulation_assessment. Never gates
+    # selection — {level, participant_evidence, score_0_100, data_confidence,
+    # contradictions, would_veto_shadow, as_of_session}. Kept as Optional[dict]
+    # so a picks_<date>.json written by an older binary still validates.
+    accumulation_assessment: Optional[dict] = None
+
     # Legacy aliases — populated by build_pick_payload for transition-period
     # frontends that still expect the old field names.
     best_buy_at: Optional[float] = None

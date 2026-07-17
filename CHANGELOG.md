@@ -1,5 +1,168 @@
 # Changelog
 
+## 2026-07-17 — Precision-first refit (pillars 1–5, dark-launch)
+
+Extends the spine with **five additive changes** aimed at pre-breakout
+precision without disturbing the live picks logic. Everything ships at
+weight 0 or in shadow mode: a fresh `stage_weights.json` clone against
+this commit produces byte-identical picks to yesterday. Config toggles
+promote each piece independently once shadow traces prove it.
+
+Motivation: the audit (see ideas.md → *Precision-first refit — deferred
+pillars*) called out three risks the current spine could not answer
+cleanly — engineered volume spikes, gap-up bull traps, and repeated
+stealth-distribution days. All three are anti-institution-trick patterns
+that unsigned volume metrics (OBV/ADV/CMF cumulatives) cannot
+disambiguate. The refit ships the primitives + a shadow-mode veto layer
+that *can* — without moving any existing weight or threshold.
+
+**1. Signed-pressure primitives** (`backend/indicators.py`)
+
+Three pure functions, no callers yet, weight 0 in composite:
+
+- `close_location_value(o, h, l, c)` — CLV = `(2C − H − L) / (H − L)`
+  clamped to [-1, +1]. Zero-range bars → None.
+- `signed_volume_pressure(df, adv_window=60, rv_clip=3.0)` — per-bar
+  series of `CLV_t × clip(V_t / median(V, N), 0, rv_clip)`. Uses the
+  trailing median (fat-tail reason as `volume_robust_zscore`); RV is
+  clipped at 3.0 so a single earnings-day print cannot dominate a 20-bar
+  EWM aggregate — this is the anti-"engineered spike" property, not a
+  heuristic filter.
+- `ewm_signed_pressure(series, halflife)` — latest EWM value. Halflife
+  choices map to horizons the plan calls out: 3 → ~5-bar tape, 10 →
+  ~20-bar mid-swing flow, 30 → ~60-bar base-period flow.
+
+**2. Finalized-bar hygiene** (`backend/stages/ingest.py`)
+
+`[I]` now runs two cleanups **before** the `MIN_BARS` check:
+
+- `_clean_malformed_rows` drops rows with NaN in any OHLC column or
+  non-positive Volume. Suspended-day / holiday-phantom bars used to leak
+  through the data-source layer; every downstream indicator assumed
+  real numbers.
+- `_drop_partial_session_bar` is IST-aware. If the last bar's date equals
+  today (IST) and IST time is before 15:35, the bar is dropped as a
+  partial-session read. Backtests skip this check because they always
+  use finalized as-of slices.
+- `FULL_LOOKBACK_BARS = 260` (advisory) — trace records
+  `has_full_lookback` so downstream calibration knows when a sample is
+  truncated. `MIN_BARS = 200` unchanged; **no ticker is newly rejected**
+  compared to yesterday.
+
+**3. Distribution veto stage `[DV]`** (`backend/stages/distribution_veto.py` — new)
+
+Appended last in `PER_TICKER_CHAIN` so it sees the full tape after `[BR]`.
+Three deterministic checks:
+
+- `weak_close_spike`: today volume-z ≥ 2.0 AND close ≤ bottom third of
+  the day's range — "big volume, sellers won".
+- `gap_up_weak_close`: today.Open ≥ 2% above yesterday.Close AND close
+  in bottom half of range — classic bull-trap gap-up.
+- `dist_day_cluster`: ≥ 3 sessions in the last 15 with down-close AND
+  volume > ADV20. ADV20 is computed on the prefix *before* the lookback
+  window so a distribution day doesn't reduce its own baseline.
+
+Two modes controlled by `config/stage_weights.json →
+distribution_veto_mode`:
+
+| Mode | Effect on picks | Trace records |
+|---|---|---|
+| `"shadow"` **(default)** | always `passed=True` — zero impact | `would_veto`, `veto_reasons`, `dist_day_count_15` |
+| `"block"` | veto → `passed=False` → ticker dropped | same |
+
+The config loader auto-promotes `"DV"` into `HARD_GATE_IDS` in `block`
+mode (`backend/pipeline.py:_load_weight_config`), so one JSON toggle
+controls both the stage's own pass/fail decision and its selection
+impact.
+
+**4. Client classifier + augmented `DealAggregate`** (`backend/block_deals.py`)
+
+- `classify_client(name) -> ClientClass` — case-insensitive regex over a
+  16-pattern table. Buckets: `custodian | fii | dii | prop | individual
+  | unknown`. Deliberately conservative: HUF / PVT LTD / numbered
+  accounts return `unknown`, never `institutional`. False-institutional
+  labels would poison the downstream envelope claim.
+- `DealAggregate` gains `institutional_buy_qty`, `institutional_sell_qty`,
+  `institutional_net_qty`, `institutional_client_count`,
+  `has_disclosed_large_client`, `client_class_counts`. Additive — every
+  existing reader of `net_qty_ratio` etc. is untouched.
+
+**5. Accumulation-assessment envelope** (`backend/stages/render.py` +
+`backend/stages/hypothesis.py`)
+
+Every pick payload now carries an advisory `accumulation_assessment`
+dict. Separates three claims the plan said must never be conflated:
+
+| Claim | Field |
+|---|---|
+| Accumulation pressure inferred from price+volume | `level` ∈ `emerging \| building \| strong \| ready \| distribution` |
+| Participant evidence supporting that inference | `participant_evidence` ∈ `inferred \| disclosed_large_client` |
+| Probability the setup produces a successful breakout | `score_0_100` (unchanged — the composite still owns picking) |
+
+Level thresholds anchor on the current `COMPOSITE_TAU = 0.28`:
+`ready ≥ 0.55` (requires BR trigger too, else demoted to `strong`),
+`strong ≥ 0.45`, `building ≥ 0.35`, else `emerging`. **Distribution
+overrides any bullish level** — if `would_veto` fires in shadow mode,
+`level = distribution` even when the composite says otherwise.
+
+The envelope is **never used to gate selection**. It labels what the
+composite already decided.
+
+**Schema bumps + tolerance:**
+
+- `PICKS_SCHEMA_VERSION` 6 → 7 (per-pick `accumulation_assessment`).
+- `middleware/schemas.py:Pick` gains `accumulation_assessment:
+  Optional[dict]` so Pydantic doesn't silently drop it.
+- `DealAggregate` extended fields all default to zero / False; old
+  callers unchanged.
+
+**What did NOT change (invariants verified via smoke test):**
+
+- `HARD_GATE_IDS = {U, I, HR}` in shadow mode (unchanged).
+- `COMPOSITE_TAU = 0.28` (unchanged).
+- All existing `scored_stage_weights` (unchanged).
+- `TRIGGER_AC_MIN_SCORE = 0.6` Bajaj-Auto safety floor (unchanged).
+- `compute_composite`, `_reweight_for_trigger`, `classify_trigger`
+  bodies (unchanged).
+- Every existing stage (`universe`, `hard_rejects`, `accum_screen`,
+  `accumulation`, `lt_flow`, `consolidation`, `volume`, `breakout`,
+  `rank`, `hypothesis`, `render`, `outcome`) — byte-identical logic.
+
+**Anti-over-tightening guardrails:**
+
+- `distribution_veto_mode` defaults to `"shadow"` — no ticker is newly
+  rejected until you flip the config.
+- New signed-pressure primitives have no consumers; adding them to the
+  composite requires (a) editing `_DEFAULT_COMPOSITE_WEIGHTS` **and**
+  (b) surviving the champion-challenger ratchet in `tune_weights.py`.
+- `[I]` hygiene drops only truly malformed rows; the `MIN_BARS` floor
+  did not move.
+
+**Fix points for anyone wanting to promote or tune:**
+
+- `config/stage_weights.json → distribution_veto_mode` — flip
+  `"shadow"` → `"block"` after ≥ 4 weeks of shadow traces confirm veto
+  precision.
+- `backend/stages/distribution_veto.py` top-of-file constants —
+  `Z_SPIKE_THRESHOLD`, `BOTTOM_THIRD_MAX_CLV`, `GAP_UP_MIN_PCT`,
+  `DIST_CLUSTER_MIN_DAYS`, `DIST_CLUSTER_LOOKBACK`.
+- `backend/stages/render.py → _LEVEL_BANDS` — level thresholds; will be
+  re-anchored to empirical out-of-sample bands once ≥ 200 matured
+  setups exist (see ideas.md).
+- `backend/block_deals.py → _CLIENT_PATTERNS` — regex table for
+  participant classification.
+
+**Deferred (see ideas.md):**
+
+- Delivery-percent loader from NSE `sec_bhavdata_full_*.csv`.
+- Excess-move signed pressure (needs sector-index fetch).
+- Full logistic β re-fit + Theil–Sen runway (needs ≥ 200 `[HR]`-passer
+  labels + `[EX]` live + 60-session block-mode veto history).
+- Prereq for the above: widening `stages/outcome.py` to label every
+  `[HR]`-passer, not just picks.
+
+---
+
 ## 2026-07-15 — Picks-vs-portfolio reconciliation + volume-based dynamic horizon
 
 Fixed a trust-breaking bug: the picks pipeline and `positions_view` were

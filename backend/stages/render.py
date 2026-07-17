@@ -31,7 +31,102 @@ stage_id = "R"
 #   v6 = per-pick additions: `holding_horizon` (bucketed volume-based days),
 #        `already_held` (reconciliation annotation on taken positions), and
 #        `change_since_prev_pick` (consecutive-pick delta audit trail).
-PICKS_SCHEMA_VERSION = 6
+#   v7 = per-pick `accumulation_assessment` envelope — advisory metadata
+#        (level, participant_evidence, data_confidence, contradictions).
+#        Does NOT gate selection; the composite still owns picking. See
+#        build_accumulation_assessment below.
+PICKS_SCHEMA_VERSION = 7
+
+
+# --------------------------------------------------------------------------- #
+# Accumulation-assessment envelope (2026-07-17)
+#
+# Advisory metadata attached to each pick. Separates three claims the plan
+# said must never be conflated:
+#   1. accumulation pressure inferred from price+volume  → `level`
+#   2. participant evidence: what kind of flow actually  → `participant_evidence`
+#      confirms it (inferred, delivery, disclosed client)
+#   3. probability that setup produces a successful      → composite_score
+#      breakout                                            (unchanged)
+#
+# Level thresholds are advisory — derived from composite bands anchored on
+# the current COMPOSITE_TAU=0.28. They will be re-anchored to empirical
+# out-of-sample bands once ≥200 matured setups exist (see ideas.md). Until
+# then this envelope is labelled honestly as "inferred".
+# --------------------------------------------------------------------------- #
+
+_LEVEL_BANDS: tuple[tuple[float, str], ...] = (
+    (0.55, "ready"),      # requires BR trigger too; else demoted to "strong"
+    (0.45, "strong"),
+    (0.35, "building"),
+    (0.00, "emerging"),
+)
+
+
+def _derive_level(
+    composite_score: float,
+    br_passed: bool,
+    would_veto: bool,
+) -> str:
+    """Distribution overrides any bullish level (the plan's hard rule). A
+    strong score without an actual BR trigger cannot claim 'ready'."""
+    if would_veto:
+        return "distribution"
+    for threshold, name in _LEVEL_BANDS:
+        if composite_score >= threshold:
+            if name == "ready" and not br_passed:
+                return "strong"
+            return name
+    return "emerging"
+
+
+def _derive_participant_evidence(has_disclosed_large_client: bool) -> str:
+    """Never claim 'disclosed_large_client' unless the client classifier
+    actually saw a classified institutional deal in the last 30 days. The
+    envelope's whole value is that this label is rare and honest."""
+    if has_disclosed_large_client:
+        return "disclosed_large_client"
+    return "inferred"
+
+
+def build_accumulation_assessment(
+    composite_score: float,
+    stage_results: dict,
+    deal_features: Optional[dict] = None,
+    as_of_iso: Optional[str] = None,
+) -> dict:
+    """Envelope attached to each pick before write. Advisory only — never
+    used to gate selection. Fix points:
+        _LEVEL_BANDS               where band edges live
+        _derive_participant_evidence   how classifier output maps to ladder
+    """
+    br_sr = stage_results.get("BR")
+    dv_sr = stage_results.get("DV")
+    br_passed = bool(br_sr and br_sr.passed)
+    dv_features = dict(dv_sr.features) if dv_sr else {}
+    would_veto = bool(dv_features.get("would_veto"))
+
+    deal_features = deal_features or {}
+    has_disclosed = bool(deal_features.get("has_disclosed_large_client"))
+
+    level = _derive_level(composite_score, br_passed, would_veto)
+    participant_evidence = _derive_participant_evidence(has_disclosed)
+
+    contradictions: list[str] = []
+    for r in dv_features.get("veto_reasons", []) or []:
+        contradictions.append(f"distribution:{r}")
+
+    data_confidence = 0.85 if has_disclosed else 0.60
+
+    return {
+        "level": level,
+        "participant_evidence": participant_evidence,
+        "score_0_100": round(composite_score * 100.0, 1),
+        "data_confidence": data_confidence,
+        "contradictions": contradictions,
+        "would_veto_shadow": would_veto,
+        "as_of_session": as_of_iso,
+    }
 
 
 def render_picks_response(

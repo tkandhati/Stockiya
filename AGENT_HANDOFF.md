@@ -1,11 +1,60 @@
 # Agent Handoff
 
-Last updated: 2026-07-15
+Last updated: 2026-07-17
 
 For proposals that have been analyzed but not shipped, see `WISHLIST.md`.
 For ideas parked pending trace evidence, see `ideas.md`.
 
-## Latest Change (2026-07-15) — Picks-vs-portfolio reconciliation + volume-based dynamic horizon
+## Latest Change (2026-07-17) — Precision-first refit (pillars 1–5, dark-launch)
+
+Five additive changes aimed at pre-breakout precision, all shipping at
+weight 0 or in shadow mode so today's picks are byte-identical. Full
+narrative + fix-points in `CHANGELOG.md`. Summary for the next agent:
+
+- **`backend/indicators.py`** gained `close_location_value`,
+  `signed_volume_pressure`, `ewm_signed_pressure`. Pure functions, no
+  callers yet — promotion requires editing `_DEFAULT_COMPOSITE_WEIGHTS`
+  **and** surviving the champion-challenger ratchet.
+- **`backend/stages/ingest.py`** now runs `_clean_malformed_rows` +
+  `_drop_partial_session_bar` (IST-aware) before `MIN_BARS`. Trace
+  reports `dropped_malformed`, `dropped_partial_session`,
+  `has_full_lookback` (≥ 260). `MIN_BARS = 200` did not move.
+- **`backend/stages/distribution_veto.py`** — new `[DV]` stage last in
+  chain. Three checks: `weak_close_spike`, `gap_up_weak_close`,
+  `dist_day_cluster`. Mode controlled by
+  `config/stage_weights.json → distribution_veto_mode` (`"shadow"` or
+  `"block"`). In block mode, loader auto-adds `"DV"` to `HARD_GATE_IDS`.
+- **`backend/block_deals.py`** gained `classify_client()` and six
+  classified fields on `DealAggregate` (all default zero). Regex
+  deliberately conservative — HUF / PVT LTD / numbered accounts return
+  `unknown`, never `institutional`.
+- **`backend/stages/render.py`** + **`backend/stages/hypothesis.py`** —
+  every pick now carries `accumulation_assessment`:
+  `{level, participant_evidence, score_0_100, data_confidence,
+  contradictions, would_veto_shadow, as_of_session}`. Advisory only —
+  the composite still owns picking. `PICKS_SCHEMA_VERSION` 6 → 7.
+  `middleware/schemas.py:Pick` extended so Pydantic doesn't drop it.
+
+**Promotion pathway for the next agent:**
+
+1. After ≥ 4 weeks of shadow-mode traces, use `weekly-learn` to correlate
+   `[DV].features.would_veto` against T+90 outcomes. Positive precision
+   (veto candidates *are* losers) → flip `distribution_veto_mode` to
+   `"block"` in one JSON line. Reversible.
+2. Signed-pressure primitives get weight only via the champion-challenger
+   tuner (`scripts/tune_weights.py`). Do not hand-tune.
+3. Deferred work parked in `ideas.md → Precision-first refit — deferred
+   pillars` (delivery loader, excess-move, logistic β re-fit, Theil-Sen
+   runway). Each has a "revisit when" checklist.
+
+**Test-data drop-zone.** `test_data/<SYMBOL>.csv` is the manual paste
+location for NSE historical CSVs (firewall blocks live fetch). Format
+spec in `test_data/README.md`. No synthetic data is generated — if a
+ticker CSV is missing, ask the user before proceeding.
+
+---
+
+## Previous Change (2026-07-15) — Picks-vs-portfolio reconciliation + volume-based dynamic horizon
 
 Fixed the "same symbol appears as EXIT and BUY on the same day" trust
 bug. Also replaced the fixed 6-month `target_date` with a volume-based

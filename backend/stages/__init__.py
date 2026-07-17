@@ -35,6 +35,7 @@ from . import (  # noqa: F401
     consolidation,
     volume,
     breakout,
+    distribution_veto,
     regime,
     rank,
     hypothesis,
@@ -50,6 +51,10 @@ from . import (  # noqa: F401
 # legacy trend gates (LT / CS / VD / BR). All non-hard stages are SOFT: their
 # failure contributes zero margin to the composite but does not stop the
 # chain — the composite S = Σ wᵢ · mᵢ is the real selection surface.
+#
+# [DV] Distribution Veto runs LAST in the chain so it can see the full tape
+# after [BR] and short-circuit selection if configured to block. In shadow
+# mode (default) it always passes — trace-only. See distribution_veto.py.
 PER_TICKER_CHAIN = [
     universe.run,
     ingest.run,
@@ -60,4 +65,5 @@ PER_TICKER_CHAIN = [
     consolidation.run,
     volume.run,
     breakout.run,
+    distribution_veto.run,
 ]

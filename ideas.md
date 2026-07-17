@@ -58,3 +58,54 @@ If Group E shows **no** predictive value after that window, the right move is to
 - Trace key: `quiet_accum_tilt_applied` in the [S] trace payload so weekly-learn can measure the tilt against outcomes.
 - Phase 2 first-cut: option (B) — emit `vsa_event` as advisory feature on `[BR]`, do not touch `classify_trigger` until measured.
 - Delivery data: separate ingest problem (firewall + NSE); do not couple to this fine-tune.
+
+---
+
+## Precision-first refit — deferred pillars
+
+**Date parked:** 2026-07-17
+**Status:** Related pillars 1–5 shipped dark-launch on 2026-07-17; these three items are the follow-ups that need more data / more infra before they earn their weight.
+
+### The idea (three follow-ups)
+
+**Follow-up A — Delivery-percent loader (`backend/delivery.py`).** Load NSE `sec_bhavdata_full_<date>.csv` from `test_data/deliveries/` (same manual-drop pattern as `test_data/`). Feed `%DlyQt to TrdQt` into the composite via a new metric in `stages/volume.py`: signed delivery anomaly with 2–5 session follow-through. Turns the "participant evidence" ladder from `inferred → disclosed_large_client` into `inferred → delivery_confirmed → disclosed_large_client`.
+
+**Follow-up B — Excess-move signed pressure.** The signed-pressure family shipped today only computes `Pclose = CLV × RV`. The plan's second half — `Pmove = ExcessMove × RV` with `ExcessMove = tanh((stock_ret − sector_ret) / ATR20%)` — needs sector-index bars, which the fetch layer doesn't carry. Add a lightweight sector-benchmark loader (Nifty sector indices, one bar per day per sector) into `backend/fetch.py`, then extend `indicators.signed_volume_pressure` with an `excess_move` variant.
+
+**Follow-up C — Calibrated logistic β re-fit + Theil–Sen runway.** Replace the fixed `scored_stage_weights` dict with a regularized monotonic logistic fit against a labeled-outcome set: label = *"breakout above 60-session resistance within 20 sessions AND +2 ATR before −1 ATR or 90-session expiry"*. Fitter lives inside `scripts/tune_weights.py`; the champion-challenger ratchet keeps regression-safety. The Theil–Sen runway extrapolation lands inside the future `stages/exit_watch.py` — daily score slope over last 10 finalized sessions with bootstrap CI, capped at 20-session horizon.
+
+### Why parked (each has its own gate)
+
+**A · delivery loader:**
+1. Requires a new manual drop-file family (`test_data/deliveries/sec_bhavdata_*.csv`) — bootstrapping cost that isn't justified until pillars 1–5 show measurable shadow-trace uplift.
+2. The `has_disclosed_large_client` path (pillar 4) already labels institutional participation via block/bulk classifier — first check whether that label alone shifts pick precision before adding a second evidence source.
+
+**B · excess-move / sector benchmark:**
+1. `backend/fetch.py` currently only pulls per-ticker OHLCV. Adding index bars is a fetch-layer change, not a stages change; belongs with the LT-flow overhaul, not the pressure work.
+2. Firewall constraint: sector-index bars will need the same `test_data/`-style drop-zone as tickers, plus a mapping table (ticker → NSE sector). Wire once, cost pays for itself only after `Pclose` alone has been outcome-tested.
+
+**C · logistic re-fit:**
+1. Sample-size ceiling. The plan asks for 500 matured non-overlapping setups; today the `outcomes.jsonl` label set is a fraction of that (system running ~a few months, 3–6mo horizon). A logistic fit at n<200 overfits.
+2. **Selection-bias prerequisite.** Current `[O] Outcome` only labels tickers the pipeline selected. Fitting β from that set trains the model to reproduce the current filter, not to find winners. **Blocker: expand `stages/outcome.py` to write T+90 / T+180 labels for every `[HR]`-passer, not just the picks.** That change is small and independent — do it now so labels accumulate.
+3. Theil–Sen runway needs `stages/exit_watch.py` to exist and be running daily — that stage is still in-progress per README roadmap.
+
+### Signal to revisit
+
+Revisit **A** when:
+- [ ] Pillars 1–5 have ≥4 weeks of shadow traces AND
+- [ ] `weekly-learn` shows `signed_volume_pressure_ewm10` or `dv_would_veto` has non-trivial correlation with T+90 outcomes (either direction — a negative correlation on veto candidates is exactly what the plan wants).
+
+Revisit **B** when: A is landed OR when the LT-flow stage is next revised, whichever is sooner. Standalone value is smaller than A's.
+
+Revisit **C** when: (i) `outcomes.jsonl` has ≥200 matured labels for `[HR]`-passers (not just picks — see prereq), (ii) `[EX]` exit-watch is live for ≥8 weeks, (iii) shadow-mode veto has been flipped to block for ≥60 trading sessions with net-positive outcome tape.
+
+### Fix-points if they ever ship
+
+- **A.** Loader in `backend/delivery.py`; new metric `delivery_signed_anomaly` in `indicators.py`; wire in `stages/volume.py`; drop-zone at `test_data/deliveries/`.
+- **B.** Sector-index fetch in `backend/fetch.py::fetch_sector_index(symbol)`; mapping `config/sector_index_map.json`; new indicator `excess_move_pressure` in `indicators.py`.
+- **C.** Logistic-fit branch in `scripts/tune_weights.py` gated behind `--fit-mode=logistic` flag; monotonicity constraint on `distribution_risk` (must be non-positive coefficient); Theil–Sen slope helper in `indicators.py::theilsen_slope`; runway consumer in `stages/exit_watch.py`.
+- **Prereq for C — trace scope widening.** Modify `stages/outcome.py` so `outcomes.jsonl` labels every `[HR]`-passer, not just selected picks. New column `was_selected: bool` distinguishes trained-on picks from the counterfactual set. This is cheap and independent — the honest thing to do now regardless of whether C ever ships.
+
+### Advanced participant-flow (paid data path) — parked separately
+
+The plan mentions NSE's paid EOD order/trade dataset with Custodian / Proprietary / Client-Retail flags. That is materially stronger than any classifier we can build from block/bulk names. Not shipping because: (a) paid subscription, (b) firewall constraint on live fetch, (c) the classified block/bulk path in pillar 4 covers the same *intent* at a fraction of the cost. Revisit only if the classified path proves out AND the org is willing to buy the feed.

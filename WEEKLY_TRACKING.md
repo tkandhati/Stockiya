@@ -33,6 +33,8 @@ These are the five things to look at every Friday. Goal: catch a broken pick *th
 | 3 | **LT score drift** | Open positions' LT scores still ≥ 0.6 | Latest trace JSONL per open ticker → `stage:"LT", score` |
 | 4 | **Universe coverage** | ≥ 5 tickers cleared the 60-floor (else we're starving) | `orchestrator.diagnostics()` — `HR` passed count + composite ≥ 60 count |
 | 5 | **Block-deal coverage** | ≥ 2 of the top-10 ranked tickers had named institutional flow | `DD` stage features: `total_deals ≥ 2` |
+| 6 | **`[DV]` shadow-veto candidates on today's picks** *(new 2026-07-17)* | 0 — a picked ticker also flagged for distribution is a red flag the composite missed something | Latest trace JSONL per picked ticker → `stage:"DV", features.would_veto`. Also `pick_payload.accumulation_assessment.would_veto_shadow`. Cross-check the outcome after T+30 to see whether the veto would have saved you the trade — that correlation is the promotion signal for flipping `distribution_veto_mode` to `"block"`. |
+| 7 | **`participant_evidence` distribution on picks** *(new 2026-07-17)* | Most picks show `inferred`; occasional `disclosed_large_client` on the strongest names — that's the honest split | `pick_payload.accumulation_assessment.participant_evidence`. If every pick shows `disclosed_large_client`, the classifier regex is over-catching — inspect `client_class_counts` in the aggregator output. |
 
 ### Output: weekly-report.md (5 minutes)
 

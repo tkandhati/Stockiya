@@ -26,13 +26,75 @@ from __future__ import annotations
 import csv
 import logging
 import os
+import re
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
 log = logging.getLogger("block_deals")
+
+
+# --------------------------------------------------------------------------- #
+# Client classifier (2026-07-17)
+#
+# NSE block/bulk CSVs carry a free-text Client Name string — no tag for
+# custodian / FII / DII / prop / individual. This regex table maps common
+# institutional keywords to coarse buckets. It is deliberately CONSERVATIVE:
+# a name that matches nothing returns "unknown", NEVER "institutional".
+# Unclassified names (many HNI individuals, family offices) must not be
+# credited as institutional flow — that would be the exact mislabeling the
+# plan warns against ("participant evidence: inferred" vs "disclosed").
+# --------------------------------------------------------------------------- #
+
+ClientClass = Literal["custodian", "fii", "dii", "prop", "individual", "unknown"]
+
+_CLIENT_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"\bCUSTODIAN\b", re.I), "custodian"),
+    (re.compile(r"\b(?:FII|FPI)\b", re.I), "fii"),
+    (re.compile(r"\bFOREIGN\s+(?:INSTITUTIONAL|PORTFOLIO)\b", re.I), "fii"),
+    (re.compile(r"\bMUTUAL\s*FUND\b", re.I), "dii"),
+    (re.compile(r"\bMF\b", re.I), "dii"),
+    (re.compile(r"\bLIFE\s+INSURANCE\b", re.I), "dii"),
+    (re.compile(r"\bINSURANCE\s+CO\b", re.I), "dii"),
+    (re.compile(r"\bLIC\b", re.I), "dii"),
+    (re.compile(r"\bPENSION\s+FUND\b", re.I), "dii"),
+    (re.compile(r"\bASSET\s+MANAGEMENT\b", re.I), "dii"),
+    (re.compile(r"\bAMC\b", re.I), "dii"),
+    (re.compile(r"\bAIF\b", re.I), "dii"),
+    (re.compile(r"\bPORTFOLIO\s+MANAGE", re.I), "dii"),
+    (re.compile(r"\bPMS\b", re.I), "dii"),
+    (re.compile(r"\bPROP\.?(?:\s+A/C|\s+ACCOUNT)?\b", re.I), "prop"),
+    (re.compile(r"\bPROPRIETARY\b", re.I), "prop"),
+)
+
+
+def classify_client(name: Optional[str]) -> ClientClass:
+    """Best-effort client classification from the NSE 'Client Name' string.
+
+    Case-insensitive, deterministic. Returns 'unknown' on anything that does
+    not clearly match an institutional keyword — includes numbered HNI
+    accounts and generic "PVT LTD" investment companies. Being wrong-quiet
+    here is the design: false institutional labels poison the downstream
+    "participant_evidence: disclosed_large_client" claim in the accumulation
+    envelope, and that claim's whole value is that it's rarely applied.
+    """
+    if not name:
+        return "unknown"
+    s = name.strip()
+    if not s:
+        return "unknown"
+    for pattern, cls in _CLIENT_PATTERNS:
+        if pattern.search(s):
+            return cls  # type: ignore[return-value]
+    return "unknown"
+
+
+# Buckets we treat as "large disclosed client" for the accumulation envelope.
+# Prop desks and individuals are excluded on purpose — the plan wants this
+# label to mean genuine third-party institutional flow.
+_DISCLOSED_INSTITUTIONAL: frozenset[str] = frozenset({"custodian", "fii", "dii"})
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _DEALS_DIR = _PROJECT_ROOT / "data" / "deals"
@@ -41,7 +103,15 @@ _DEALS_DIR.mkdir(parents=True, exist_ok=True)
 
 @dataclass
 class DealAggregate:
-    """30-day aggregate of block + bulk deals for one ticker."""
+    """30-day aggregate of block + bulk deals for one ticker.
+
+    Classified fields (2026-07-17) are additive — existing readers that
+    only touch buy/sell/net_qty continue to work unchanged. The classified
+    fields default to zero when no classifier match was found, so a ticker
+    with only unknown-client deals gets classified totals of 0 and
+    has_disclosed_large_client=False (the "participant_evidence: inferred"
+    case in the accumulation envelope).
+    """
     symbol: str
     days_used: int
     buy_count: int = 0
@@ -52,6 +122,13 @@ class DealAggregate:
     net_qty_ratio: float = 0.0  # net / (buy+sell), in [-1, +1]
     last_buy_date: Optional[str] = None
     last_sell_date: Optional[str] = None
+    # ---- Classified participant flow (added 2026-07-17)
+    institutional_buy_qty: int = 0    # sum over custodian + fii + dii
+    institutional_sell_qty: int = 0
+    institutional_net_qty: int = 0
+    institutional_client_count: int = 0  # distinct classified clients seen
+    has_disclosed_large_client: bool = False
+    client_class_counts: dict[str, int] = field(default_factory=dict)
 
 
 # --------------------------------------------------------------------------- #
@@ -258,6 +335,9 @@ def aggregate_30d(symbol: str) -> DealAggregate:
 
 def _aggregate_from_csv(path: Path, symbol: str, cutoff: date) -> DealAggregate:
     agg = DealAggregate(symbol=symbol, days_used=30)
+    class_counts: dict[str, int] = {}
+    classified_clients: set[str] = set()
+
     with path.open("r", encoding="utf-8", newline="") as f:
         reader = csv.DictReader(f)
         for row in reader:
@@ -271,18 +351,35 @@ def _aggregate_from_csv(path: Path, symbol: str, cutoff: date) -> DealAggregate:
                 continue
             qty = int(row.get("qty", 0) or 0)
             side = (row.get("side") or "").upper()
+            client = row.get("client") or ""
+            cls = classify_client(client)
+
             if side == "BUY":
                 agg.buy_count += 1
                 agg.buy_qty += qty
                 agg.last_buy_date = row["date"]
+                if cls in _DISCLOSED_INSTITUTIONAL:
+                    agg.institutional_buy_qty += qty
             elif side == "SELL":
                 agg.sell_count += 1
                 agg.sell_qty += qty
                 agg.last_sell_date = row["date"]
+                if cls in _DISCLOSED_INSTITUTIONAL:
+                    agg.institutional_sell_qty += qty
+
+            class_counts[cls] = class_counts.get(cls, 0) + 1
+            if cls in _DISCLOSED_INSTITUTIONAL:
+                classified_clients.add(client.strip().upper())
+
     agg.net_qty = agg.buy_qty - agg.sell_qty
     total = agg.buy_qty + agg.sell_qty
     if total > 0:
         agg.net_qty_ratio = round(agg.net_qty / total, 3)
+
+    agg.institutional_net_qty = agg.institutional_buy_qty - agg.institutional_sell_qty
+    agg.institutional_client_count = len(classified_clients)
+    agg.has_disclosed_large_client = agg.institutional_client_count > 0
+    agg.client_class_counts = class_counts
     return agg
 
 

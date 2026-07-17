@@ -333,6 +333,122 @@ def anomaly_cluster_count(
     return count
 
 
+# --------------------------------------------------------------------------- #
+# Signed volume pressure (2026-07-17)
+#
+# Foundation for the precision-first accumulation refit. Two properties matter:
+#
+#   1. Signed at the bar level — CLV × RV captures who won the day rather than
+#      how much traded. Institutions "play tricks" with engineered spikes;
+#      unsigned volume (ADV ratios, OBV cumulatives) can't tell an absorbed
+#      spike from a distributed one. Signed pressure can.
+#   2. Spike-dampened — RV is clipped at rv_clip (default 3.0) and downstream
+#      aggregation uses EWM, not point-in-time reads. A single earnings-day
+#      print cannot dominate a 20-bar aggregate, so the "temp spike" trick is
+#      neutralized by construction, not by a heuristic filter.
+#
+# These primitives ship pure and unwired — the composite weight is 0 by
+# default (see config/stage_weights.json). Only the trace records them until
+# the champion-challenger tuner sees a positive shadow-mode correlation.
+# --------------------------------------------------------------------------- #
+
+def close_location_value(
+    open_: float,
+    high: float,
+    low: float,
+    close: float,
+) -> Optional[float]:
+    """Close Location Value (CLV) — signed intra-bar close position.
+
+    CLV_t = (2·C - H - L) / (H - L)
+
+    Range [-1, +1]. +1 = closed at high (buyers won), -1 = closed at low
+    (sellers won), 0 = mid-range. Signed foundation for pressure metrics
+    that multiply CLV by relative volume. `open_` is accepted but not used
+    yet — kept in the signature so a future gap-adjusted variant can slot
+    in without breaking callers.
+
+    Returns None on zero-range bars (H == L).
+    """
+    del open_  # reserved for gap-adjusted variant; unused today
+    rng = high - low
+    if rng <= 0:
+        return None
+    clv = (2.0 * close - high - low) / rng
+    if clv > 1.0:
+        return 1.0
+    if clv < -1.0:
+        return -1.0
+    return clv
+
+
+def signed_volume_pressure(
+    df: pd.DataFrame,
+    adv_window: int = 60,
+    rv_clip: float = 3.0,
+) -> Optional[pd.Series]:
+    """Per-bar signed pressure series: CLV_t × clip(V_t / median(V, N), 0, rv_clip).
+
+    Positive = buyer-dominated bar with real volume behind it; negative =
+    seller-dominated with volume; zero-range days contribute 0.
+
+    Design choices worth calling out:
+
+      • RV uses the trailing MEDIAN (not mean) for the same fat-tail reason
+        `volume_robust_zscore` does — a handful of spike days won't inflate
+        the "normal" baseline that today's bar is measured against.
+      • RV is clipped at rv_clip=3.0. A 10× institutional dump on earnings
+        day still registers as pressure but cannot single-handedly swing a
+        20-bar EWM aggregate. This is the anti-"engineered spike" property.
+      • Returns a full pd.Series so downstream code can pick its own horizon
+        (5, 20, 60 bars) via ewm_signed_pressure. No fixed lookback baked in.
+
+    Returns None on <adv_window+1 bars or if required columns are missing.
+    """
+    if df is None or df.empty:
+        return None
+    required = {"High", "Low", "Close", "Volume"}
+    if not required.issubset(set(df.columns)):
+        return None
+    if len(df) < adv_window + 1:
+        return None
+
+    high = df["High"].astype(float)
+    low = df["Low"].astype(float)
+    close = df["Close"].astype(float)
+    volume = df["Volume"].astype(float)
+
+    rng = (high - low).replace(0.0, np.nan)
+    clv = ((2.0 * close - high - low) / rng).clip(-1.0, 1.0).fillna(0.0)
+
+    vol_median = volume.rolling(adv_window, min_periods=adv_window).median()
+    rv = (volume / vol_median).clip(lower=0.0, upper=rv_clip).fillna(0.0)
+
+    return clv * rv
+
+
+def ewm_signed_pressure(pressure: pd.Series, halflife: int) -> Optional[float]:
+    """Latest EWM value of a signed-pressure series with the given halflife.
+
+    Exponential decay lets the aggregator emphasize recent bars without
+    inheriting the single-day sensitivity of a spot read. Halflife choices
+    map to horizons the plan calls out:
+
+        halflife=3   ≈  5-bar sensitivity  (tape this week)
+        halflife=10  ≈ 20-bar             (mid-swing flow)
+        halflife=30  ≈ 60-bar             (base-period flow)
+
+    Returns None on empty or all-NaN input.
+    """
+    if pressure is None or pressure.empty or halflife <= 0:
+        return None
+    valid = pressure.dropna()
+    if valid.empty:
+        return None
+    ewm_series = valid.ewm(halflife=halflife, adjust=False).mean()
+    return float(ewm_series.iloc[-1])
+
+
 def adi(df: pd.DataFrame) -> Optional[pd.Series]:
     """Accumulation/Distribution Line — cumulative money-flow volume series.
 

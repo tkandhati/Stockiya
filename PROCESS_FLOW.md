@@ -71,7 +71,7 @@ Each stage is one file in `backend/stages/` with signature `run(ctx) -> StageRes
 |---|---|---|---|
 | **[RG] Regime** | `stages/regime.py` | Index trend + vol clock | `close(^CNX100) > sma(^CNX100, 50)`; ATR20% sets per-day volatility multiplier for downstream thresholds |
 | **[U] Universe** | `stages/universe.py` | Membership check | `symbol ∈ NIFTY100` |
-| **[I] Ingest** | `stages/ingest.py` | Fetch 180 daily bars + as-of slice | Pulls 180d daily; if `ctx.today_iso` is a past date, slices bars to that date (no lookahead) and overrides snapshot.current with the as-of close |
+| **[I] Ingest** | `stages/ingest.py` | Fetch 180 daily bars + as-of slice + finalized-bar hygiene | Pulls 180d daily; if `ctx.today_iso` is a past date, slices bars to that date (no lookahead) and overrides snapshot.current with the as-of close. **2026-07-17 hygiene** — drops NaN OHLC rows, non-positive-volume rows, and (live only) the last bar if IST-time is before 15:35 (partial session). Trace records `dropped_malformed`, `dropped_partial_session`, `has_full_lookback` (≥ 260 bars). |
 | **[HR] Hard rejects** | `stages/hard_rejects.py` | Safety gate | `ret_30d ≤ +25 %` **AND** `close ≤ 1.15 × sma(50)` **AND** no auditor-exit / SEBI flag / promoter-pledge > 50 % |
 | **[WY] Wyckoff phase** | `stages/wyckoff.py` *(new)* | Phase A→D classifier, scored | Detects Phase C (spring: narrow-range low-vol undercut of Phase-A low) or Phase D (SOS: wide-range up-close ≥ 1.5×ADV50, above 150d MA). Score = phase confidence × phase-preference weight (C=1.0, D=0.9). Replaces the retired [LT]+[CS]+[VD] AND-chain. |
 | **[VSA] Bar confirmation** | `stages/vsa.py` *(new)* | Trigger — any of three | **SOS bar**: `close ≥ rolling_high(20)` AND `vol ≥ vol_mult × ADV50` AND `(close-low)/(high-low) ≥ 0.67`; **pocket pivot**: today up-day AND `vol > max(down-day vol in prior 10)`; **no-supply test**: down-day inside Phase-C low AND `vol < 0.60 × ADV10` AND close in upper half. `vol_mult` is 1.5 in normal regime, 2.0 in high-vol. |
@@ -79,7 +79,8 @@ Each stage is one file in `backend/stages/` with signature `run(ctx) -> StageRes
 | **[RK] Rank** | `stages/rank.py` | Confirmation-strength score | `wy_score + avwap_score + vsa_margin + 0.5 × bonus_signal_count`, sorted desc, top N (default 3) |
 | **[PS] Position Sizer** | `position_sizer.py` | Risk-of-account share count, ATR-adaptive stop | `entry = close`, `stop = entry − max(0.08 × entry, 2 × ATR20)`, `R = entry − stop`, `shares = floor(account × 0.01 / R)`, `T1 = entry + R`, `T2 = entry + 2R` |
 | **[H] Hypothesis** | `stages/hypothesis.py` | Template-built rationale + adaptive exits | Entry/stop/T1/T2 + 3-scenario exit (target-hit, distribution-flip, time-stop) + day-45/90/180 milestones |
-| **[R] Render** | `stages/render.py` | JSON write | Atomic write to `data/picks_<date>.json` |
+| **[DV] Distribution veto** *(2026-07-17)* | `stages/distribution_veto.py` | Anti-institutional-trick hygiene, runs last in chain | Three deterministic checks: (a) **weak-close spike** — volume-z ≥ 2.0 AND close ≤ bottom third of range; (b) **gap-up weak-close** — Open ≥ 2 % above prev.Close AND close in bottom half of range; (c) **dist-day cluster** — ≥ 3 sessions in last 15 with down-close AND volume > ADV20. Mode controlled by `config/stage_weights.json → distribution_veto_mode`: `"shadow"` (default, trace-only) or `"block"` (auto-promoted to hard gate, short-circuits selection). |
+| **[R] Render** | `stages/render.py` | JSON write + accumulation assessment envelope | Atomic write to `data/picks_<date>.json` (schema v7). Each pick now carries `accumulation_assessment` — advisory metadata: `level ∈ {emerging, building, strong, ready, distribution}`, `participant_evidence ∈ {inferred, disclosed_large_client}`, `score_0_100`, `data_confidence`, `contradictions`, `would_veto_shadow`. **Never gates selection.** |
 | **[EX] Exit-watch** | `stages/exit_watch.py` *(new)* | Volume-based early-exit scan on open picks | Fires if any: OBV-20d neg divergence at new 20d high; churning bar (vol top-20% of 50d, spread bottom-20%, close near open); ≥ 3 distribution days in 15 sessions; two consecutive closes < AVWAP; climax-vol + reversal |
 | **[O] Outcome** | `stages/outcome.py` | T+90 / T+180 return logger | Reads open picks from `portfolio.csv`, fetches close at horizon, writes return to `outcomes.jsonl` |
 
@@ -91,12 +92,13 @@ All raw indicator math lives in `backend/indicators.py` as pure functions (no I/
 
 | Path | Written by | Contents |
 |---|---|---|
-| `data/picks_<YYYY-MM-DD>.json` | `[R] Render` | Today's 0–3 picks with full payload (entry, stop, T1, T2, shares, evidence, time stops) |
-| `data/traces/run_<date>_<ticker>.jsonl` | every stage | Per-stage features, score, evidence — the RL feature dataset |
+| `data/picks_<YYYY-MM-DD>.json` | `[R] Render` | Today's 0–3 picks with full payload (entry, stop, T1, T2, shares, evidence, time stops, **accumulation_assessment**). `PICKS_SCHEMA_VERSION = 7`. |
+| `data/traces/run_<date>_<ticker>.jsonl` | every stage | Per-stage features, score, evidence — the RL feature dataset. Includes `[DV]` rows with `would_veto` / `veto_reasons` / `dist_day_count_15` even in shadow mode. |
 | `data/traces/outcomes.jsonl` | `[O] Outcome` | Realised return at T+90 / T+180 per pick — the RL reward labels |
 | `data/portfolio.csv` | `[H] Hypothesis` | Append-only ledger: `trace_id, entry_date, entry, stop, T1, T2, shares` |
 | `data/portfolio_weekly.csv` | `weekly.py` | Friday close prices for each open pick |
-| `data/deals/*.csv` | `block_deals.py` | Cached NSE block + bulk deal CSVs |
+| `data/deals/*.csv` | `block_deals.py` | Cached NSE block + bulk deal CSVs. Aggregator now emits classified fields (`institutional_*`, `has_disclosed_large_client`) alongside legacy totals — tolerant readers preserved. |
+| `test_data/<SYMBOL>.csv` *(manual drop-zone)* | user | Raw NSE historical CSVs (`DATE, SERIES, OPEN, HIGH, LOW, PREV. CLOSE, LTP, CLOSE, VWAP, 52W H, 52W L, VOLUME, VALUE, NO. OF TRADES`) used for offline pipeline testing when the firewall blocks live fetches. See `test_data/README.md`. |
 
 Trace `schema_version: 2` (new gates spine). Old `schema_version: 1` rows are still readable; the `outcome` reward column is unchanged so prior outcomes still feed the RL dataset.
 

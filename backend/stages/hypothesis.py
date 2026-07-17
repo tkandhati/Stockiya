@@ -31,6 +31,7 @@ from ..signal_trajectory import (
     FAILED_BR_WINDOW_TRADING_DAYS,
     HEALING_GRACE_TRADING_DAYS,
 )
+from .render import build_accumulation_assessment
 
 
 # --------------------------------------------------------------------------- #
@@ -229,6 +230,36 @@ def build_pick_payload(
             ),
         }
 
+    # Accumulation-assessment envelope — advisory metadata. Reads the deal
+    # aggregate lazily and tolerates missing/empty deals cache: unknown-
+    # classified deals yield participant_evidence="inferred" (the honest
+    # default). Never gates the pick; the composite already did.
+    deal_features: dict = {}
+    try:
+        from ..block_deals import aggregate_30d as _agg_deals
+        _agg = _agg_deals(result.symbol)
+        deal_features = {
+            "has_disclosed_large_client": bool(
+                getattr(_agg, "has_disclosed_large_client", False)
+            ),
+            "institutional_net_qty": int(
+                getattr(_agg, "institutional_net_qty", 0)
+            ),
+            "institutional_client_count": int(
+                getattr(_agg, "institutional_client_count", 0)
+            ),
+        }
+    except Exception:  # noqa: BLE001
+        # Deal cache missing or unreadable → fall back to inferred evidence.
+        deal_features = {}
+
+    assessment = build_accumulation_assessment(
+        composite_score=float(getattr(result, "composite_score", 0.0) or 0.0),
+        stage_results=result.stage_results,
+        deal_features=deal_features,
+        as_of_iso=today_iso,
+    )
+
     return {
         # ---- New shape (primary) ----
         "symbol": result.symbol,
@@ -249,6 +280,7 @@ def build_pick_payload(
         "gates_evidence": _gate_evidence(result),
         "gate_confirmation_status": _gate_confirmation_status(result),
         "volume_event": vol_event,
+        "accumulation_assessment": assessment,
 
         # ---- Legacy aliases (so existing frontend keeps rendering) ----
         "best_buy_at": round(entry, 2),

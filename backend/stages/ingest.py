@@ -12,8 +12,9 @@ gate doesn't peek at today.
 
 from __future__ import annotations
 
-from datetime import date as _date
+from datetime import date as _date, datetime, time as _time
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
@@ -26,6 +27,63 @@ stage_id = "I"
 # Minimum daily bars before the long-term and consolidation gates are
 # meaningful. 200 = required for the 200d MA used in ranking bonuses.
 MIN_BARS = 200
+
+# Advisory-only floor: with >=260 finalized bars every indicator (200d MA,
+# OBV-90d, ADV50, MAD-50d) has full lookback with margin. Below this the
+# pipeline still runs but the trace records has_full_lookback=False so
+# downstream calibration knows the sample is truncated.
+FULL_LOOKBACK_BARS = 260
+
+_IST = ZoneInfo("Asia/Kolkata")
+# NSE closes 15:30 IST; 5-min buffer for feed catch-up before we trust the
+# last bar of the current session as finalized.
+_SESSION_CLOSE_BUFFER = _time(15, 35)
+
+
+def _drop_partial_session_bar(
+    ohlcv: pd.DataFrame,
+    is_backtest: bool,
+) -> tuple[pd.DataFrame, int]:
+    """If the last bar belongs to a session that hasn't closed yet, drop it.
+
+    Live-mode only — backtests always use finalized as-of slices. The check
+    is IST-aware because NSE market hours are the authority, not wallclock.
+    Returns (possibly-trimmed df, count of bars dropped).
+    """
+    if is_backtest or ohlcv.empty:
+        return ohlcv, 0
+    now_ist = datetime.now(_IST)
+    last_ts = ohlcv.index[-1]
+    try:
+        last_date = last_ts.date()
+    except AttributeError:
+        return ohlcv, 0
+    if last_date == now_ist.date() and now_ist.time() < _SESSION_CLOSE_BUFFER:
+        return ohlcv.iloc[:-1], 1
+    return ohlcv, 0
+
+
+def _clean_malformed_rows(ohlcv: pd.DataFrame) -> tuple[pd.DataFrame, int]:
+    """Drop rows that can't represent a real session bar.
+
+    Rules:
+      • NaN in any of Open/High/Low/Close → not a completed print
+      • Volume <= 0 or NaN            → suspended day / no trades
+
+    Suspended sessions and holiday-adjacent phantom bars sometimes leak
+    through the data-source layer; every downstream indicator assumes real
+    numbers. Cheaper to reject them once here than tolerate them everywhere.
+    Returns (cleaned df, dropped count).
+    """
+    if ohlcv.empty:
+        return ohlcv, 0
+    before = len(ohlcv)
+    ohlc_cols = [c for c in ("Open", "High", "Low", "Close") if c in ohlcv.columns]
+    cleaned = ohlcv.dropna(subset=ohlc_cols) if ohlc_cols else ohlcv
+    if "Volume" in cleaned.columns:
+        vol = cleaned["Volume"].fillna(0)
+        cleaned = cleaned[vol > 0]
+    return cleaned, before - len(cleaned)
 
 
 def _slice_to_as_of(ohlcv: pd.DataFrame, as_of: _date) -> pd.DataFrame:
@@ -112,6 +170,14 @@ def run(ctx: PipelineContext) -> StageResult:
     if as_of is not None:
         ohlcv = _slice_to_as_of(ohlcv, as_of)
 
+    # Finalized-bar hygiene — drop partial intraday + malformed rows BEFORE
+    # the MIN_BARS check, so a fetch that returned 201 rows including one
+    # NaN row and one intraday-partial row fails cleanly instead of feeding
+    # noise into downstream indicators. Both counts are reported in features
+    # so operators can see what got trimmed.
+    ohlcv, dropped_malformed = _clean_malformed_rows(ohlcv)
+    ohlcv, dropped_partial = _drop_partial_session_bar(ohlcv, is_backtest)
+
     if ohlcv.empty:
         return StageResult(
             stage_id=stage_id, passed=False,
@@ -124,10 +190,17 @@ def run(ctx: PipelineContext) -> StageResult:
     if bars < MIN_BARS:
         return StageResult(
             stage_id=stage_id, passed=False,
-            features={"bars": bars, "min_required": MIN_BARS, "as_of": as_of_iso},
+            features={
+                "bars": bars,
+                "min_required": MIN_BARS,
+                "as_of": as_of_iso,
+                "dropped_malformed": dropped_malformed,
+                "dropped_partial_session": dropped_partial,
+            },
             fix_point="backend/stages/ingest.py:MIN_BARS",
             reason=f"only {bars} bars, need >={MIN_BARS}",
         )
+    has_full_lookback = bars >= FULL_LOOKBACK_BARS
 
     as_of_close = float(ohlcv["Close"].iloc[-1])
     if is_backtest:
@@ -149,10 +222,19 @@ def run(ctx: PipelineContext) -> StageResult:
 
     return StageResult(
         stage_id=stage_id, passed=True,
-        features={"bars": bars, "current": current, "as_of": as_of_iso},
+        features={
+            "bars": bars,
+            "current": current,
+            "as_of": as_of_iso,
+            "has_full_lookback": has_full_lookback,
+            "dropped_malformed": dropped_malformed,
+            "dropped_partial_session": dropped_partial,
+        },
         evidence=[
             f"{bars} daily bars · current ₹{current:.2f}"
             + (f" · as-of {as_of_iso}" if as_of_iso else "")
+            + (f" · dropped {dropped_malformed}m/{dropped_partial}p"
+               if (dropped_malformed or dropped_partial) else "")
         ],
         fix_point="backend/stages/ingest.py:MIN_BARS",
     )

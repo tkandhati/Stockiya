@@ -31,15 +31,22 @@ Read [ARCHITECTURE.md](./ARCHITECTURE.md) §0-§0.3 for the current-spine walkth
                        ┌─ rejected ─► trace log ─► RL replay buffer
                        │
 [U] Universe ─► [I] Ingest ─► [HR] Hard Rejects ─►     ← hard gates: short-circuit
+    ▲                                                    (I gains finalized-bar
+    │  drops NaN OHLC / zero-vol /                        hygiene — 2026-07-17)
+    │  partial-session bars
 [ACS] Accum-Screen ─► [AC] Accumulation ─►
 [LT] Long-Term ─► [CS] Consolidation ─► [VD] Volume/Div ─► [BR] Breakout ─►
+[DV] Distribution Veto (shadow-mode default; block-mode auto-promotes to hard gate)
                                                           ↓
                             S = Σ wᵢ · mᵢ                composite score
                             ↓
                             filter: S ≥ COMPOSITE_TAU
                             ↓
 [RK] Rank ─► [PS] Position Size ─► [H] Hypothesis+Exit ─► [R] Render ─► UI
-                                                                     │
+                                    │                     (attaches           │
+                                    │              accumulation_assessment    │
+                                    │                     envelope)           │
+                                                                              │
                                                                      └─► [O] Outcome
                                                                            T+90 / T+180
                                                                            feeds tuner
@@ -120,9 +127,10 @@ backend/
 │   ├── wyckoff.py     [WY]     scored — Phase C / Phase D confidence  *(new, in-progress)*
 │   ├── vsa.py         [VSA]    trigger — SOS / pocket-pivot / no-supply *(new, in-progress)*
 │   ├── avwap.py       [AVWAP]  scored — anchored-VWAP hold             *(new, in-progress)*
+│   ├── distribution_veto.py [DV] anti-trick hygiene (shadow/block)    *(new 2026-07-17)*
 │   ├── rank.py        [RK]     confirmation-strength ranker + bonuses
-│   ├── hypothesis.py  [H]      entry / ATR-stop / 1R / 2R / exits
-│   ├── render.py      [R]      writes data/picks_<date>.json
+│   ├── hypothesis.py  [H]      entry / ATR-stop / 1R / 2R / exits + accumulation_assessment envelope
+│   ├── render.py      [R]      writes data/picks_<date>.json (schema v7)
 │   ├── exit_watch.py  [EX]     daily volume-based early-exit scan       *(new, in-progress)*
 │   └── outcome.py     [O]      T+90 / T+180 realized return — RL reward
 │
@@ -155,7 +163,15 @@ data/
 ├── deals/                  ← cached NSE block + bulk deal CSVs
 ├── portfolio.csv           ← every pick the engine ever surfaced
 └── portfolio_weekly.csv    ← Friday closes for open picks
+
+test_data/                  ← manual drop-zone for NSE historical CSVs (offline testing)
+└── <SYMBOL>.csv            ← raw NSE export (DATE, SERIES, OPEN, HIGH, LOW, …) — see test_data/README.md
 ```
+
+> **Offline testing:** live Yahoo/NSE fetches are blocked by the corporate firewall,
+> so any pipeline test runs against CSVs the user pastes into
+> [`test_data/`](./test_data/README.md). No synthetic data is generated — if a
+> ticker's CSV is missing, the test asks the user to paste it first.
 
 ---
 
@@ -195,6 +211,7 @@ See [WEEKLY_TRACKING.md](./WEEKLY_TRACKING.md) — what to monitor weekly, bi-we
 | ✅ done | Champion-challenger tuner (`scripts/tune_weights.py`, monotone metric) |
 | ✅ done | NIFTY 500 universe + `STOCKYA_UNIVERSE=custom` file loader |
 | ✅ done | Empty-state UI collapsed to one tabbed `ClosestToFiringPanel` |
+| ✅ done | Precision-first refit dark-launch (2026-07-17): signed-pressure primitives, ingest hygiene, distribution veto `[DV]` in shadow, classified deal flow, `accumulation_assessment` envelope. See CHANGELOG for the full contract; flip `distribution_veto_mode` in `config/stage_weights.json` to activate. |
 | ⏳ next | Wire `stages/wyckoff.py`, `vsa.py`, `avwap.py` into `PER_TICKER_CHAIN` (see AGENT_HANDOFF.md for step-by-step) |
 | ⏳ next | `stages/exit_watch.py` daily scan on held picks |
 | ⏳ next | ATR20-normalized thresholds + regime vol-clock in `stages/regime.py` |

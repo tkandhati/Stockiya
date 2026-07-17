@@ -38,11 +38,18 @@ file you can open. Same OHLCV in → byte-identical trace out.**
         ┌──────────── PER-TICKER PIPELINE ────────┐
         │                                          │
    [U]   Universe            gate                  │
-   [I]   Ingest (180 bars)   gate                  │
+   [I]   Ingest (180 bars)   gate    ← finalized-bar hygiene: drops
+                                        NaN OHLC, zero-vol, partial-
+                                        session (IST-aware) rows
    [HR]  Hard rejects        gate                  │
    [WY]  Wyckoff phase       SCORED (0-1)          │
    [VSA] Bar confirmation    TRIGGER (binary)      │
    [AVWAP] VWAP hold         SCORED (0-1)          │
+   [DV]  Distribution veto   HYGIENE (shadow/block) ← anti-institution-
+                                        trick guard: weak-close spike,
+                                        gap-up bull trap, dist-day
+                                        cluster. Default: shadow (trace
+                                        only, zero live impact).
         │                                          │
         │ every stage → JSONL trace                │
         └──────────────────────────────────────────┘
@@ -55,7 +62,10 @@ file you can open. Same OHLCV in → byte-identical trace out.**
                     ▼
         [PS] Position sizer  → 1 % account risk, ATR-adaptive stop
         [H]  Hypothesis       → entry / stop / T1 / T2 / time-stops
-        [R]  Render           → data/picks_<date>.json
+                              + accumulation_assessment envelope
+                                (advisory: level, participant_evidence,
+                                 data_confidence, contradictions)
+        [R]  Render           → data/picks_<date>.json (schema v7)
                     │
                     ▼
               FastAPI → React UI
@@ -88,7 +98,7 @@ remain binary.
 
 ## 0.2. Volume-only vocabulary reference
 
-The spine is built on five volume/price-structure primitives. Every stage,
+The spine is built on volume/price-structure primitives. Every stage,
 bonus signal, and exit rule uses one of them — nothing else.
 
 | Primitive | Formula | Where used |
@@ -98,6 +108,17 @@ bonus signal, and exit rule uses one of them — nothing else.
 | **Anchored VWAP** | `Σ(price×vol) / Σ(vol)` from anchor date, price-weighted running | [AVWAP], exit break |
 | **ADV(N) / vol ratio** | `sma(volume, N)`; today's vol / ADV50 = vol ratio | [VSA] trigger, exit churning |
 | **ATR20 %** | 20-bar avg true range as % of close — the volatility clock | Threshold normalizer everywhere |
+| **Close Location Value (CLV)** *(2026-07-17)* | `(2C − H − L) / (H − L)` clamped to [-1, +1] | Signed foundation for pressure metrics; used by `[DV]` weak-close checks |
+| **Signed volume pressure** *(2026-07-17)* | `CLV_t × clip(V_t / median(V, N=60), 0, 3.0)` — signed, spike-clipped | Fuels EWM aggregates over 5 / 20 / 60 bars; unwired in composite until shadow-mode outcomes justify a weight |
+| **Client-classified deal flow** *(2026-07-17)* | Regex classifier over NSE block/bulk client names → `custodian \| fii \| dii \| prop \| individual \| unknown` | `has_disclosed_large_client` fuels the assessment envelope's `participant_evidence` ladder |
+
+**Anti-institutional-trick property.** Signed volume pressure is the
+primitive that lets `[DV]` distinguish an *absorbed* volume spike (buyers
+won, CLV positive) from a *distributed* one (sellers won, CLV negative)
+— OBV cumulatives cannot make that call. The RV clip at 3.0 plus EWM
+aggregation over 5–60 bars means no single engineered print can dominate
+the aggregate. The foundation is a distribution of recent bars, not a
+reactive read on today's spike.
 
 ---
 

@@ -6,6 +6,9 @@
 
   "hard_gate_stage_ids": ["U", "I", "HR"],
 
+  "distribution_veto_mode": "shadow",
+  "_distribution_veto_mode_help": "shadow = trace-only (default, zero live impact). block = short-circuit ticker on veto (auto-adds 'DV' to hard_gate_stage_ids at load time). Flip only after ≥4 weeks of shadow traces confirm veto precision against outcomes. See backend/stages/distribution_veto.py for the three checks.",
+
   "scored_stage_weights": {
     "ACS": 0.05,
     "AC":  0.20,
