@@ -1,5 +1,87 @@
 # Changelog
 
+## 2026-07-18 — Honesty refit: anti-whipsaw + swing-framing language
+
+Three code fixes + a documentation refit. Motivated by the DIVISLAB.NS
+day-1 flip case: pick admitted 2026-07-16, flipped to `exit_distribution`
+on 2026-07-17 on a 1.19x ADV pullback and a close 1.1% below the 20d
+high. That is a whipsaw, not a real distribution signal — and the whole
+class of that whipsaw was possible because the exit-side thresholds were
+easier to trip than the admission-side thresholds. This refit closes
+that gap and renames the "3-6 month hold" language across the codebase
+to match what the numbers actually describe (swing, not multi-month
+position).
+
+**1. Failed-breakout micro-stop retune** (`backend/signal_trajectory.py`)
+
+Three thresholds tightened, together stopping the day-1 flip pattern:
+
+- `FAILED_BR_MIN_TRADING_DAYS = 1` *(new)* — entry session (day 0) is
+  now disarmed. A pick admitted today cannot flip on today's tape.
+- `FAILED_BR_VOLUME_MULT = 1.5` *(was 1.0)* — admission required 1.3x
+  ADV50; exit on a 1.0x pullback was easier to trip than admission,
+  asymmetric in the wrong direction. 1.5x now means genuine supply, not
+  average-day noise.
+- `FAILED_BR_CLOSE_BUFFER = 0.99` *(new)* — close must be < resistance
+  × 0.99 (a full 1% back inside the base), not any tick below. Prevents
+  intrabar jitter from flipping a still-holding breakout.
+
+Classifier + human-readable exit message both updated so the reason
+string reports the new trip levels honestly.
+
+**2. Sunday-d45 display fix** (`backend/positions_view.py`)
+
+`time_stops.day_45/90/180` displayed dates are now rolled forward to the
+next weekday when the raw calendar date lands on Sat/Sun via a new
+`_roll_forward_to_weekday` helper. **Display-only** — enforcement in
+`_action_for` still uses raw calendar days via `days_held`, so behavior
+is identical. The Sunday-d45 case that shipped before this fix (entry
+2026-07-16 → d45 shown as 2026-08-30, a Sunday) is now impossible.
+
+NSE holiday-calendar arithmetic (idea G) is still deferred.
+
+**3. DEMO_MODE banner on positions page** (`middleware/schemas.py`,
+`middleware/main.py`, `frontend/src/types.ts`,
+`frontend/src/pages/PositionsPage.tsx`)
+
+`PositionsResponse` gains `demo_mode: bool = False`, populated from the
+env in `get_positions()`. `PositionsPage` now imports and renders
+`<DemoBanner />` at the top when `data?.demo_mode` is truthy —
+consistent with the banner already shown on `PicksPage` and
+`StockDetailPage`. Closes the gap where a synthetic-data position card
+looked identical to a real one.
+
+**4. Language refit — "3-6 month hold" → swing framing**
+
+Nine files updated to replace "3-6 month" language with the honest
+phrasing: **"Swing hold — 3 weeks to 3 months typical, up to 6 months
+for runners; day-180 is the outer hard cap, not a target."**
+
+- `README.md` — top-of-file description + honest expectation callout
+- `PRINCIPLES.md` §1 holding period paragraph + §4 time-stop table row
+- `ARCHITECTURE.md` — "Group A — Long-term lens" heading refined
+  ("admission-evidence window, not hold duration"); price-levels comment
+- `PROCESS_FLOW.md` — DAY_180 description + constants block
+- `AGENT_HANDOFF.md` — Current Architecture Truth opening paragraph
+- `backend/backtest.py:62` — `DEFAULT_HOLD_DAYS` comment
+- `backend/stages/__init__.py` — `lt_flow` module doc line
+- `frontend/src/pages/PicksPage.tsx` — subtitle
+- `frontend/src/pages/BacktestPage.tsx` — two prose blocks
+- `frontend/src/components/PositionCard.tsx` — `exit_final` label
+  "Day-180 final exit" → "Day-180 hard cap"; d45/d90/d180 spans gain
+  `title` tooltips explaining each milestone; short italic subtitle
+  under the card: *"Typical swing hold: 3 weeks to 3 months. Day-180
+  is the outer hard cap, not a target."*
+
+No constants changed values. No behavior changes tied to language.
+Historical outcomes labels remain valid — no schema-version bump needed.
+
+**What is still parked** (from previous conversations): two-session flip
+confirmation (idea D), latched EXIT-Confirmed state (idea E),
+EOD-freeze the action (idea F), strength-% UI for state indicators,
+trading-day unification of DAY_45/90/180 arithmetic (Level 2),
+NSE-holiday calendar (idea G), runner-lane build (Option 2).
+
 ## 2026-07-17 (later-3) — Balanced-holding foundation: action priority + label separation
 
 Four small changes that make the label pipeline correct + honest without

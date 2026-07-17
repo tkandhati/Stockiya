@@ -4,6 +4,7 @@ import { Link } from 'react-router-dom'
 import { ArrowLeft, Briefcase } from 'lucide-react'
 import { fetchPositions } from '../api'
 import { PositionCard } from '../components/PositionCard'
+import { DemoBanner } from '../components/DemoBanner'
 import { Disclaimer } from '../components/Disclaimer'
 import type { Position } from '../types'
 
@@ -79,6 +80,15 @@ export function PositionsPage() {
           </div>
         )}
       </header>
+
+      {/* DEMO banner FIRST when backend is in synthetic mode — the user must
+          see this before scanning any card. Trades on a DEMO card would be
+          based on fabricated OHLCV. */}
+      {data?.demo_mode && (
+        <div className="mt-6">
+          <DemoBanner />
+        </div>
+      )}
 
       <div className="mt-6">
         <Disclaimer />

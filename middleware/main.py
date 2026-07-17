@@ -180,6 +180,7 @@ def get_positions() -> PositionsResponse:
         date_ist=ist_today_iso(),
         count=len(items),
         positions=[Position(**p) for p in items],
+        demo_mode=os.environ.get("DEMO_MODE", "0") == "1",
     )
 
 

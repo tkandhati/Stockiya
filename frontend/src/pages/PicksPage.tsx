@@ -35,7 +35,7 @@ export function PicksPage() {
             Pick one.</span>
           </p>
           <p className="mt-0.5 text-xs text-slate-500">
-            Investing, not trading · daily review · 3-6 month hold ·{' '}
+            Swing trading · 3-week to 3-month typical hold · daily review ·{' '}
             <span className="font-mono">{data?.date ?? '—'}</span>
             {data && (
               <span className="ml-2 rounded bg-slate-100 px-2 py-0.5 text-xs uppercase tracking-wide text-slate-600">

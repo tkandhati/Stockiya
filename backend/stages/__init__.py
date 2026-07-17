@@ -9,7 +9,8 @@ Per-ticker chain (run in parallel by the orchestrator):
     ingest          -> [I]   gate    >=200 daily bars; populates ctx.ohlcv
     hard_rejects    -> [HR]  gate    Parabolic 30d / extended above 50d MA
                                      (avoids buying into institutional dumping)
-    lt_flow         -> [LT]  gate    3-6 month institutional accumulation
+    lt_flow         -> [LT]  gate    90-180 day institutional accumulation
+                                     (admission-evidence window, not hold duration)
     consolidation   -> [CS]  gate    Tight base above 150d MA
     volume          -> [VD]  gate    Dry-up + bullish OBV-price divergence
     breakout        -> [BR]  gate    Resistance + 1.5x vol + upper-third close

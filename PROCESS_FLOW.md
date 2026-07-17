@@ -218,8 +218,11 @@ At `end_date` (`positions_view._action_for`):
 - Trajectory healthy AND `new_horizon > current_horizon` AND
   `new_horizon <= 180` → action `extend_horizon`
 - Trajectory flipped OR at max bucket → action `exit_end_date`
-- `DAY_180` (unconditional final exit) precedes horizon logic — a
-  position at day 200 always fires `exit_final` regardless of horizon.
+- `DAY_180` (unconditional **hard cap** — outer wall, not a target)
+  precedes horizon logic — a position at day 200 always fires
+  `exit_final` regardless of horizon. Median winner exits far earlier
+  (T1 near day 21, T2 or exit inside 1-3 months); day-180 catches
+  the runner tail.
 
 **Action-priority correction (2026-07-17, urgent).** Pre-fix, the
 `_action_for` check order ran `trajectory_flip` and `DAY_180` BEFORE the
@@ -369,9 +372,15 @@ to their own pick date's captured signals.
                                   does NOT change status — human confirms)
 ```
 
-Constants (`backend/positions_view.py` top-of-file, tunable):
-`DAY_45 = 45`, `DAY_90 = 90`, `DAY_180 = 180`,
-`DAY_45_TIGHTEN_PCT = 0.04`, `EXPECTED_T1_TRADING_DAYS = 21`.
+Constants (`backend/positions_view.py` top-of-file, tunable). All
+calendar-day (not trading-day) semantics — display dates in
+`time_stops.day_45/90/180` are rolled forward to the next weekday
+when they land on Sat/Sun (display-only helper `_roll_forward_to_weekday`;
+enforcement math untouched):
+`DAY_45 = 45` (stop tighten), `DAY_90 = 90` (pre-T1 give-up),
+`DAY_180 = 180` (**outer hard cap — not a target**),
+`DAY_45_TIGHTEN_PCT = 0.04`, `EXPECTED_T1_TRADING_DAYS = 21`
+(T1 expected around day 21 for a working swing setup).
 
 `/api/positions` returns **only** rows with `status ∈ {open, partial_t1}`.
 Closed rows (`target_hit`, `stopped`, `timed_out`, `hypothesis_broken`)

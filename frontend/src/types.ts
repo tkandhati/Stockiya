@@ -330,6 +330,10 @@ export interface PositionsResponse {
   date_ist: string
   count: number
   positions: Position[]
+  // 2026-07-18 — surfaced from middleware so the UI can render a visible
+  // "synthetic data, do not trade" banner. Optional here for forward-
+  // compatibility with older backend builds that don't set the field.
+  demo_mode?: boolean
 }
 
 // Closest-to-firing empty-state panel: one tabbed panel replaces the old

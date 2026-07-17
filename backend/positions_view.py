@@ -51,6 +51,22 @@ def _add_trading_days(start: date, n: int) -> date:
     return cur
 
 
+def _roll_forward_to_weekday(d: date) -> date:
+    """Return d itself if it's Mon-Fri; else the next Monday.
+
+    2026-07-18 display-honesty fix: `time_stops.day_45/90/180` are computed as
+    `entry_d + timedelta(days=N)` (calendar-day arithmetic — matches the
+    enforcement math in `_action_for`, which also uses calendar days). But
+    when the resulting date lands on Sat/Sun, showing "day 45 = Sunday"
+    is confusing for a market app. We keep the ENFORCEMENT semantics
+    intact and only shift the DISPLAY forward to the next Monday. NSE
+    trading holidays are still not modelled here (parked idea G)."""
+    if d.weekday() < 5:
+        return d
+    shift = 7 - d.weekday()          # Sat (5) -> +2, Sun (6) -> +1
+    return d + timedelta(days=shift)
+
+
 def _trading_days_between(a: date, b: date) -> int:
     """Count weekdays in (a, b]. Negative if b < a."""
     if b < a:
@@ -435,9 +451,18 @@ def list_active_positions(
             "action_note": action_note,
             "new_stop": new_stop,
             "time_stops": {
-                "day_45": (entry_d + timedelta(days=DAY_45)).isoformat(),
-                "day_90": (entry_d + timedelta(days=DAY_90)).isoformat(),
-                "day_180": (entry_d + timedelta(days=DAY_180)).isoformat(),
+                # Display-rolled to next weekday when the raw calendar date
+                # would land on Sat/Sun. Enforcement in `_action_for` still
+                # uses raw calendar days via `days_held` — this is display-only.
+                "day_45": _roll_forward_to_weekday(
+                    entry_d + timedelta(days=DAY_45)
+                ).isoformat(),
+                "day_90": _roll_forward_to_weekday(
+                    entry_d + timedelta(days=DAY_90)
+                ).isoformat(),
+                "day_180": _roll_forward_to_weekday(
+                    entry_d + timedelta(days=DAY_180)
+                ).isoformat(),
             },
             # ---- Volume-based dynamic horizon (new) ----
             # `end_date` is the EFFECTIVE end date (recomputed from the

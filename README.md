@@ -2,7 +2,9 @@
 
 > **Don't invent. Follow the institutions. Enter early, exit early — on volume alone.**
 
-Local web app that surfaces up to **3 Indian (Nifty 100) stock picks per day** for a 3–6 month swing hold. Pure volume strategy: picks are stocks where **institutions are visibly building a Wyckoff accumulation base and today's tape confirms it**. Deterministic, no LLM, RL-ready.
+Local web app that surfaces up to **3 Indian (Nifty 100) stock picks per day** for a **swing hold — 3 weeks to 3 months typical, up to 6 months for runners**. Pure volume strategy: picks are stocks where **institutions are visibly building a Wyckoff accumulation base and today's tape confirms it**. Deterministic, no LLM, RL-ready.
+
+> **Honest holding-time expectation.** T1 (+8%) is expected around day 21 (~3 weeks) for a working setup. Median full lifecycle is 3-5 weeks to T1, then 1-3 more months to T2 or exit. Day-180 is the outer hard cap (not a target). Losers exit inside 1-15 sessions on stop or trajectory flip.
 
 > Educational use only. **Not financial advice.**
 

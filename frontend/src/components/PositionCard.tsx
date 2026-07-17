@@ -65,7 +65,7 @@ const ACTION_META: Record<PositionAction, {
     icon: <Clock className="h-4 w-4" />,
   },
   exit_final: {
-    label: 'Day-180 final exit',
+    label: 'Day-180 hard cap',
     tone: 'rose',
     icon: <AlertCircle className="h-4 w-4" />,
   },
@@ -230,17 +230,29 @@ export function PositionCard({ position: p }: { position: Position }) {
           </p>
         )}
 
-        {/* Time-stop dates + position size */}
+        {/* Time-stop dates + position size.
+            Labels: d45 = stop-tighten milestone; d90 = give-up if T1 never
+            hit; d180 = outer hard cap, not a target. Typical swing hold is
+            3 weeks to 3 months — day-180 catches the runner tail. */}
         <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-slate-500">
-          <span>d45 {p.time_stops.day_45}</span>
-          <span>· d90 {p.time_stops.day_90}</span>
-          <span>· d180 {p.time_stops.day_180}</span>
+          <span title="Day-45: stop tightens to entry −4% if T1 not hit">
+            d45 {p.time_stops.day_45}
+          </span>
+          <span title="Day-90: give up if T1 never hit — capital freed">
+            · d90 {p.time_stops.day_90}
+          </span>
+          <span title="Day-180: outer hard cap (not a target). Median winners exit far earlier.">
+            · d180 {p.time_stops.day_180}
+          </span>
           <span className="ml-auto inline-flex items-center gap-1">
             <TrendingUp className="h-3 w-3" />
             {p.shares_total.toLocaleString('en-IN')} sh
           </span>
           <ArrowUpRight className="h-3.5 w-3.5 text-slate-400 transition group-hover:text-slate-700" />
         </div>
+        <p className="mt-1 text-[10px] italic text-slate-400">
+          Typical swing hold: 3 weeks to 3 months. Day-180 is the outer hard cap, not a target.
+        </p>
 
         {p.headline && (
           <p className="mt-3 border-t border-slate-100 pt-2 text-[11px] italic text-slate-500">

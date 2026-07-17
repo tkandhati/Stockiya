@@ -371,9 +371,9 @@ Every scoring stage reads from it; nothing is recomputed.
 
 All indicators fall into four groups:
 
-### Group A — Long-term lens (3–6 month horizon)
+### Group A — Long-term lens (90–180 day accumulation window)
 
-These answer: *"Have institutions been accumulating for months?"*
+These answer: *"Have institutions been accumulating for months?"* — 90–180 days is the **admission-evidence window**, not the intended hold duration (which is 3-week to 3-month swing; see PRINCIPLES.md §1).
 
 | Indicator | Window | Formula summary | Why it matters |
 |-----------|--------|-----------------|----------------|
@@ -700,7 +700,7 @@ For each selected ticker, this stage builds the user-facing pick object:
 
 ```
 best_buy_at  = current_price × 0.98    (2% pullback entry zone)
-sell_target  = best_buy_at  × 1.20    (+20% target over 3–6 months)
+sell_target  = best_buy_at  × 1.20    (+20% swing target — median winners hit within 3-8 weeks; day-180 hard cap otherwise)
 stop_loss    = best_buy_at  × 0.90    (−10% hard stop)
 upside_pct   = (sell_target / current - 1) × 100
 downside_pct = (stop_loss   / current - 1) × 100

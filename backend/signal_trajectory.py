@@ -97,15 +97,38 @@ HEALING_GRACE_TRADING_DAYS: int = 10
 # fires strictly earlier than B2, only for BR-triggered picks, and only
 # inside the small window where a genuine breakout must hold its level.
 #
+# 2026-07-18 anti-whipsaw refit — three tightenings, together stopping the
+# day-1 flip pattern (see DIVISLAB conversation):
+#
+#   (a) FAILED_BR_MIN_TRADING_DAYS = 1
+#       The check is DISARMED on the entry session itself (day 0).
+#       A pick admitted today cannot flip on the same-day tape — the
+#       breakout hasn't had a session to be "held" or "failed" yet.
+#
+#   (b) FAILED_BR_VOLUME_MULT = 1.5 (up from 1.0)
+#       Admission required 1.3x ADV50 to enter. Exit on a mere 1.0x pullback
+#       was easier to trip than admission — asymmetric in the wrong direction.
+#       1.5x means real supply, not average-day noise.
+#
+#   (c) FAILED_BR_CLOSE_BUFFER = 0.99
+#       Close must be < resistance × 0.99 (a full 1% back inside the base),
+#       not any tick below the level. Prevents a single tick of intrabar
+#       jitter from flipping a still-holding breakout.
+#
 # Fix points:
-#     FAILED_BR_WINDOW_TRADING_DAYS : session count from entry inside which
-#                                     the rule is armed (default 5)
+#     FAILED_BR_WINDOW_TRADING_DAYS : upper session bound (default 5)
+#     FAILED_BR_MIN_TRADING_DAYS    : lower session bound — armed at day N+
+#                                     (default 1 — day-0 entry cannot flip)
 #     FAILED_BR_VOLUME_MULT         : today's volume / adv50 threshold for
-#                                     "heavy" selling (default 1.0)
+#                                     "heavy" selling (default 1.5, was 1.0)
+#     FAILED_BR_CLOSE_BUFFER        : close must be < resistance*this to trip
+#                                     (default 0.99 — 1% buffer below level)
 # --------------------------------------------------------------------------- #
 
 FAILED_BR_WINDOW_TRADING_DAYS: int = 5
-FAILED_BR_VOLUME_MULT: float = 1.0
+FAILED_BR_MIN_TRADING_DAYS: int = 1
+FAILED_BR_VOLUME_MULT: float = 1.5
+FAILED_BR_CLOSE_BUFFER: float = 0.99
 
 
 # Order matters: worst state wins in aggregation.
@@ -361,11 +384,19 @@ def _classify_failed_breakout(
         return "unknown"
     if current_adv50 <= 0:
         return "unknown"
+    # Windowed rule: armed only inside [MIN, WINDOW] trading sessions from
+    # entry. MIN=1 means day-0 (entry session) cannot flip — the breakout
+    # hasn't had a session to be "held" or "failed" yet.
+    if trading_days_since_entry < FAILED_BR_MIN_TRADING_DAYS:
+        return "unknown"
     if trading_days_since_entry > FAILED_BR_WINDOW_TRADING_DAYS:
         return "unknown"
-    if trading_days_since_entry < 0:
-        return "unknown"
-    if current_close < resistance_20d_at_entry and (
+    # Close must be a full BUFFER below resistance (default 1%), not any tick
+    # below — prevents intrabar jitter from tripping the flip. Volume must
+    # exceed the anti-whipsaw multiplier (default 1.5x ADV, up from 1.0x),
+    # so a real supply signal is required, not average-day churn.
+    close_trip_level = resistance_20d_at_entry * FAILED_BR_CLOSE_BUFFER
+    if current_close < close_trip_level and (
         current_volume >= FAILED_BR_VOLUME_MULT * current_adv50
     ):
         return "flipped"
@@ -597,15 +628,18 @@ def _fmt_failed_breakout(
 ) -> str:
     """Human-readable description of the B1.5 micro-stop indicator."""
     if state == "flipped" and resistance and close and volume and adv50:
+        trip_level = resistance * FAILED_BR_CLOSE_BUFFER
         return (
-            f"Failed breakout on day {days}: close {close:.2f} < 20d high "
-            f"{resistance:.2f} on {volume/adv50:.2f}x ADV50 "
+            f"Failed breakout on day {days}: close {close:.2f} < "
+            f"{trip_level:.2f} (20d high {resistance:.2f} × "
+            f"{FAILED_BR_CLOSE_BUFFER:.2f}) on {volume/adv50:.2f}x ADV50 "
             f"(>= {FAILED_BR_VOLUME_MULT:.2f}x). Exit at next open."
         )
     if resistance and close:
         return (
             f"Breakout holding above 20d high {resistance:.2f} "
-            f"(close {close:.2f}) — micro-stop armed through day "
+            f"(close {close:.2f}) — micro-stop armed day "
+            f"{FAILED_BR_MIN_TRADING_DAYS} through day "
             f"{FAILED_BR_WINDOW_TRADING_DAYS}."
         )
     return "Failed-breakout micro-stop: inputs unavailable."

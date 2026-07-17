@@ -18,7 +18,7 @@ Volume is the only signal that cannot be faked. Institutions cannot enter or exi
 
 We scan **Nifty 100** daily after market close. We require the **market regime** to be on — NIFTY 100 above its 50-day moving average — before any buy alert. For each ticker we apply the **Wyckoff-VPA spine**: detect an accumulation base (Phases A–D), require today's bar to fire a Volume-Spread-Analysis confirmation (Sign-of-Strength, no-supply test, or pocket pivot), and verify price is holding its **anchored VWAP** from the base low. Structural preconditions are **scored, not hard-gated**, so a strong setup with one slightly-loose sub-check still qualifies; only the trigger bar and hard rejects are binary. Survivors are ranked by **confirmation strength** — the pick with the most independent corroborating signals is #1. Held picks are re-scanned daily for **early volume-based exit signals** (OBV divergence, churning, distribution-day count, anchored-VWAP break) so we drop as early as we entered.
 
-The intended holding period is **3–6 months** (T+90 to T+180 outcome horizons in the trace).
+The intended holding pattern is a **swing hold — 3 weeks to 3 months typical, up to 6 months for runners**. T1 (+8%) is expected around day 21 (~3 weeks) for a working setup. Median winner takes 3-5 weeks to T1 and another 1-3 months to T2 or exit; losers exit inside 1-15 sessions on stop or trajectory flip. Day-180 is the **outer hard cap** (not a target). T+90 and T+180 outcome horizons in the trace are payoff-measurement points for label maturity, not intended hold durations.
 
 ---
 
@@ -167,10 +167,10 @@ existing threshold.
 
 | Day since entry | Action |
 |---|---|
-| 0–45 | Hold normally |
+| 0–45 | Hold normally (swing lane — median winner hits T1 around day 21) |
 | 45+, T1 not hit | Tighten stop to entry − 0.5R (bank partial progress) |
 | 90+, T1 not hit | Exit at market (capital frozen is opportunity cost) |
-| 90+, T1 hit | Keep T2 leg open up to day 180, then unconditional exit |
+| 90+, T1 hit | Keep T2 leg open until day 180 hard cap (outer wall, not target) |
 
 Combined with §5 exit-watch, "less-risky profit" means **banking 1R early on price, and exiting the whole position early on volume**.
 

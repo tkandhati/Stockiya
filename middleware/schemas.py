@@ -336,6 +336,10 @@ class PositionsResponse(BaseModel):
     date_ist: str
     count: int
     positions: list[Position] = []
+    # 2026-07-18 — surface DEMO_MODE on the positions payload so the UI can
+    # render a "synthetic data, do not trade" banner on every card. Matches
+    # the flag already present on PicksResponse and StockDetail.
+    demo_mode: bool = False
 
 
 class TakePositionRequest(BaseModel):

@@ -319,7 +319,8 @@ export function BacktestPage() {
           <p className="mt-1 text-sm text-slate-700">
             Replay the live picker against history. See what would have been
             alerted, why each rejection happened, and how the trade would have
-            unfolded over the holding period.
+            unfolded over the swing hold (3 weeks to 3 months typical;
+            day-180 outer hard cap).
           </p>
         </div>
         <Link
@@ -512,9 +513,10 @@ export function BacktestPage() {
 
         <div className="mt-5 flex flex-wrap items-center justify-between gap-3">
           <p className="text-xs text-slate-500">
-            Exits governed by the strategy ladder — T1 +8% (sell 50%) · T2 +16%
-            (sell rest) · stop −8% · day-45 tighten · day-90 hard exit · day-180
-            final. Each pick below shows its own expected T1/T2 horizon.
+            Exits governed by the strategy ladder — T1 +8% (sell 50%, ~day 21
+            for a working setup) · T2 +16% (sell rest) · stop −8% · day-45
+            tighten · day-90 give-up if T1 never hit · day-180 outer hard cap
+            (not a target). Each pick below shows its own expected T1/T2 horizon.
           </p>
           <button
             type="submit"

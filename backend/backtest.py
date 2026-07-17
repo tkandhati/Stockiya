@@ -59,7 +59,9 @@ MIN_AS_OF = _date(2022, 1, 1)
 # Default lookback for the BACKTEST fetch — needs history for the stages
 # (>=200 bars for MA200) AND enough cushion forward for the hold window.
 DEFAULT_LOOKBACK_DAYS = 730
-DEFAULT_HOLD_DAYS = 90        # matches PRINCIPLES.md "3-6 month hold" cadence
+DEFAULT_HOLD_DAYS = 90        # swing lane — median winner cadence; ~3-month
+                              # forward-walk window per PRINCIPLES.md §1.
+                              # Day-180 is the outer hard cap, not a target.
 DEFAULT_TOP_N = 3
 
 # PRINCIPLES.md Section 3 — fixed risk math, never tuned.

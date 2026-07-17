@@ -266,8 +266,11 @@ have been analyzed and moved to `WISHLIST.md`.
 
 ## Current Architecture Truth
 
-Stockiya is a deterministic, volume-only Nifty 100 screener for a **3-6 month
-swing hold**. The **design spec** is the Wyckoff-VPA spine described in
+Stockiya is a deterministic, volume-only Nifty 100 screener for a
+**swing hold — 3 weeks to 3 months typical, up to 6 months for runners**.
+Day-180 is the outer hard cap, not a target; the median winner hits T1
+around day 21 and finishes T2 or exits inside 1-3 months from entry.
+The **design spec** is the Wyckoff-VPA spine described in
 PRINCIPLES.md and ARCHITECTURE.md §0-§0.3. The **code as of this commit** runs
 an **intermediate v3 soft-gate composite spine** — Wyckoff-VPA target still
 ahead, but the "5-AND-gates blocks every pick" issue is solved.
