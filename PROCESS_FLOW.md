@@ -22,12 +22,26 @@
 ┌────────────────────────────────────────────────────────────────────────┐
 │  Asia/Kolkata (IST) — once-daily, post-EOD                             │
 ├────────────────────────────────────────────────────────────────────────┤
+│  ENTRY GUARD (weekend)                                                 │
+│  If today is Sat/Sun → log data/traces/no_fire_days.jsonl              │
+│                        (reason=weekend), serve previous active         │
+│                        trading day's picks_<date>.json, return.        │
+│                        NO write, NO portfolio update.                  │
+├────────────────────────────────────────────────────────────────────────┤
 │  16:00      NSE close. Wait 30 min for late prints / corrections.      │
 │  16:30      backend/nightly.py kicks off the run.                      │
 │  16:30–35   [RG] Regime gate. NIFTY 100 50d-MA + ATR20% vol clock.     │
 │             FAIL → write empty picks file. End run.                    │
 │  16:35–17:10  Per-ticker pipeline (U → I → HR → WY → VSA → AVWAP),     │
 │               parallel by thread, over Nifty 100.                      │
+├────────────────────────────────────────────────────────────────────────┤
+│  POST-INGEST GUARD (holiday_no_data)                                   │
+│  If 100 % of tickers failed [I] Ingest → log no_fire_days.jsonl        │
+│                        (reason=holiday_no_data), serve previous        │
+│                        picks_<date>.json, return. NO write.            │
+│  (90–99 % ingest failure = env misconfig, NOT holiday. That path       │
+│   still writes a diagnostic empty-picks file with fix instructions.)   │
+├────────────────────────────────────────────────────────────────────────┤
 │  17:10–12   [RK] Rank survivors, [PS] size, [H] hypothesis, [R] render.│
 │  17:12      data/picks_<date>.json written. /api/picks now serves it.  │
 │  17:15      [EX] Exit-watch scans every open pick in portfolio.csv;    │
@@ -39,11 +53,27 @@
 │  catchup.py scans data/ for the most recent picks file, then runs the  │
 │  pipeline for every missing trading day up to today (with as_of_date   │
 │  set so OHLCV is sliced to that date — no lookahead). Cap: 30 days.    │
+│  Non-trading days are skipped upstream by the two guards above.        │
 └────────────────────────────────────────────────────────────────────────┘
 ```
 
 `POST /api/picks/refresh` allows ad-hoc re-runs on the same EOD bar.
 Intra-day data is **intentionally not consumed** — there is no signal we trust faster than the daily bar.
+
+**Non-trading-day behavior (2026-07-19).** On weekends and any weekday
+where no fresh OHLCV is available (100 % ingest failure — treated as a
+holiday), `run_universe` returns the previous active trading day's
+picks unchanged: **no new file is written** and the portfolio ledger is
+not touched. The middleware surfaces this to the UI by prepending
+*"Showing picks from `<source_date>` — `<today>` is a non-trading day"*
+to the response `message` field. `data/traces/no_fire_days.jsonl` gets
+one row per skip with `reason ∈ {weekend, holiday_no_data,
+data_missing_error}` so `weekly-learn` can tell intentional skips from
+fetch bugs. Implementation lives in `backend/trading_day.py`;
+integration points are `backend/orchestrator.py::run_universe`,
+`middleware/picks.py::{generate_picks,get_or_generate_picks}`, and
+`middleware/main.py::_todays_pick_for`. Full narrative in
+`CHANGELOG.md → 2026-07-19`.
 
 ---
 
@@ -99,6 +129,7 @@ All raw indicator math lives in `backend/indicators.py` as pure functions (no I/
 | `data/learning_events/state.json` | `sliding_window_learn` | Idempotency state — `last_processed_count`, `events_written`, `last_event_ts`. |
 | `data/portfolio.csv` | `[H] Hypothesis` | Append-only ledger: `trace_id, entry_date, entry, stop, T1, T2, shares` |
 | `data/portfolio_weekly.csv` | `weekly.py` | Friday close prices for each open pick |
+| `data/traces/no_fire_days.jsonl` | `trading_day.log_no_fire` | One row per non-trading-day skip. `reason ∈ {weekend, holiday_no_data, data_missing_error}`. Lets `weekly-learn` distinguish intentional skips from fetch bugs. Append-only JSONL. |
 | `data/deals/*.csv` | `block_deals.py` | Cached NSE block + bulk deal CSVs. Aggregator now emits classified fields (`institutional_*`, `has_disclosed_large_client`) alongside legacy totals — tolerant readers preserved. |
 | `test_data/<SYMBOL>.csv` *(manual drop-zone)* | user | Raw NSE historical CSVs (`DATE, SERIES, OPEN, HIGH, LOW, PREV. CLOSE, LTP, CLOSE, VWAP, 52W H, 52W L, VOLUME, VALUE, NO. OF TRADES`) used for offline pipeline testing when the firewall blocks live fetches. See `test_data/README.md`. |
 

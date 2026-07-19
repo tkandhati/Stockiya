@@ -344,7 +344,25 @@ Per-extension gates:
 
 ---
 
-## Weekend / holiday no-fire behavior
+## Weekend / holiday no-fire behavior — SHIPPED 2026-07-19
+
+**Date parked:** 2026-07-18
+**Date shipped:** 2026-07-19 (see `CHANGELOG.md → 2026-07-19`)
+**Status:** SHIPPED. Guard implemented independently of pillar G (NSE calendar); "100% ingest fail = holiday" heuristic covers the ask without needing a static calendar file. NSE calendar (pillar G) remains parked for the *outcome-scoring / calendar-arithmetic* side of things — the daily-run guard no longer depends on it.
+
+**What shipped (summary — full narrative in CHANGELOG):**
+
+- New module `backend/trading_day.py` — pure helpers: `classify_pre_pipeline` (weekend), `classify_post_ingest` (100% ingest fail = holiday), `latest_picks_file_on_or_before`, `load_previous_picks`, `log_no_fire`.
+- `backend/orchestrator.py::run_universe` — weekend guard before Phase 0; holiday guard after ingest counts. Both leave the trading-day happy path byte-identical.
+- `middleware/picks.py` — `generate_picks` guards the write with `response["date"] == today`; `get_or_generate_picks` short-circuits weekends without invoking the pipeline.
+- `middleware/main.py::_todays_pick_for` — falls through to previous active day so the stock-detail "Pick Today" pill stays consistent with `/api/picks`.
+- New trace file `data/traces/no_fire_days.jsonl` — one row per skip, `reason ∈ {weekend, holiday_no_data, data_missing_error}`.
+
+**Everything below is the original 2026-07-18 parked design, preserved for audit.**
+
+---
+
+## Weekend / holiday no-fire behavior — original parked design (2026-07-18)
 
 **Date parked:** 2026-07-18
 **Status:** Deferred behavior change to daily pipeline. Small scope; wants to piggyback on the NSE-calendar work already parked as pillar G above.

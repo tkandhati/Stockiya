@@ -1,11 +1,75 @@
 # Agent Handoff
 
-Last updated: 2026-07-17
+Last updated: 2026-07-19
 
 For proposals that have been analyzed but not shipped, see `WISHLIST.md`.
 For ideas parked pending trace evidence, see `ideas.md`.
 
-## Latest Change (2026-07-17, commit `925a49a`) — Balanced-holding foundation
+## Latest Change (2026-07-19) — Weekend / holiday no-fire guard
+
+Small, focused behavior change. On non-trading days the pipeline no
+longer writes `data/picks_<date>.json` or touches the portfolio ledger;
+the middleware serves the previous active trading day's picks instead.
+Trading-day happy path is byte-identical. Full narrative in
+`CHANGELOG.md → 2026-07-19`. Summary for the next agent:
+
+- **New module `backend/trading_day.py`** — pure helpers:
+  `classify_pre_pipeline` (weekend / Sat-Sun), `classify_post_ingest`
+  (holiday from 100% ingest fail), `latest_picks_file_on_or_before`,
+  `load_previous_picks` (augments `message` field, on-disk file
+  untouched), `log_no_fire`.
+- **`backend/orchestrator.py::run_universe`** — two guards:
+  entry-weekend before Phase 0; post-ingest-holiday after ingest
+  counts. Both return the previous picks file unchanged when they
+  fire; existing 90-99% "data misconfigured" branch preserved.
+- **`middleware/picks.py`** — `generate_picks` guards the write with
+  `response["date"] == today`; `get_or_generate_picks` short-circuits
+  weekends without invoking the pipeline.
+- **`middleware/main.py::_todays_pick_for`** — falls through to
+  previous active day so the stock-detail "Pick Today" pill stays
+  consistent with `/api/picks`.
+- **New trace file** — `data/traces/no_fire_days.jsonl`. One row
+  per skip with `reason ∈ {weekend, holiday_no_data, data_missing_error}`.
+  Distinguishes intentional skips from fetch bugs.
+
+**Deferred (still parked in `ideas.md`):**
+
+- Full NSE holiday calendar (pillar G under Balanced-holding block).
+  Not needed for this change — "100% ingest fail = holiday" is the
+  honest fallback and requires no calendar maintenance.
+- `weekly.py` Friday-close guard — Fridays are trading days by
+  construction; Friday-holiday edge bundled with pillar G.
+- Multi-window volume accumulation-strength label (2026-07-18 parked
+  in `ideas.md`) — user explicitly said current picks are good;
+  additive-annotation v1 waits until v1's continuous scores can be
+  logged to traces without disturbing the still-settling anti-whipsaw
+  refit.
+
+**Test the guard by hand:**
+
+```bash
+# On any day, verify the helpers directly
+python -c "from backend import trading_day as td; \
+  print(td.classify_pre_pipeline('2026-07-19'))"       # Sunday → non-trading
+python -c "from backend import trading_day as td; \
+  print(td.classify_pre_pipeline('2026-07-17'))"       # Friday → trading
+```
+
+**Watch for regressions:**
+
+- If a trading-day pipeline run stops writing `picks_<today>.json`,
+  check whether ingest is failing on 100% of tickers (upstream data
+  problem, guard is doing its job). Watch the `no_fire_days.jsonl`
+  tail — if it fills with `holiday_no_data` on real trading days,
+  the data source is broken.
+- The `catchup.py` module has its own local `is_trading_day(d: date)`
+  helper (weekday-only). It agrees with the new module's weekend
+  logic today. If you wire the NSE holiday calendar later (pillar G),
+  update **both** places or centralize on `trading_day.py`.
+
+---
+
+## Previous Change (2026-07-17, commit `925a49a`) — Balanced-holding foundation
 
 Four small correctness/labeling fixes and one auto-invocation hook. Full
 narrative in `CHANGELOG.md → 2026-07-17 (later-3)`. Summary for the next

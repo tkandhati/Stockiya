@@ -1,5 +1,118 @@
 # Changelog
 
+## 2026-07-19 — Weekend / holiday no-fire guard
+
+Ships the behavior parked yesterday in `ideas.md → Weekend / holiday
+no-fire behavior`. On non-trading days the pipeline no longer writes
+`data/picks_<date>.json` or touches the portfolio ledger; the middleware
+serves the previous active trading day's picks instead. Motivated by
+the user ask: *"on saturday and sunday it should not create a file and
+picks also holidays (when no data found). should show previous active
+day."*
+
+**1. New module — `backend/trading_day.py`**
+
+Pure helpers, no I/O beyond filesystem enumeration and the append-only
+no-fire log. Safe to import from stages / middleware / scripts.
+
+- `classify_pre_pipeline(date_iso) → TradingDayVerdict` — weekend
+  detection (Sat / Sun via `weekday() >= 5`).
+- `classify_post_ingest(date_iso, ingest_total, ingest_failed) →
+  TradingDayVerdict` — holiday detection from 100% ingest failure
+  (no fresh OHLCV for anyone → likely a market holiday / bhavcopy
+  not yet published).
+- `latest_picks_file_on_or_before(target_date) → Optional[Path]` —
+  walks `data/` for the newest `picks_YYYY-MM-DD.json` at or before
+  target. Filesystem-only; does not read file contents.
+- `load_previous_picks(target_date) → Optional[dict]` — reads that
+  file and augments the `message` field with "Showing picks from
+  <source_date> — <today> is a non-trading day". On-disk file is
+  never modified.
+- `log_no_fire(verdict, extra)` — appends one row to
+  `data/traces/no_fire_days.jsonl` with `reason ∈ {weekend,
+  holiday_no_data, data_missing_error}` so `weekly-learn` can tell
+  intentional skips from bugs, and pick-precision stats don't count
+  skipped days as misses.
+
+**2. Wired in `backend/orchestrator.py::run_universe`**
+
+Two guards, both leaving the trading-day happy path byte-identical:
+
+- **Entry (weekend):** before Phase 0 regime check. If Sat / Sun →
+  log `no_fire_days.jsonl` row with `reason=weekend`, return
+  previous picks file unchanged (or an empty response if no prior
+  file exists). No pipeline run, no `picks_<today>.json` write, no
+  portfolio update, no daily-diagnostic snapshot.
+- **Post-ingest (holiday):** immediately after ingest-failure counts
+  are computed. If `ingest_failed == ingest_total` (100% failure) →
+  log row with `reason=holiday_no_data`, return previous file
+  unchanged. The pre-existing **90-99% "data misconfigured"** branch
+  is untouched and still writes a diagnostic empty-picks file with
+  fix instructions — that path is for env-config errors, not
+  holidays, and the operator needs the diagnostic to see the fix.
+
+**3. Wired in `middleware/picks.py`**
+
+- `generate_picks` only calls `write_picks(today, response)` when
+  `response["date"] == today`. When orchestrator returns a previous
+  day's picks (weekend / holiday), we no longer overwrite today's
+  filename slot with stale-date content — the archive stays honest.
+- `get_or_generate_picks` short-circuits weekends without invoking
+  the pipeline at all: reads the previous file directly. Avoids
+  spinning up the fetch layer on Sundays.
+
+**4. Wired in `middleware/main.py::_todays_pick_for`**
+
+Falls through to the previous active trading day when today's picks
+file doesn't exist, so the stock-detail page's "Pick Today" pill
+stays consistent with what `/api/picks` served.
+
+**5. Behavior matrix**
+
+| Day type | picks_<today>.json | UI shows |
+|---|---|---|
+| Trading day + fresh data | Written | Today's picks (unchanged behavior) |
+| Sat / Sun | **Not written** | Previous file + "Showing picks from <date> — <today> is a non-trading day" |
+| Holiday (100% ingest fail) | **Not written** | Same as above |
+| 90-99% ingest fail (misconfig) | Written (diagnostic) | Existing misconfig fix-instruction message (unchanged) |
+
+**Not touched (out of scope, deferred)**
+
+- Full NSE holiday calendar (parked as pillar G in `ideas.md`
+  → Balanced-holding block). The "100% ingest fail = holiday"
+  heuristic honestly covers the user's ask without needing a
+  calendar file — the fact that bhavcopy didn't publish IS the
+  holiday signal, at zero calendar-maintenance cost.
+- `backend/weekly.py` (Friday close snapshot) — Fridays are
+  trading days by construction; NSE-Friday holidays are rare.
+  Bundled with pillar G when the calendar lands.
+- Outcome scoring, sliding-window learn — run on T+90 / T+180
+  lag, unaffected by the daily-run gate.
+
+**Verified**
+
+AST-parse on all four modified files (`trading_day.py`, `orchestrator.py`,
+`picks.py`, `main.py`). Unit-level checks on the guard helpers:
+weekend → `is_trading_day=False, reason=weekend`; weekday with 100%
+ingest fail → `holiday_no_data`; weekday with 90% ingest fail →
+`is_trading_day=True` (misconfig, not holiday). `latest_picks_file_on_or_before`
+against real `data/` correctly returns the newest matching file and
+`None` when nothing predates the target.
+
+**Fix-points**
+
+- Weekend definition: `weekday() >= 5` in
+  `backend/trading_day.py::classify_pre_pipeline` (Sat=5, Sun=6).
+- Holiday threshold: `ingest_failed == ingest_total` in
+  `classify_post_ingest`. Deliberately distinct from the pre-existing
+  90% misconfigured threshold in `orchestrator.py`.
+- No-fire trace: `data/traces/no_fire_days.jsonl` (append-only JSONL).
+- Guard order in `run_universe`: weekend check → Phase 0 (regime)
+  → Phase 1 (ingest) → holiday check. Rest of the chain is
+  unchanged.
+
+---
+
 ## 2026-07-18 — Honesty refit: anti-whipsaw + swing-framing language
 
 Three code fixes + a documentation refit. Motivated by the DIVISLAB.NS
