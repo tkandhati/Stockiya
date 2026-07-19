@@ -218,8 +218,19 @@ def decline_position(pick_id: str) -> PositionsResponse:
 
 
 def _todays_pick_for(symbol: str) -> Pick | None:
+    """Look up the current pick row for `symbol`.
+
+    On non-trading days (weekend / no-data holiday) today's picks file
+    doesn't exist; fall through to the previous active trading day so
+    the detail panel stays consistent with /api/picks, which serves the
+    same previous file. Keeps the "Pick Today" pill honest instead of
+    disappearing on Sundays.
+    """
     today = ist_today_iso()
     cached = read_picks(today)
+    if cached is None:
+        from backend.trading_day import load_previous_picks
+        cached = load_previous_picks(today)
     if not cached:
         return None
     for p in cached.get("picks", []):

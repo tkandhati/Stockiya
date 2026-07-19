@@ -181,3 +181,202 @@ Order roughly matches the user's own change-size ranking (Small → Medium → L
 - **N.** `frontend/src/types.ts` — one union type across the 9 ladder labels and every raw `action`. TypeScript exhaustive-check via `never` on any unknown branch.
 - **O.** `backend/position_sizer.py` new `POSITION_SIZER_MODE` toggle; ATR passed through from `[I] Ingest`.
 - **P.** New module `backend/survival.py`; scikit-survival dependency; trained on outcomes.jsonl v3 with time-to-event columns; endpoint that returns `(t1_low, t1_median, t1_high)` per pick.
+
+---
+
+## Multi-window volume accumulation-strength label
+
+**Date parked:** 2026-07-18
+**Status:** Deferred. User explicitly likes current picks; wants a *purely additive* strength annotation, not a pick-logic change. v1 design agreed conceptually; implementation deferred until we're ready to attach + trace it without disturbing the recent anti-whipsaw / swing-framing refit.
+
+### The narrow idea (v1, additive-only)
+
+Attach a strength label + continuous score to every current pick and open position. Does **not** touch selection, sizing, or exits.
+
+**Metric — signed volume pressure at three aligned windows (20 / 60 / 120 days):**
+
+```
+signed_pressure_W = mean( volume × sign(close − close_prev),  over W days )
+                  ─────────────────────────────────────────────────────────
+                              mean( volume, over W days )
+```
+
+Three readings: `short_pressure` (W=20), `swing_pressure` (W=60), `regime_pressure` (W=120). Sign correction (volume × daily direction) prevents rising-volume-on-falling-price being misread as accumulation — the classic volume-only failure mode.
+
+**Aggregate — equal weights, deliberately not tuned:**
+
+```
+accumulation_strength = mean(short_pressure, swing_pressure, regime_pressure)   # -1..+1
+```
+
+**Label bands (v1 cutoffs, guessed — MUST be re-fit from outcomes before hardening):**
+
+```
+> +0.35        STRONG_ACCUMULATION
++0.20 to +0.35 BUILDING_ACCUMULATION
++0.05 to +0.20 EARLY_ACCUMULATION
+−0.05 to +0.05 NEUTRAL_VOLUME
+−0.20 to −0.05 SOFT_DISTRIBUTION
+< −0.20        DISTRIBUTION_WARNING
+```
+
+**Attachment — additive JSON field on pick + portfolio row:**
+
+```json
+"accumulation": {
+  "strength": 0.31,
+  "label": "BUILDING_ACCUMULATION",
+  "windows": { "short_20": 0.18, "swing_60": 0.42, "regime_120": 0.33 }
+}
+```
+
+Current picks untouched. Reader gains a transparency signal — "which regime is the picker leaning on right now."
+
+### Wider ideas deferred with this
+
+Designed conceptually in the same conversation but deliberately parked until v1's continuous scores have accumulated in traces long enough to validate. Ordered by increasing scope:
+
+**(a) Parallel multi-formula ensemble.** Many independent formulae running in parallel: OBV slopes at 30/90d, CMF 21/60d, ADL slope, up/down-volume ratios at 30/90d, volume dry-up ADV5/ADV50, breakout volume today/ADV50, pocket pivot, MFI trend, price-volume divergence, block/bulk net-buy when data available. Each emits standardized JSON with continuous `score`, `direction`, and per-signal `label` (`ACCUMULATION_EVIDENCE`, `BUYING_PRESSURE`, `SUPPLY_DRYING`, `DEMAND_CONFIRMATION`).
+
+**(b) Signal-label vs trade-label separation.** No single formula creates a `BUY_ALERT`. Formulae emit **signal labels** (evidence type). A composite emits **trade labels** (`BUY_ALERT / WATCHLIST_READY / EARLY_SIGNAL / NEAR_MISS / REJECTED / ALREADY_OPEN`). Signal labels never leak into action decisions.
+
+**(c) Composite ensemble structure (weights unspecified in code):**
+
+```
+long_term_score    = weighted sum of long-horizon formulae (OBV 90d, up/down vol 90d, CMF 60d, ADL, block-deal)
+setup_score        = weighted sum of setup formulae (dry-up, OBV divergence, CMF 21d, tight-base)
+trigger_score      = weighted sum of trigger formulae (breakout volume, upper-third close, pocket pivot, resistance break)
+accumulation_score = weighted sum of (long_term_score, setup_score, trigger_score)
+```
+
+**Weights ship equal / z-score-sum for v1. NEVER hand-edited.** v2 weights come from a fitted regularized logistic against `outcomes.jsonl` and are promoted with a `label_schema_version` bump.
+
+**(d) Horizon-tagged trade labels:**
+
+```
+SCALP    1-3 days       V1/V20 spike + ATR expansion         ATR trail / day 3
+BURST    1-10 days      V5/V20 > 1.5, close > SMA20          SMA20 break OR day 10
+ACCUM    2-6 weeks      V20/V60 > 1.2 sustained, z-60 < 80   SMA60 break AND V20/V60 rolls
+REGIME   2-6 months     V50/V100 > 1.15 for 3+ wks           SMA120 break AND V50/V100 rolls
+```
+
+**(e) Grade A/B/C by window agreement:**
+
+```
+Grade A: 3-of-3 aligned → auto-enter, full size
+Grade B: 2-of-3 aligned → auto-enter, half size
+Grade C: 1-of-3 aligned → watchlist only, shown but not sized
+```
+
+Grading controls sizing/visibility, **never filters signals to zero** — a slow day shows mostly Grade C so the app never goes blank.
+
+**(f) Per-ticker state machine, no overlapping holds:**
+
+```
+[flat] ─BURST─► [BURST held] ─promote─► [ACCUM held] ─promote─► [REGIME held]
+```
+
+- One active position per ticker. BURST signal on an ACCUM-held ticker is confirmation, not a new fill.
+- **Promotion = upgrade in place.** Same entry date, new horizon label, new exit rule. No second position, no overlapping dates.
+- **Demotion = relax, don't exit.** REGIME losing 120d but keeping 60d drops to ACCUM. Full exit only when all applicable windows fail.
+- **Cooldown (~5-10 sessions)** after full exit to kill re-fire whipsaws.
+
+**(g) Store-everything learning surface.** Every formula computes a continuous score on **every stock every day**, including for `REJECTED` candidates. Batch/candidate table:
+
+```
+batch_id, candidate_id, symbol, selected, rank, decision_label, accumulation_label,
+accumulation_score, per_formula_outputs, failed_gate
+```
+
+Enables `weekly-learn` to answer "this rejected stock ran 20% — which formula saw it, which gate blocked it." Rejects label the app; enriches learning.
+
+**(h) Fitted-weight cycle (v1 → v2).** After 4-8 weeks of accumulated traces, `weekly-learn` fits weights via regularized logistic against realized outcomes. Weights versioned (`accumulation_weights_v2.json`), never hand-edited. v1 (equal weights) stays for A/B comparison for one more cycle before retiring.
+
+### Why parked
+
+1. **User explicitly said current picks are good; only wants a strength annotation.** Anything beyond v1 is a redesign the user did not ask for.
+2. **v1 has to earn its keep first.** The wider ensemble only pays off if the boring baseline shows the *shape* of the signal is useful. If signed-pressure-at-three-windows correlates with nothing in the traces, adding 10 more formulae won't fix it.
+3. **Fitted weights need trace history.** Zero traces of the new metric exist today. Even v1 needs 4-8 weeks of continuous logging before weights (or bands) can be honestly re-fit. Anything beyond v1 requires *more* trace history, sequentially.
+4. **Recent anti-whipsaw / swing-framing work is still settling.** Layering a new labeling system on top risks obscuring which recent fix moved the needle. Let the current refit prove itself first (per the guiding principle at the top of this file).
+5. **Threshold-overfitting risk grows with formula count.** Six formulae × per-formula thresholds = dozens of tuning knobs. v1 has three windows, one metric, one aggregate — the smallest defensible surface.
+
+### Signal to revisit — v1
+
+Ship v1 (the narrow signed-pressure label) when *all* of the following are true:
+
+- [ ] There is a concrete moment the user wants transparency on pick strength (portfolio review, weekly digest) and current output doesn't provide it.
+- [ ] Trace-writing plumbing can capture `accumulation.strength` + per-window readings on every pick + every portfolio row *without* touching selection logic.
+- [ ] Bands ship as **loggable, not hard-gated** — every pick carries the continuous `strength` value in traces so future band re-fits are honest.
+
+### Signal to revisit — extensions (a)-(h)
+
+Revisit *any* extension only after:
+- [ ] v1 has ≥ 6-8 weeks of trace history AND
+- [ ] `weekly-learn` shows the v1 `strength` value has non-trivial correlation with realized T+30 / T+90 outcomes on picks. If v1 shows no signal, the fuller ensemble is a bet against evidence — kill or redesign, don't expand.
+
+Per-extension gates:
+- **(a) parallel formulae** — after v1 shows signal AND user needs finer-grained accumulation *types* the single metric can't distinguish (quiet vs breakout).
+- **(f) state machine** — after v1's readings on portfolio rows show measurable churn cost from re-fires / overlaps.
+- **(g) rejected-candidate storage** — earlier is better; independent of the rest. Cheap unlock for (h).
+- **(h) fitted weights** — never before ≥ 200 matured setups per horizon in `outcomes.jsonl` (same prerequisite as pillar C in the precision-first block above; same selection-bias trap — must include non-selected candidates).
+
+### Fix-points if v1 ever ships
+
+- **Metric.** New indicator `signed_volume_pressure_windowed(prices, volumes, window)` in `backend/indicators.py`. Pure function, no I/O.
+- **Aggregator.** New helper `accumulation_strength(short, swing, regime)` in `backend/indicators.py` returning `{ strength, label, windows }`.
+- **Attachment on picks.** `backend/pipeline.py` (or the pick-emitter) appends the `accumulation` dict to each pick row *after* selection. Does NOT gate selection.
+- **Attachment on portfolio.** `backend/positions_view.py` recomputes strength daily from the same OHLCV cache used by `[I] Ingest`; writes to the portfolio row's advisory column. **Never** used in `_action_for` decisioning in v1.
+- **Trace key.** New column `accumulation_strength_v1` in `data/traces/outcomes.jsonl` and per-ticker traces. Continuous value only — do NOT store the label alone (bands change; raw score is the ground truth).
+- **Config.** `config/accumulation_windows.json` = `{"short": 20, "swing": 60, "regime": 120}`. `config/accumulation_bands_v1.json` = the guessed cutoffs above. Both loaded once at startup; band file is versioned so v2 (fitted) can supersede without deleting v1.
+- **Frontend.** `frontend/src/types.ts` gains an optional `accumulation` field on pick/position types. UI shows label + strength pill under existing pick card. Optional at first — no breakage if absent.
+- **Reject-set logging (extension (g), independent of the rest).** `pipeline.py` writes `data/rejected_candidates.jsonl` with each non-selected ticker's `accumulation.strength`. Cheap, unlocks (h) later.
+
+### Fix-points if extensions (a)-(h) ever ship
+
+- **(a) parallel formulae.** New module `backend/accumulation_formulae.py`; one function per formula, standardized JSON schema. Registry pattern so `weekly-learn` can enumerate them.
+- **(b) signal-vs-trade separation.** New enum `SignalLabel` in `backend/labels.py` distinct from existing `TradeLabel`. Composite lives in `backend/decide.py::decide_trade_label(signals) -> TradeLabel`. Formulae never import `TradeLabel`.
+- **(c) composite structure.** `backend/accumulation_composite.py` — three sub-scores + top-level combine. Weights loaded from `config/accumulation_weights_v{n}.json`. v1 = equal.
+- **(d) horizon-tagged labels.** Extend `backend/action_labels.py` (or new `backend/horizon_labels.py`) with the four-tier taxonomy + exit rules.
+- **(e) grade A/B/C.** New function `grade_pick(pick) -> "A"|"B"|"C"` in `backend/decide.py`. Sizing hook in `backend/position_sizer.py` scales full/half/none.
+- **(f) state machine.** New module `backend/ticker_state.py` with `advance(current_state, new_signals, cooldown_days) -> next_state`. Persisted per ticker in `data/ticker_states.csv`.
+- **(g) rejected-candidate storage.** Already listed under v1 fix-points as an independent cheap unlock.
+- **(h) fitted weights.** New branch in `scripts/tune_weights.py` (`--fit=accumulation`) — regularized logistic on stored per-formula outputs vs realized outcomes. Emits `config/accumulation_weights_v{n+1}.json`. Champion-challenger ratchet against v_n. Same selection-bias prerequisite as pillar C above: must include `[HR]`-passers, not just picks.
+
+---
+
+## Weekend / holiday no-fire behavior
+
+**Date parked:** 2026-07-18
+**Status:** Deferred behavior change to daily pipeline. Small scope; wants to piggyback on the NSE-calendar work already parked as pillar G above.
+
+### The idea
+
+On non-trading days (Saturday, Sunday, and NSE holidays), the pipeline should:
+
+1. **Not create a new picks file** (or portfolio snapshot) for that date.
+2. **Show the previous active trading day's output** in whatever UI / weekly digest surfaces the picks.
+3. **Not run outcome scoring** on non-trading days — no fresh bar means no honest evaluation.
+
+Applies uniformly to the daily / weekly / monthly schedulers. Same guard also covers the "data unavailable" case — if a nominally-trading day returns no OHLCV, fall through to previous active day but flag the anomaly (do NOT silently mark it as a holiday).
+
+### Why parked
+
+1. **Depends on NSE trading-calendar (pillar G above).** Without the calendar, "holiday" detection falls back on weekday-only rules — misses NSE-only holidays like Diwali, Republic Day, Mahavir Jayanti, etc. Any solution shipped before G will need re-wiring when G lands.
+2. **Weekend guard is trivial and could ship early** — but honesty says do both together so the calendar wiring is done once, not twice.
+3. **"Data missing" case needs care.** Silent fallback would hide real fetch failures. Guard must distinguish `no_data_intentional` (holiday) from `no_data_error` (fetch failed / source outage) in traces.
+
+### Signal to revisit
+
+Revisit when pillar **G (NSE trading-calendar arithmetic)** is ready to land. Bundle this behavior into the same PR — one calendar wiring, two features earned.
+
+If pillar G is delayed further (e.g., past end of 2026), consider shipping the weekend-only guard standalone as a short-term fix, with an explicit TODO to widen to holidays once G lands.
+
+### Fix-points if it ever ships
+
+- **Guard.** New helper `backend/nse_calendar.py::is_trading_day(date) -> bool` returning `False` for Sat/Sun/holidays. Same module as pillar G.
+- **Pipeline gate.** `backend/pipeline.py` early-returns on non-trading days after logging `no_fire: non-trading day <date>`. No new pick file written. No new portfolio snapshot.
+- **Digest fallback.** Wherever the UI / weekly digest reads latest picks, wrap in `latest_picks_on_or_before(today)` — reads previous trading day's file if today's absent. `backend/portfolio.py` and `middleware/main.py` are the two read sites.
+- **Outcome scoring guard.** `stages/outcome.py` also gates on `is_trading_day` — no forward-return update on non-trading days.
+- **Trace hygiene.** Non-trading-day skips log to `data/traces/no_fire_days.jsonl` with reason `holiday | weekend | data_missing_error`. Distinguishes intentional skips from bugs so `weekly-learn` doesn't count them against pick precision.
+- **Data-missing anomaly.** If a scheduled trading day returns no OHLCV, write `data_missing_error` to `no_fire_days.jsonl` AND surface the previous active day to the UI, but also emit a monitoring alert so a real fetch outage isn't hidden behind the fallback.
+- **Frontend badge.** UI shows a small "showing picks from <prev trading day>" pill on non-trading-day views so the user knows the data isn't stale by accident.

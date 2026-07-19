@@ -45,6 +45,12 @@ from .picks_reconcile import (
 )
 from .picks_diff import attach_change_diffs, attach_pick_history
 from .horizon import estimated_horizon_days
+from .trading_day import (
+    classify_post_ingest,
+    classify_pre_pipeline,
+    load_previous_picks,
+    log_no_fire,
+)
 from .universe import UNIVERSE
 
 # Stages in canonical order — used for the per-gate breakdown log.
@@ -228,6 +234,35 @@ def run_universe(
              today_iso, len(UNIVERSE), top_n, account_value, demo_mode)
     log.info("=" * 76)
 
+    # ---- Non-trading-day guard (weekend) ----
+    # On Sat/Sun the pipeline does NOT write a new picks file and does NOT
+    # touch the portfolio ledger. The middleware serves the previous active
+    # trading day's picks; if none exist, returns an empty response.
+    pre = classify_pre_pipeline(today_iso)
+    if not pre.is_trading_day:
+        log.info("  NON-TRADING DAY (%s %s): skipping pipeline. reason=%s",
+                 pre.weekday, today_iso, pre.reason)
+        log_no_fire(pre)
+        prev = load_previous_picks(today_iso)
+        if prev is not None:
+            log.info("  Serving previous picks from %s (unchanged on disk).",
+                     prev.get("date"))
+            log.info("=" * 76)
+            return prev
+        log.info("  No prior picks file found; returning empty response.")
+        log.info("=" * 76)
+        return {
+            "date": today_iso,
+            "generated_at": datetime.now(IST).isoformat(timespec="seconds"),
+            "source": "pipeline",
+            "demo_mode": demo_mode,
+            "picks": [],
+            "message": (
+                f"{pre.weekday} — non-trading day. "
+                "No prior picks file available yet."
+            ),
+        }
+
     # ---- Phase 0: Market regime gate ----
     log.info("  [Phase 0/4] Market regime gate ...")
     regime = check_regime()
@@ -271,6 +306,40 @@ def run_universe(
             and not r.stage_results["I"].passed)
     )
     data_misconfigured = bool(results) and ingest_failed / len(results) >= 0.90
+
+    # ---- Non-trading-day guard (holiday_no_data) ----
+    # 100% ingest failure = no fresh OHLCV for anyone = treat as a holiday
+    # ("holidays (when no data found)"). Skip file write + portfolio update
+    # and serve the previous active trading day's picks. The 90-99% path
+    # below is preserved for real misconfigurations (writes a diagnostic
+    # file so the operator sees the fix).
+    if bool(results) and ingest_failed == len(results):
+        post = classify_post_ingest(today_iso, len(results), ingest_failed)
+        log.info("  HOLIDAY (no fresh OHLCV for any of %d tickers): skipping.",
+                 len(results))
+        log_no_fire(post, extra={
+            "ingest_total": len(results),
+            "ingest_failed": ingest_failed,
+        })
+        prev = load_previous_picks(today_iso)
+        if prev is not None:
+            log.info("  Serving previous picks from %s (unchanged on disk).",
+                     prev.get("date"))
+            log.info("=" * 76)
+            return prev
+        log.info("  No prior picks file found; returning empty response.")
+        log.info("=" * 76)
+        return {
+            "date": today_iso,
+            "generated_at": datetime.now(IST).isoformat(timespec="seconds"),
+            "source": "pipeline",
+            "demo_mode": demo_mode,
+            "picks": [],
+            "message": (
+                "No fresh OHLCV available today (likely a market holiday). "
+                "No prior picks file available yet."
+            ),
+        }
     if data_misconfigured:
         log.error("=" * 76)
         log.error("  DATA SOURCE MISCONFIGURED  --  %d of %d tickers failed [I] Ingest.",
