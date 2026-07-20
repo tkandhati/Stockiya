@@ -23,7 +23,8 @@ from __future__ import annotations
 
 from typing import Optional
 
-from ..indicators import volume_spike_event
+from ..entry_stage_label import entry_stage_label
+from ..indicators import sma, volume_spike_event
 from ..pipeline import PipelineResult, classify_trigger
 from ..position_sizer import size_position
 from ..signal_trajectory import (
@@ -260,6 +261,59 @@ def build_pick_payload(
         as_of_iso=today_iso,
     )
 
+    # ---- Entry-stage label — advisory metadata that answers "is this pick
+    # pre-breakout, at the pivot, freshly confirmed, or extended?". Never
+    # gates selection; the composite/BR gates still own that decision. Lives
+    # alongside `action_label` (holding lifecycle) and `accumulation_assessment`
+    # (participant evidence). Fix points in backend/entry_stage_label.py.
+    br_features = (br.features or {}) if br else {}
+    br_passed_today_flag = bool(br and br.passed)
+    break_pct_val = br_features.get("break_pct")
+
+    close_vs_sma20_val: Optional[float] = None
+    vol_ratio_10_50_val: Optional[float] = None
+    tightness_25bar_val: Optional[float] = None
+    df = result.ohlcv
+    if df is not None and not df.empty:
+        try:
+            sma20 = sma(df["Close"], 20)
+            last_close = float(df["Close"].iloc[-1])
+            if sma20 and sma20 > 0:
+                close_vs_sma20_val = round((last_close / sma20 - 1) * 100, 2)
+        except Exception:  # noqa: BLE001
+            close_vs_sma20_val = None
+        try:
+            vol_last10 = float(df["Volume"].iloc[-10:].mean())
+            vol_last50 = float(df["Volume"].iloc[-50:].mean())
+            if vol_last50 > 0:
+                vol_ratio_10_50_val = round(vol_last10 / vol_last50, 3)
+        except Exception:  # noqa: BLE001
+            vol_ratio_10_50_val = None
+        try:
+            hi_25 = float(df["High"].iloc[-25:].max())
+            lo_25 = float(df["Low"].iloc[-25:].min())
+            if lo_25 > 0:
+                tightness_25bar_val = round((hi_25 / lo_25 - 1) * 100, 2)
+        except Exception:  # noqa: BLE001
+            tightness_25bar_val = None
+
+    entry_stage = entry_stage_label(
+        br_passed_today=br_passed_today_flag,
+        break_pct=float(break_pct_val) if break_pct_val is not None else None,
+        close_vs_sma20_pct=close_vs_sma20_val,
+        vol_ratio_10d_50d=vol_ratio_10_50_val,
+        tightness_25bar_pct=tightness_25bar_val,
+        days_since_breakout=0 if br_passed_today_flag else None,
+        pct_gain_since_breakout=0.0 if br_passed_today_flag else None,
+    )
+    entry_stage_features = {
+        "break_pct": float(break_pct_val) if break_pct_val is not None else None,
+        "close_vs_sma20_pct": close_vs_sma20_val,
+        "vol_ratio_10d_50d": vol_ratio_10_50_val,
+        "tightness_25bar_pct": tightness_25bar_val,
+        "br_passed_today": br_passed_today_flag,
+    }
+
     # ---- Split-date labels (2026-07-17) — advisory metadata that separates
     # the three orthogonal clocks the user reads. Enforcement still lives in
     # positions_view._action_for; these are honest labels for the human/UI.
@@ -310,6 +364,8 @@ def build_pick_payload(
         "gate_confirmation_status": _gate_confirmation_status(result),
         "volume_event": vol_event,
         "accumulation_assessment": assessment,
+        "entry_stage": entry_stage,
+        "entry_stage_features": entry_stage_features,
         "date_labels": date_labels,
 
         # ---- Legacy aliases (so existing frontend keeps rendering) ----

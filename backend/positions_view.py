@@ -415,6 +415,28 @@ def list_active_positions(
 
         pnl_pct = ((close / entry - 1) * 100) if (close is not None and entry > 0) else None
 
+        # Entry-stage label — advisory. Tells the user where the setup sits
+        # on the pre/at/post-breakout ladder. On the held side we only have
+        # pnl_pct and days_held as inputs (no live SMA20). The label module
+        # degrades gracefully; break_pct/tightness fall through and it
+        # classifies as POST_BREAKOUT_* / LATE_CHASE / FAILED_BREAKOUT_RETEST
+        # based on days-since-entry + gain-since-entry. Fix points in
+        # backend/entry_stage_label.py.
+        try:
+            from .entry_stage_label import entry_stage_label as _entry_label_fn
+            trading_days_since_scan_entry = max(
+                0, _trading_days_between(scanner_entry_d, today)
+            )
+            entry_stage_str = _entry_label_fn(
+                br_passed_today=False,
+                days_since_breakout=trading_days_since_scan_entry,
+                pct_gain_since_breakout=(
+                    round(pnl_pct, 2) if pnl_pct is not None else None
+                ),
+            )
+        except Exception:
+            entry_stage_str = "DATA_UNAVAILABLE"
+
         # ---- Expected T1 day (Q1) ----
         expected_t1_date = _add_trading_days(entry_d, EXPECTED_T1_TRADING_DAYS)
         days_to_expected_t1 = _trading_days_between(today, expected_t1_date)
@@ -448,6 +470,7 @@ def list_active_positions(
             "headline": r.get("headline", ""),
             "action": action,
             "action_label": action_label_str,  # 9-state ladder — advisory
+            "entry_stage": entry_stage_str,    # pre/at/post-breakout — advisory
             "action_note": action_note,
             "new_stop": new_stop,
             "time_stops": {
