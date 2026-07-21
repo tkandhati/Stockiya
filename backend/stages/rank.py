@@ -10,7 +10,8 @@ Computes a confirmation score for each survivor:
       - 50d MA > 150d MA > 200d MA aligned
       - OBV-90d slope >= +5 %
       - NSE block/bulk deals net-buy ratio >= 0.30 (last 30d, >=2 deals)
-      - Pocket-pivot fires today (up day, vol > prior-10 max down-day vol)
+      - Pocket-pivot fires today (up day, vol > prior-10 max down-day vol,
+        AND VSA effort-vs-result: bar spread > trailing avg, upper-half close)
       - Top RS rank vs other survivors  (proxy; full Nifty 100 RS later)
 
 The pick with the highest confirmation score is rank #1. Top N selected
@@ -31,7 +32,13 @@ from typing import Optional
 
 import pandas as pd
 
-from ..indicators import ma_stack_aligned, obv, obv_slope_pct, volume_spike_event
+from ..indicators import (
+    effort_vs_result_ok,
+    ma_stack_aligned,
+    obv,
+    obv_slope_pct,
+    volume_spike_event,
+)
 from ..pipeline import COMPOSITE_WEIGHTS, PipelineResult
 
 
@@ -52,7 +59,9 @@ TOP_N: int = 3                           # tunable
 # --------------------------------------------------------------------------- #
 
 def _check_pocket_pivot_today(df: Optional[pd.DataFrame]) -> bool:
-    """Today is an up day AND today's volume > max(down-day volumes in prior 10)."""
+    """Today is an up day AND today's volume > max(down-day volumes in prior 10)
+    AND the bar passes the VSA effort-vs-result check (wider-than-average spread,
+    upper-half close) so a big-volume / no-movement micro-trap doesn't qualify."""
     if df is None or len(df) < 12:
         return False
     closes = df["Close"]
@@ -64,7 +73,9 @@ def _check_pocket_pivot_today(df: Optional[pd.DataFrame]) -> bool:
     prev_down_vols = prev["Volume"][prev_deltas < 0]
     if prev_down_vols.empty:
         return False
-    return float(vols.iloc[-1]) > float(prev_down_vols.max())
+    if float(vols.iloc[-1]) <= float(prev_down_vols.max()):
+        return False
+    return effort_vs_result_ok(df)
 
 
 def _block_deal_net_buy(symbol: str) -> Optional[float]:
@@ -157,9 +168,9 @@ def rank_survivors(
         if deal_ratio is not None and deal_ratio >= BONUS_BLOCK_DEAL_MIN:
             bonuses_fired.append(f"Block-deal net-buy {deal_ratio:+.2f}")
 
-        # 4. Pocket-pivot today
+        # 4. Pocket-pivot today (effort-vs-result confirmed)
         if _check_pocket_pivot_today(df):
-            bonuses_fired.append("Pocket-pivot today")
+            bonuses_fired.append("Pocket-pivot today (effort-vs-result)")
 
         # 5. Top RS rank (proxy: vs other survivors)
         if idx in top_rs_indices:

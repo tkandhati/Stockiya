@@ -1,5 +1,53 @@
 # Changelog
 
+## 2026-07-21 — VSA effort-vs-result gate on the pocket pivot
+
+Tightens the pocket-pivot trigger so a big-volume bar that *didn't move price*
+no longer qualifies. Wyckoff/VSA principle: volume is the **effort**, the bar's
+spread (High-Low) plus close location are the **result**. A large-volume /
+tiny-spread up bar — or a wide bar that closed weak — is churn / absorption
+(an HFT-style volume micro-trap), not genuine demand.
+
+**1. New pure helper — `backend/indicators.py::effort_vs_result_ok(df)`**
+
+Confirms the LAST bar produced a result:
+
+- **Spread expansion** — bar `(High - Low)` exceeds the mean spread of the
+  prior `lookback` (default 20) bars, the bar itself excluded so it can't
+  inflate its own baseline. Parameter-free: the threshold *is* the trailing
+  average, no tuned constant. (Fixes the exclude-today flaw in the originally
+  proposed `sma(high-low, 20)`.)
+- **Close location** — close in at least the upper half of the bar's range
+  (the midpoint, the natural neutral cut), rejecting wide-but-weak upthrust /
+  churn bars.
+
+Degrades gracefully to whatever prior history exists (down to `min_prior_bars`),
+so it also works inside the short (~30-bar) count window. Pure, deterministic.
+
+**2. Wired into both live pocket-pivot sites through the one helper**
+
+- `backend/stages/rank.py::_check_pocket_pivot_today` — the `[RK]` rank bonus.
+  Bonus label now reads `Pocket-pivot today (effort-vs-result)`.
+- `backend/volume_signals.py::_pocket_pivot_count` — the narrative-engine count
+  that feeds the accumulation composite + entry-timing.
+
+Single source of truth so the two can't drift (the same lesson as the OBV
+single-implementation fix).
+
+**Blast radius / risk.** Pocket pivot is a bonus/annotation, not a hard gate —
+tightening it makes the bonus rarer but cannot cause zero-picks. Selection
+gates (`[U] [I] [HR]` … `[BR]`) are unchanged. Deterministic; backtests remain
+byte-identical on re-run for any ticker whose pocket-pivot bars were already
+wide + strong.
+
+**Parked siblings.** Two related Wyckoff ideas from the same review were
+deferred with reasoning captured in `ideas.md` → *"Wyckoff/VSA fine-tune trio"*:
+**A** price-tightness `std(close,10)` in `[AC]` (largely redundant with the
+existing range+dryness+divergence gate; trace it before gating) and **B**
+anchoring `[AVWAP]` to the selling climax (correct instinct but the naive
+"highest-volume bar" can anchor to a top — needs a guarded-climax rule, and the
+`[AVWAP]` stage isn't built yet).
+
 ## 2026-07-21 — Entry-stage label ladder (pre/at/post-breakout)
 
 Adds an advisory ladder that answers a question the UI could not answer

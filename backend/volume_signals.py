@@ -33,7 +33,7 @@ from typing import Literal, Optional
 import numpy as np
 import pandas as pd
 
-from .indicators import VolumeSpikeEvent, volume_spike_event
+from .indicators import VolumeSpikeEvent, effort_vs_result_ok, volume_spike_event
 
 
 Verdict = Literal["accumulating", "neutral", "distributing", "unknown"]
@@ -850,8 +850,10 @@ def _pocket_pivot_count(window: pd.DataFrame) -> int:
 
     A Pocket Pivot fires on a day where Close > prev Close (up day) AND that
     day's volume is greater than the volume of the largest down day in the
-    prior 10 trading sessions. Tight-range bonus implicit via the sliding
-    10-day comparison window.
+    prior 10 trading sessions AND the bar passes the VSA effort-vs-result check
+    (spread wider than the trailing average, close in the upper half). The last
+    condition rejects big-volume / no-movement churn bars. Kept in sync with
+    rank.py::_check_pocket_pivot_today via the shared indicators.effort_vs_result_ok.
     """
     if window is None or len(window) < 12:
         return 0
@@ -869,7 +871,8 @@ def _pocket_pivot_count(window: pd.DataFrame) -> int:
         else:
             max_down_vol = float(prev_down_vols.max())
         if vols.iloc[i] > max_down_vol and max_down_vol > 0:
-            count += 1
+            if effort_vs_result_ok(window.iloc[: i + 1]):
+                count += 1
     return int(count)
 
 

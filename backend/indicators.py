@@ -211,6 +211,55 @@ def last_bar_upper_third_ratio(df: pd.DataFrame) -> Optional[float]:
     return upper_third_ratio(df.iloc[-1])
 
 
+def effort_vs_result_ok(
+    df: pd.DataFrame,
+    lookback: int = 20,
+    min_prior_bars: int = 5,
+    require_upper_half: bool = True,
+) -> bool:
+    """VSA "effort vs result" confirmation for the LAST bar of `df`.
+
+    In Wyckoff/VSA terms volume is the *effort* and the bar's spread (High-Low)
+    plus its close location are the *result*. A large-volume bar that barely
+    moved price — a tiny spread, or a wide bar that closed weak — is churn /
+    absorption, not genuine demand (an HFT-style volume micro-trap). This
+    predicate confirms the effort actually produced a result:
+
+      1. Spread expansion — the last bar's (High - Low) exceeds the mean spread
+         of the `lookback` bars immediately BEFORE it. The bar itself is
+         excluded so it cannot inflate its own baseline. Parameter-free: the
+         threshold IS the trailing-average spread, no tuned constant.
+      2. Close location — the bar closed in at least the upper half of its range
+         (the range midpoint, the natural neutral cut), rejecting the
+         wide-but-weak upthrust / churn bar. Set require_upper_half=False for a
+         spread-only check.
+
+    Uses up to `lookback` prior bars but degrades to whatever is available down
+    to `min_prior_bars`, so it still works inside a short (~30-bar) count
+    window. Returns False on insufficient history or a zero-range last bar.
+    Pure and deterministic — same frame in, same bool out.
+    """
+    if df is None or len(df) < min_prior_bars + 1:
+        return False
+    high, low, close = df["High"], df["Low"], df["Close"]
+    spread = high - low
+    last_spread = float(spread.iloc[-1])
+    if last_spread <= 0:
+        return False
+    prior = spread.iloc[-(lookback + 1):-1]
+    if len(prior) < min_prior_bars:
+        return False
+    avg_prior = float(prior.mean())
+    if avg_prior <= 0 or last_spread <= avg_prior:
+        return False
+    if require_upper_half:
+        h, l, c = float(high.iloc[-1]), float(low.iloc[-1]), float(close.iloc[-1])
+        rng = h - l
+        if rng <= 0 or (c - l) / rng < 0.5:
+            return False
+    return True
+
+
 # --------------------------------------------------------------------------- #
 # Accumulation primitives — tight-range, volume dryness, ADI, slope
 #

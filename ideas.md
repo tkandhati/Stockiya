@@ -61,6 +61,45 @@ If Group E shows **no** predictive value after that window, the right move is to
 
 ---
 
+## Wyckoff/VSA fine-tune trio (A price-tightness · B AVWAP anchor · C effort-vs-result)
+
+**Date parked:** 2026-07-21
+**Status:** Idea **C** SHIPPED 2026-07-21 (VSA effort-vs-result gate on the pocket pivot — see below). Ideas **A** and **B** deferred, reasoning captured here.
+
+### Context — what shipped (C) and why
+
+Three Wyckoff-motivated refinements were proposed. Only **C** touched running code with a low blast radius, so it shipped; A and B are parked.
+
+**C — Effort-vs-result on the pocket pivot (SHIPPED).** VSA principle: volume is the *effort*, the bar's spread (High-Low) + close location are the *result*. A big-volume / tiny-spread (or wide-but-weak-close) up bar is churn/absorption, not demand — the HFT micro-trap. New pure helper `indicators.effort_vs_result_ok(df)` requires the trigger bar's spread to exceed the **trailing-average spread** (parameter-free — the threshold *is* the average, no tuned constant; the user's original `sma(high-low,20)` with an exclude-today fix) AND the close to finish in the upper half of the range. Wired as an AND-condition into both live pocket-pivot sites — `rank.py::_check_pocket_pivot_today` (rank bonus) and `volume_signals.py::_pocket_pivot_count` (narrative/entry-timing) — through the one shared helper so the two can't drift (the OBV-divergence lesson). Low risk: pocket pivot is a bonus/annotation, not a hard gate, so tightening it can't cause zero-picks.
+
+### A — Price-tightness `std(close,10) < 0.5·ATR(20)` in [AC] — DEFERRED
+
+**The idea.** Add a volatility-contraction (VCP) check to `[AC]`: standard deviation of the last-10 closes below half of ATR(20) confirms coiling. Stated goal: filter "dead stocks" (low volume + high random variance) from coiling pre-breakouts (low volume + microscopic variance).
+
+**Why parked:**
+1. **Largely redundant.** `[AC]` (`backend/stages/accumulation.py`) already requires, on the same bar, *all three* of: tight range (`range_pct_window ≤ TIGHT_RANGE_PCT_MAX`, adaptive to 2.5×ATR20%), volume dryness (`vol_dryness_ratio < 0.95`), and ADI positive divergence. A dead stock with high price variance already fails the range check; low volume alone doesn't pass because divergence must also fire. The incremental filtering power over the existing gate is small.
+2. **Only genuinely-new nuance is close-dispersion vs extreme-range.** `std(close,10)` is wick-insensitive where the existing `range_pct` uses high/low extremes — a subtly different, real signal. Worth *measuring*, not worth hard-gating on faith.
+3. **Hand-tuned constant + gate-tightening.** The `0.5` coefficient is a hand-picked threshold; adding it as a 4th AND-condition tightens a gate that currently works. Collides with the guiding principle at the top of this file (no new scoring logic without trace evidence the regime is mis-scoring) and PRINCIPLES §9 (thresholds evolved by the tuner, never hand-tuned) and the "additive labels over pick redesigns" preference.
+
+**Signal to revisit:** ship as a **weight-0 traced feature first** — emit `close_std10_over_atr20` from `_score_at_window` (same dark-launch pattern as the signed-pressure primitives / Group E). Only promote to a gate/tilt once `weekly-learn` shows it separates winners from dead stocks against T+90 outcomes (first cohort ~2026-10-02), and let the tuner set the cutoff instead of freezing `0.5`.
+
+**Fix-points if it ships:** feature computed in `backend/stages/accumulation.py::_score_at_window`; new trace key `close_std10_over_atr20` in the `[AC]` feature dict; no change to `passed` logic in v1.
+
+### B — Anchor AVWAP to the selling climax instead of the lowest close — DEFERRED
+
+**The idea.** The current `[AVWAP]` spec anchors at the "lowest close of the last 90 sessions" (PRINCIPLES §2.3). Proposal: anchor instead to the highest-volume bar in 90 sessions — the Wyckoff Phase-A selling climax where smart money first absorbed supply.
+
+**Why parked:**
+1. **`[AVWAP]` is not built yet.** It is a documented target stage (PRINCIPLES §2.3, AGENT_HANDOFF.md:465 "write `backend/stages/avwap.py`"), a `0.00`-weight stub in `COMPOSITE_WEIGHTS`, with no code computing an anchored VWAP anywhere. This is feedback on an unbuilt spec, not a change to running code — nothing to implement today.
+2. **"Highest volume bar" ≠ selling climax.** The max-volume bar over 90 days is just as often a breakout day, an earnings gap-up, an index-rebalance print, or a distribution bar. Anchoring the VWAP to a *top* inverts the signal — price sits below it and a healthy base falsely reads as weak. Volume alone can't distinguish absorption from distribution (the reason `signed_volume_pressure` exists).
+3. **The right rule is a *guarded* climax, which the repo already defines.** PRINCIPLES §2.1 defines Phase A as *highest 60d volume AND widest range AND close in lower third*. The principled anchor is that qualified climax bar, with **fallback to lowest-close** when no qualified climax exists (slow drift-down bases have no single climax; lowest-close is always well-defined and monotonic).
+
+**Signal to revisit:** when `backend/stages/avwap.py` is actually written. Fold the guarded-climax anchor into that stage's design from the start rather than shipping the naive max-volume rule.
+
+**Fix-points if it ships:** new indicator `anchored_vwap(df, anchor_idx)` + anchor selector `phase_a_climax_idx(df, lookback=90)` (high-vol ∧ wide-range ∧ lower-third close; else `argmin(close)`) in `backend/indicators.py`; consumed by the new `backend/stages/avwap.py`; spec update in PRINCIPLES §2.3.
+
+---
+
 ## Precision-first refit — deferred pillars
 
 **Date parked:** 2026-07-17
