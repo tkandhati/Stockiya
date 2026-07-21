@@ -110,7 +110,7 @@ Each stage is one file in `backend/stages/` with signature `run(ctx) -> StageRes
 | **[PS] Position Sizer** | `position_sizer.py` | Risk-of-account share count, ATR-adaptive stop | `entry = close`, `stop = entry − max(0.08 × entry, 2 × ATR20)`, `R = entry − stop`, `shares = floor(account × 0.01 / R)`, `T1 = entry + R`, `T2 = entry + 2R` |
 | **[H] Hypothesis** | `stages/hypothesis.py` | Template-built rationale + adaptive exits | Entry/stop/T1/T2 + 3-scenario exit (target-hit, distribution-flip, time-stop) + day-45/90/180 milestones |
 | **[DV] Distribution veto** *(2026-07-17)* | `stages/distribution_veto.py` | Anti-institutional-trick hygiene, runs last in chain | Three deterministic checks: (a) **weak-close spike** — volume-z ≥ 2.0 AND close ≤ bottom third of range; (b) **gap-up weak-close** — Open ≥ 2 % above prev.Close AND close in bottom half of range; (c) **dist-day cluster** — ≥ 3 sessions in last 15 with down-close AND volume > ADV20. Mode controlled by `config/stage_weights.json → distribution_veto_mode`: `"shadow"` (default, trace-only) or `"block"` (auto-promoted to hard gate, short-circuits selection). |
-| **[R] Render** | `stages/render.py` | JSON write + accumulation assessment envelope | Atomic write to `data/picks_<date>.json` (schema v7). Each pick now carries `accumulation_assessment` — advisory metadata: `level ∈ {emerging, building, strong, ready, distribution}`, `participant_evidence ∈ {inferred, disclosed_large_client}`, `score_0_100`, `data_confidence`, `contradictions`, `would_veto_shadow`. **Never gates selection.** |
+| **[R] Render** | `stages/render.py` | JSON write + accumulation assessment envelope + entry-stage label | Atomic write to `data/picks_<date>.json` (**schema v8**, 2026-07-21). Each pick carries: `accumulation_assessment` — advisory metadata: `level ∈ {emerging, building, strong, ready, distribution}`, `participant_evidence ∈ {inferred, disclosed_large_client}`, `score_0_100`, `data_confidence`, `contradictions`, `would_veto_shadow`; **and** `entry_stage ∈ {DEEP_BASE, BUILDING_BASE, COILED_PRE_BREAKOUT, AT_PIVOT, AT_PIVOT_NO_DEMAND, BREAKOUT_CONFIRMED_TODAY, POST_BREAKOUT_HEALTHY, POST_BREAKOUT_EXTENDED, LATE_CHASE, FAILED_BREAKOUT_RETEST, DATA_UNAVAILABLE}` + `entry_stage_features` audit dict. **Never gates selection.** Classifier is `backend/entry_stage_label.py`. |
 | **[EX] Exit-watch** | `stages/exit_watch.py` *(new)* | Volume-based early-exit scan on open picks | Fires if any: OBV-20d neg divergence at new 20d high; churning bar (vol top-20% of 50d, spread bottom-20%, close near open); ≥ 3 distribution days in 15 sessions; two consecutive closes < AVWAP; climax-vol + reversal |
 | **[O] Outcome** | `stages/outcome.py` | T+90 / T+180 return logger | Reads open picks from `portfolio.csv`, fetches close at horizon, writes return to `outcomes.jsonl` |
 
@@ -122,7 +122,7 @@ All raw indicator math lives in `backend/indicators.py` as pure functions (no I/
 
 | Path | Written by | Contents |
 |---|---|---|
-| `data/picks_<YYYY-MM-DD>.json` | `[R] Render` | Today's 0–3 picks with full payload (entry, stop, T1, T2, shares, evidence, time stops, **accumulation_assessment**, **date_labels**). `PICKS_SCHEMA_VERSION = 7`. |
+| `data/picks_<YYYY-MM-DD>.json` | `[R] Render` | Today's 0–3 picks with full payload (entry, stop, T1, T2, shares, evidence, time stops, **accumulation_assessment**, **entry_stage** + **entry_stage_features**, **date_labels**). `PICKS_SCHEMA_VERSION = 8`. |
 | `data/traces/run_<date>_<ticker>.jsonl` | every stage | Per-stage features, score, evidence — the RL feature dataset. Includes `[DV]` rows with `would_veto` / `veto_reasons` / `dist_day_count_15` even in shadow mode. |
 | `data/traces/outcomes.jsonl` | `[O] Outcome` | Per-pick return at T+90 / T+180. **Label schema v2** (2026-07-17): `mtm_return_pct` (always defined) + `is_open` + `realized_return_pct` (populated only when position closed) + `exit_reason_final` + `label_schema_version=2`. Legacy `return_pct` retained as MTM alias. |
 | `data/learning_events/sliding_*.json` | `sliding_window_learn` | One event per 5 T+90 outcomes. Contains per-stage IC (Pearson r) over the last 5 outcomes + champion-challenger decision (refused_min_outcomes / reject_ratchet / bootstrap / accept / would_accept_dry_run). Atomic write. Append-only across time. |
@@ -270,6 +270,20 @@ DATA_UNAVAILABLE`) mapped from the raw action via
 enforcement. Two-session hysteresis for the soft MONITOR/REVIEW/DRY_UP
 states is parked in `ideas.md` (idea D — needs a persisted warning_count
 column on `portfolio.csv`).
+
+**Entry-stage label (2026-07-21).** Held positions also carry
+`entry_stage` — an 11-state advisory ladder describing where the setup
+sits on the pre/at/post-breakout cycle (`DEEP_BASE | BUILDING_BASE |
+COILED_PRE_BREAKOUT | AT_PIVOT | AT_PIVOT_NO_DEMAND |
+BREAKOUT_CONFIRMED_TODAY | POST_BREAKOUT_HEALTHY |
+POST_BREAKOUT_EXTENDED | LATE_CHASE | FAILED_BREAKOUT_RETEST |
+DATA_UNAVAILABLE`). On the positions side, inputs are
+`days_since_scanner_entry` + `pnl_pct` — no live SMA20 is required;
+the classifier degrades gracefully to the gain-since-entry proxy. This
+label sits orthogonally to `action_label`: `action_label` says *what
+to do*, `entry_stage` says *where the setup is*. Advisory only —
+never touches enforcement. Ladder lives in
+`backend/entry_stage_label.py`.
 
 **Continuous monitoring on user's fill**: for taken positions,
 `positions_view` recomputes the effective `end_date` as

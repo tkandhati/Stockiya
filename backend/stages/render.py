@@ -35,7 +35,10 @@ stage_id = "R"
 #        (level, participant_evidence, data_confidence, contradictions).
 #        Does NOT gate selection; the composite still owns picking. See
 #        build_accumulation_assessment below.
-PICKS_SCHEMA_VERSION = 7
+#   v8 = per-pick `entry_stage` (pre/at/post-breakout ladder label) +
+#        `entry_stage_features` audit dict. Advisory. See
+#        `backend/entry_stage_label.py` for the ladder.
+PICKS_SCHEMA_VERSION = 8
 
 
 # --------------------------------------------------------------------------- #

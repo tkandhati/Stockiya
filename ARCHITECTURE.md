@@ -65,7 +65,12 @@ file you can open. Same OHLCV in → byte-identical trace out.**
                               + accumulation_assessment envelope
                                 (advisory: level, participant_evidence,
                                  data_confidence, contradictions)
-        [R]  Render           → data/picks_<date>.json (schema v7)
+                              + entry_stage label
+                                (advisory: 11-state pre/at/post-breakout
+                                 ladder — DEEP_BASE, COILED_PRE_BREAKOUT,
+                                 AT_PIVOT_NO_DEMAND, BREAKOUT_CONFIRMED_TODAY,
+                                 POST_BREAKOUT_EXTENDED, LATE_CHASE, ...)
+        [R]  Render           → data/picks_<date>.json (schema v8)
                     │
                     ▼
               FastAPI → React UI

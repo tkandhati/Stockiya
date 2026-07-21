@@ -131,12 +131,13 @@ backend/
 │   ├── avwap.py       [AVWAP]  scored — anchored-VWAP hold             *(new, in-progress)*
 │   ├── distribution_veto.py [DV] anti-trick hygiene (shadow/block)    *(new 2026-07-17)*
 │   ├── rank.py        [RK]     confirmation-strength ranker + bonuses
-│   ├── hypothesis.py  [H]      entry / ATR-stop / 1R / 2R / exits + accumulation_assessment envelope + date_labels
-│   ├── render.py      [R]      writes data/picks_<date>.json (schema v7)
+│   ├── hypothesis.py  [H]      entry / ATR-stop / 1R / 2R / exits + accumulation_assessment envelope + entry_stage + date_labels
+│   ├── render.py      [R]      writes data/picks_<date>.json (schema v8)
 │   ├── exit_watch.py  [EX]     daily volume-based early-exit scan       *(new, in-progress)*
 │   └── outcome.py     [O]      T+90 / T+180 outcome — label schema v2 (mtm + realized + is_open)
 │
 ├── action_labels.py            9-state advisory ladder (MAINTAIN / MONITOR / REVIEW / EXTEND / TAKE_PROFIT / EXIT_*)  *(new 2026-07-17)*
+├── entry_stage_label.py        11-state pre/at/post-breakout ladder (DEEP_BASE / COILED_PRE_BREAKOUT / AT_PIVOT_NO_DEMAND / BREAKOUT_CONFIRMED_TODAY / POST_BREAKOUT_* / LATE_CHASE / FAILED_BREAKOUT_RETEST)  *(new 2026-07-21)*
 ├── sliding_window_learn.py     event-driven CC trigger every 5 T+90 outcomes                                          *(new 2026-07-17)*
 ├── positions_view.py           list_active_positions + _action_for (priority-corrected 2026-07-17)
 │

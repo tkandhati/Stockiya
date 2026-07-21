@@ -1,5 +1,94 @@
 # Changelog
 
+## 2026-07-21 — Entry-stage label ladder (pre/at/post-breakout)
+
+Adds an advisory ladder that answers a question the UI could not answer
+before: **"is this pick pre-breakout, at the pivot, freshly confirmed, or
+already extended?"** Motivated by a user comparison of ABB (recommended
+2026-07-10, +9.96% by 2026-07-20) vs COLPAL (fresh candidate 2026-07-20).
+Both had near-identical 5-week base tightness (9.79% vs 9.13%) but sat on
+opposite sides of the breakout cycle. Chart shape was the same; the
+timing was opposite. There was no field on the pick payload that made
+that distinction machine-readable.
+
+Follows the "additive labels over pick redesigns" preference: selection,
+ranking, sizing, and exit rules are byte-identical. Only the payload
+grows.
+
+**1. New module — `backend/entry_stage_label.py`**
+
+Pure function `entry_stage_label(**features) -> str`. Zero I/O.
+Deterministic. Mirrors the shape of `backend/action_labels.py` but
+classifies the *entry moment* rather than the *holding lifecycle*.
+
+Ladder (11 states):
+
+```
+DEEP_BASE                  ≥8% under 20d high
+BUILDING_BASE              -8..-2% under, tightness 10-12%
+COILED_PRE_BREAKOUT        -8..-2% under, tightness <10%
+AT_PIVOT                   |break_pct| ≤ 1.5%, vol10/vol50 ≥ 1.0x
+AT_PIVOT_NO_DEMAND         |break_pct| ≤ 1.5%, vol10/vol50 < 1.0x
+BREAKOUT_CONFIRMED_TODAY   BR gate passed on this bar
+POST_BREAKOUT_HEALTHY      0..+5% above SMA20 (or +0..+5% since entry)
+POST_BREAKOUT_EXTENDED     +5..+10% above SMA20
+LATE_CHASE                 >+10% above SMA20 within 10 bars of trigger
+FAILED_BREAKOUT_RETEST     -3% or worse within 10 bars of trigger
+DATA_UNAVAILABLE           essential features missing
+```
+
+All threshold constants live at the top of the file — the ONLY place
+band edges live. Any tuner ratchet works on the constants; callers
+never hard-code an edge.
+
+**2. Wired in `backend/stages/hypothesis.py::build_pick_payload`**
+
+Fresh picks now carry two additional keys:
+
+- `entry_stage` — one of the 11 ladder labels.
+- `entry_stage_features` — audit dict:
+  `{break_pct, close_vs_sma20_pct, vol_ratio_10d_50d,
+    tightness_25bar_pct, br_passed_today}`.
+
+Inputs are computed from the pick's own OHLCV (SMA20, 25-bar high/low,
+10-bar & 50-bar volume mean) plus BR features (`break_pct` and
+`br.passed`). No new fetch; all inputs already in memory.
+
+**3. Wired in `backend/positions_view.py::list_active_positions`**
+
+Held positions now carry `entry_stage` alongside `action_label`.
+Inputs are `days_since_scanner_entry` + `pnl_pct`; the classifier
+degrades gracefully when SMA20 is unavailable and falls back to the
+gain-since-entry proxy for POST_BREAKOUT_* / LATE_CHASE /
+FAILED_BREAKOUT_RETEST classification.
+
+**4. Schema bumped — v7 → v8 in `backend/stages/render.py`**
+
+Catchup will now regenerate any picks_<date>.json written before the
+label was added. Field is additive; older UI code that doesn't know
+about `entry_stage` simply ignores it (tolerant reader convention).
+
+**5. Sanity check on the motivating cases**
+
+| Snapshot | Label produced |
+|---|---|
+| ABB @ 2026-07-10 (pre-pick, break_pct=-6.41%, vol10/vol50=0.78×) | `COILED_PRE_BREAKOUT` |
+| ABB @ 2026-07-20 (held, +9.96% in 8 sessions, close/SMA20=+6.35%) | `POST_BREAKOUT_EXTENDED` |
+| COLPAL @ 2026-07-20 (candidate, break_pct=-1.10%, vol10/vol50=0.65×) | `AT_PIVOT_NO_DEMAND` |
+
+Matches the eyeball comparison exactly. The ladder codifies what a
+human previously had to read off a chart.
+
+**6. Explicitly out of scope**
+
+- **No changes to selection / sizing / exits.** Composite/BR still owns
+  picking; `action_label` still owns holding lifecycle.
+- **No frontend surfacing yet.** The field is present on the API
+  payload; a UI pill next to the pick headline is a follow-up.
+- **No back-population of historical outcomes.** Old traces do not get
+  labeled retroactively; only forward picks and today's held positions
+  carry the field.
+
 ## 2026-07-19 — Weekend / holiday no-fire guard
 
 Ships the behavior parked yesterday in `ideas.md → Weekend / holiday
