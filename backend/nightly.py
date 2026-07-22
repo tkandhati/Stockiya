@@ -63,6 +63,33 @@ def run_nightly() -> dict:
     log.info("Done. Wrote %d picks to data/picks_%s.json",
              len(response.get("picks", [])), response.get("date"))
 
+    # Durable daily position-monitoring trace. Records the latest volume
+    # strength + any target alteration (stop raise / horizon extend) for every
+    # open position, so "what did the monitor say on day D, and did it move a
+    # target — and why?" is answerable months later. Purely additive: it logs
+    # what positions_view already computed and commits no decision.
+    log.info("Writing daily position-monitoring trace...")
+    try:
+        from backend.position_trace import append_daily_position_traces
+        from backend.positions_view import list_active_positions
+        from backend.yahoo import snapshot
+
+        def _close(sym: str):
+            try:
+                return snapshot(sym).get("current")
+            except Exception:
+                return None
+
+        positions = list_active_positions(_close)
+        path = append_daily_position_traces(positions)
+        log.info(
+            "Wrote %d position traces to %s",
+            len(positions), getattr(path, "name", path),
+        )
+    except Exception as e:
+        log.exception("daily position trace failed (non-fatal)")
+        errors.append(f"position_trace: {e}")
+
     finished = datetime.now(IST).isoformat(timespec="seconds")
     try:
         from backend.data_health import record_run

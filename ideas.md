@@ -437,3 +437,63 @@ If pillar G is delayed further (e.g., past end of 2026), consider shipping the w
 - **Trace hygiene.** Non-trading-day skips log to `data/traces/no_fire_days.jsonl` with reason `holiday | weekend | data_missing_error`. Distinguishes intentional skips from bugs so `weekly-learn` doesn't count them against pick precision.
 - **Data-missing anomaly.** If a scheduled trading day returns no OHLCV, write `data_missing_error` to `no_fire_days.jsonl` AND surface the previous active day to the UI, but also emit a monitoring alert so a real fetch outage isn't hidden behind the fallback.
 - **Frontend badge.** UI shows a small "showing picks from <prev trading day>" pill on non-trading-day views so the user knows the data isn't stale by accident.
+
+---
+
+## Principle-alignment enforcement gaps — 2026-07-22 audit
+
+**Date parked:** 2026-07-22
+**Status:** Deferred. Surfaced by an audit against the two founding principles ("buy when institutions are *quietly entering*, not when momentum has run and they're distributing to retail"; "monitor positions daily, hold the price/time targets, and trace any alteration"). The *scoring and labeling* already encode both principles. These three items are the places where **enforcement** is softer than the stated intent. All three alter live behavior, so none was shipped — they wait for the trace-evidence gates below.
+
+### Context — what the audit confirmed is already aligned (no change needed)
+
+- Early-accumulation bias is real in the math: `[ACS]`/`[AC]` require tight range + dry volume + **rising ADI while price is flat** (quiet absorption, not a momentum spike); `[LT]` demands 90d-OBV↑ + 90d up/down ≥ 1.1 + 150d-MA↑ (months of footprint); `volume_signals._classify_entry_timing` rewards `early` (+0.25), penalizes `late` (−0.10), hard-rejects Stage-4/distribution ("missed", −0.20); parabolic penalty −0.30 for >25%/30d; `entry_stage_label.LATE_CHASE` flags a chase on the card.
+- Principle 2 is fully satisfied: T1/T2 **price** targets are never mutated (verified — no write path in `positions_view`), stop moves **up-only**, the **time** horizon extends only on a healthy trajectory, and `backend/position_trace.py` writes a dated JSONL row per position per day with an `alterations[] = {target, kind, from, to, reason}` record. The trace records recommendations; committing stays `portfolio.update_open_picks`' job.
+
+### Gap 1 — Distribution veto is in `shadow`, not `block`
+
+**The idea.** Flip `config/stage_weights.json → "distribution_veto_mode"` from `"shadow"` to `"block"`. In `block` mode `[DV]` (`backend/stages/distribution_veto.py`) short-circuits any ticker whose recent tape shows a distribution footprint (weak-close volume spike, gap-up-sold-into bull trap, or ≥3 distribution-day cluster in 15 sessions). This is the single most direct "don't buy while institutions are distributing to retail" guard, and today it only *observes* (`would_veto` written to trace; `passed` always True).
+
+**Why parked:**
+1. **Explicitly gated on shadow validation.** The config's own `_distribution_veto_mode_help` says flip "only after ≥4 weeks of shadow traces confirm veto precision against outcomes." Flipping on faith could reject good setups on a footprint that doesn't actually predict failure.
+2. **It removes picks.** Even though a veto is philosophically pure (it only cuts traps, never changes what *qualifies*), it still changes the live pick set — so it wants outcome evidence first, per the guiding principle at the top of this file.
+3. **Cross-linked prerequisite already exists.** The "Precision-first refit" block above (pillar C, revisit condition iii) already treats "shadow-mode veto flipped to block for ≥60 trading sessions" as a downstream dependency — arming DV is the unlock for that, not an isolated tweak.
+
+**Signal to revisit:** flip to `block` when **all** hold:
+- [ ] ≥4 weeks (≥20 trading sessions) of shadow traces exist with `dv.would_veto` populated.
+- [ ] `weekly-learn` shows veto candidates (`would_veto = true`) have **materially worse** T+90/T+180 outcomes than non-veto passers — i.e. the footprint has precision, not just recall.
+- [ ] The three sub-rules are validated **individually** (a cluster veto may earn its keep while a gap-up veto over-fires, or vice-versa) before the combined gate goes hard.
+
+**Fix-points if it ships:** one-line config change `config/stage_weights.json:9` → `"block"` (the loader in `pipeline._load_weight_config` auto-adds `"DV"` to `HARD_GATE_IDS`). No stage-code change. Consider a per-rule enable flag (`dv_rules_enabled: ["dist_day_cluster"]`) in the config if the sub-rules validate unevenly — small addition in `distribution_veto._load_mode` / `run`.
+
+### Gap 2 — Long-term-flow `[LT]` is a soft gate, not a hard gate
+
+**The idea.** Add `"LT"` to `config/stage_weights.json → "hard_gate_stage_ids"` so a stock **cannot** be selected without months of institutional footprint. Today only `U/I/HR` are hard (`pipeline.py:_DEFAULT_HARD_GATES`); `[LT]` is a soft gate at weight 0.15, so a ticker that **fails** the 90d-OBV / up-down / 150d-MA checks still flows down the chain and can be admitted on `[AC] + [BR]` strength alone (LT just contributes 0 to the composite). That admits the exact case the first principle warns against: a fresh breakout with a thin accumulation base. `[BR]` carries weight 0.20 (joint-largest), so a momentum trigger is heavily weighted.
+
+**Why parked:**
+1. **Biggest blast radius of the three.** Making LT mandatory is a genuine pick-logic tightening — it will *reduce* pick count, possibly to zero on quiet days, which collides with the "app never goes blank" preference elsewhere in this file.
+2. **Partly mitigated already.** `_reweight_for_trigger` halves `[VD]` and redistributes to `LT/AC` on `pre_breakout` setups, and the `TRIGGER_AC_MIN_SCORE = 0.6` floor (post-Bajaj-Auto) already blocks the weakest coiled entries. The residual risk is narrower than it first looks: a *pure* `sos_breakout` (BR pass) with failing LT.
+3. **Needs the counterfactual.** Whether LT-fail picks actually underperform is measurable but unmeasured. Fitting this from selected-only outcomes is the selection-bias trap noted in pillar C — needs `[HR]`-passer labels, not just picks.
+
+**Signal to revisit:** promote LT to hard only when:
+- [ ] `weekly-learn` (or a backtest via `scripts/tune_weights.py`) shows picks that **passed BR but failed LT** have distinctly worse T+90/T+180 returns than picks that passed both.
+- [ ] The pick-count impact is quantified on cached bars (how many days would go to zero picks?) and judged acceptable, OR paired with a "show best-available with a soft-LT warning label" fallback so the app doesn't blank out.
+- [ ] Prefer the **intermediate step first**: keep LT soft but *raise its weight* and/or add an LT-fail advisory label on the card (additive, no pick removed) before making it a hard gate.
+
+**Fix-points if it ships:** hard-gate path — add `"LT"` to `hard_gate_stage_ids` in `config/stage_weights.json:7`. Intermediate/additive path — bump `scored_stage_weights.LT`, and/or emit an `lt_flow_failed` advisory flag consumed by the pick renderer (`stages/render.py`) and `frontend/src/types.ts`. Threshold constants stay in `backend/stages/lt_flow.py` (`OBV_90D_SLOPE_MIN`, `UPDOWN_90D_MIN`, `MA150_SLOPE_MIN`) — tuner-owned, never hand-edited.
+
+### Gap 3 — Time target moves (horizon extend + end-date re-anchor); confirm this is the desired reading of "don't alter the target time"
+
+**The idea.** The founding instruction says "don't alter the target **time and price** — or if you do, show the trace." The app never alters **price** (T1/T2), but it **does** alter **time**: `horizon.revalidated_horizon_days` extends a healthy position to the next bucket (30→60→90→120→180), and `positions_view` re-anchors the effective `end_date` to the user's actual fill date. Both are now traced (`position_trace._alterations_for` → `horizon_extend` / `horizon_reanchor`). This item is a **decision to confirm**, not a bug: either (a) keep the current *extend-only-with-trace* behavior (recommended — it satisfies "you can alter but show the trace" and only ever lengthens runway on healthy volume, never shortens the profit target), or (b) add a config toggle to **freeze** the time horizon entirely.
+
+**Why parked:** the current behavior already honors the "show the trace" clause, and freezing the horizon would remove the "let a healthy runner keep its months of runway" benefit that the swing-hold thesis (3 weeks–3 months typical, day-180 hard cap) depends on. No change unless the user explicitly wants time frozen.
+
+**Signal to revisit:** only if the user, on seeing the daily traces, decides horizon drift is undesirable — then ship the freeze toggle. Otherwise leave as-is; the trace is the deliverable.
+
+**Fix-points if a freeze toggle ships:** `config` flag `horizon_extension_enabled: false`; short-circuit in `backend/horizon.py::revalidated_horizon_days` (return `(None, "extension_disabled")`, which makes `_action_for` fall to `exit_end_date` at the stored end date); the end-date re-anchor in `positions_view.list_active_positions` (the `effective_end_d = entry_d + horizon_days` block) would also need a flag to pin to `stored_end_date`. Keep the trace either way so the constancy is auditable.
+
+### Cross-links
+
+- Gap 1 is the unlock for **Precision-first refit → pillar C** (revisit condition iii) and feeds its `dv_would_veto` outcome regression.
+- Gap 2 shares the **selection-bias / `[HR]`-passer labeling** prerequisite with pillar C — do that trace-scope widening first (it's cheap and independent).
+- Gap 3 relates to **Balanced-holding pillar H** (contextual extension formula) — if H ships, the extend decision becomes signal-driven rather than always-one-bucket, which is the more principled version of "alter time only with evidence."
