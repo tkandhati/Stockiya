@@ -23,7 +23,13 @@ Fix points:
 
 from __future__ import annotations
 
-from ..indicators import adv, obv_bullish_divergence, obv_flow_inflection
+from ..indicators import (
+    adv,
+    ewm_signed_pressure,
+    obv_bullish_divergence,
+    obv_flow_inflection,
+    signed_volume_pressure,
+)
 from ..pipeline import PipelineContext, StageResult
 
 stage_id = "VD"
@@ -58,6 +64,22 @@ VELOCITY_LONG_WIN: int = 30            # tunable — background slope window
 # CHANGELOG 2026-07-14.
 VELOCITY_MARGIN_BONUS: float = 0.05    # tunable — ±5% of [0,1] margin range
 
+# --------------------------------------------------------------------------- #
+# Signed-pressure SHADOW instrumentation (trace-only; added 2026-07-24).
+#
+# The signed-pressure primitives (indicators.signed_volume_pressure /
+# ewm_signed_pressure, built 2026-07-17) were pure but unwired — never even
+# recorded. Without emission, the shadow-correlation gate the refit plan
+# requires (ideas.md → "Precision-first refit", revisit-A) can never begin to
+# accumulate. This block emits the three-horizon EWM reads into the [VD] trace
+# ONLY. It does NOT touch `passed`, `score`, or `margin` — zero impact on which
+# stocks get picked. It exists so that ongoing daily runs build the outcome
+# history needed to decide (on evidence, not faith) whether signed pressure
+# ever earns a composite weight. Halflives map to the horizons in the
+# ewm_signed_pressure docstring: 3≈1-week tape, 10≈mid-swing, 30≈base-period.
+# --------------------------------------------------------------------------- #
+SIGNED_PRESSURE_HALFLIVES: tuple[int, int, int] = (3, 10, 30)   # trace-only
+
 
 def run(ctx: PipelineContext) -> StageResult:
     df = ctx.ohlcv
@@ -90,6 +112,19 @@ def run(ctx: PipelineContext) -> StageResult:
         short=VELOCITY_SHORT_WIN, long=VELOCITY_LONG_WIN,
     )
 
+    # Signed-pressure shadow reads (trace-only — see constant block above).
+    # None-safe: signed_volume_pressure returns None on <61 bars, and each
+    # EWM read returns None on empty input; the trace then carries nulls.
+    pressure = signed_volume_pressure(df)
+    signed_pressure_ewm = {
+        f"hl{hl}": (
+            round(ewm_signed_pressure(pressure, hl), 4)
+            if pressure is not None and ewm_signed_pressure(pressure, hl) is not None
+            else None
+        )
+        for hl in SIGNED_PRESSURE_HALFLIVES
+    }
+
     ratio = None
     if adv_recent is not None and adv_long is not None and adv_long > 0:
         ratio = adv_recent / adv_long
@@ -114,6 +149,9 @@ def run(ctx: PipelineContext) -> StageResult:
         "obv_slope_long_pct": (
             round(long_slope, 2) if long_slope is not None else None
         ),
+        # SHADOW instrumentation — trace-only, not used in scoring. See the
+        # SIGNED_PRESSURE_HALFLIVES constant block for rationale.
+        "signed_pressure_ewm": signed_pressure_ewm,
     }
 
     evidence: list[str] = []

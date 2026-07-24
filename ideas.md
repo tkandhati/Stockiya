@@ -497,3 +497,79 @@ If pillar G is delayed further (e.g., past end of 2026), consider shipping the w
 - Gap 1 is the unlock for **Precision-first refit → pillar C** (revisit condition iii) and feeds its `dv_would_veto` outcome regression.
 - Gap 2 shares the **selection-bias / `[HR]`-passer labeling** prerequisite with pillar C — do that trace-scope widening first (it's cheap and independent).
 - Gap 3 relates to **Balanced-holding pillar H** (contextual extension formula) — if H ships, the extend decision becomes signal-driven rather than always-one-bucket, which is the more principled version of "alter time only with evidence."
+
+---
+
+## KIMI3 accumulation recommendations — evaluated & parked (2026-07-24)
+
+**Date parked:** 2026-07-24
+**Status:** Evaluated against the live code and data on 2026-07-24. **Implemented: none.** All three recommendations are substantively duplicates of pillars already parked here, and every one is gated behind evidence that does not currently exist. Recorded here with the factual corrections so no future pass chases the phantom primitives.
+
+### What was recommended (external "KIMI3 instant free-tier" review)
+
+1. **Wire signed-volume pressure into live `[VD]` scoring** (replace `obv_flow_inflection` inputs with `ewm_signed_pressure_5/20` slopes) **and flip `distribution_veto_mode` from `shadow` → `block`**, adding a veto rule `2-of-3 sessions ewm_signed_pressure_5 < 0 AND close < avwap_20`.
+2. **Add a sector-relative accumulation bonus to `[RK]`** — per-sector medians of `cmf_21d` / `obv_norm_slope_90d_pct` across Nifty-100 survivors; bonus when the stock's CMF beats its sector median and is top-quartile.
+3. **Swing-exit on pressure divergence for positions < 45 days** — in `signal_trajectory.py`, for young positions replace the OBV-20d divergence check with a 5-session `ewm_signed_pressure_5` divergence (price higher-high while pressure lower) → `trajectory_flip = exit_distribution`.
+
+### Why none of it shipped
+
+**The load-bearing premise is false.** The review asserted "you have enough shadow history" and "your 50% accuracy problem." On 2026-07-24 the ground truth is:
+
+- `data/traces/outcomes.jsonl` **does not exist**. `config/stage_weights.json → champion_metric` is `null` with `n_picks_evaluated: 0`. The champion-challenger tuner has **never run on a real outcome**. There is no measured accuracy figure — "50%" is unsupported.
+- **Empirical update (2026-07-24, 2-week personal-laptop run, traces Jul 2–23, ~2000 files):** `[DV]` evaluated **582** ticker-days; **203 (35%) would have vetoed**, and **~90% of those (184/203) came from a single rule — `dist_day_cluster`** (`weak_close_spike` ~17×, `gap_up_weak_close` 1×). Flipping to `block` would cull a third of breakout-passing candidates on one trailing-down-day rule during a pullback tape. This is now **evidence, not just principle, against Rec 1's veto flip.** Whether that 35% is correct-culling or over-culling is unknowable without matured outcomes (`outcomes.jsonl` empty at 2 weeks). Block mode stays off.
+- Last bulk pipeline run was **2026-05-28**; the signed-pressure primitives were added **2026-07-17**, *after* that run. No run has happened since, and live data fetch is firewall-blocked (Yahoo/NSE). So no shadow data for these metrics can exist yet, and none can be generated on demand.
+
+**Two referenced primitives do not exist** (hallucinated by the review — do not chase them):
+
+- `cmf_21d` — there is **no Chaikin Money Flow** indicator anywhere in `indicators.py`. Accumulation primitives present are `obv`, `obv_norm_slope_pct`, `adi`, and the signed-pressure family. Rec 2 cannot be built as written.
+- `avwap_20` — there is **no computed AVWAP feature**. `"AVWAP": 0.00` in `stage_weights.json` is a zero-weight stub name only; the AVWAP-anchor concept is itself still parked (see *Wyckoff/VSA trio · B*). Rec 1's veto rule references a field that isn't produced.
+
+**The signed-pressure primitives are correctly described but were dead code.** `close_location_value`, `signed_volume_pressure`, `ewm_signed_pressure` (halflife 3/10/30) exist as described and are spike-dampened by design — but they were **never called** outside `indicators.py` (confirmed: 0 of ~2000 laptop traces through Jul 23 contained them). Trace-emission is the real prerequisite, not live wiring. **DONE 2026-07-24:** `[VD]` now emits `signed_pressure_ewm.{hl3,hl10,hl30}` into the trace — SHADOW-only, does not touch `passed`/`score`/`margin` (verified on real ABB bars + None-safe under 61 bars). Ongoing daily runs now accumulate the shadow history the *Precision-first refit → revisit-A* gate needs. Composite weight stays 0 and veto stays `shadow` until that history + matured outcomes show correlation.
+
+**Each rec re-points at a failure mode the code was already hardened against.** `[VD]`'s `VELOCITY_MARGIN_BONUS` was cut 0.10 → 0.05 after the Bajaj-Auto incident because a decision-sized bump on a single-bar-sensitive slope admitted fragile pre-breakouts; `signal_trajectory.py` replaced hair-trigger zero-cross flips with symmetric admission-mirrored thresholds for the same reason. Recs 1 and 3 push `halflife=3` pressure (≈5-bar sensitivity) into exactly the live-margin and young-position-exit paths that were desensitized — the wrong direction absent outcome evidence.
+
+**It contradicts the repo's own guardrails:** the evidence-first *Guiding principle* at the top of this file; `stage_weights.json`'s note that block mode flips "*only after ≥4 weeks of shadow traces confirm veto precision*"; and the standing preference for *additive labels over pick redesigns* (Recs 1 & 3 are live-behavior redesigns).
+
+### These ideas already have homes here
+
+- **Rec 1 (signed pressure live + veto→block)** → *Precision-first refit → deferred pillars*, revisit-A / revisit-C (the ≥60-session block-mode gate). No new entry needed.
+- **Rec 1 (AVWAP veto term)** → *Wyckoff/VSA fine-tune trio · B (AVWAP anchor)* — still unbuilt.
+- **Rec 2 (sector-relative accumulation)** → *Precision-first refit → Follow-up B (excess-move / sector benchmark)*; blocked on a sector-index loader (fetch-layer + firewall) **and** would need a CMF primitive that doesn't exist. If ever built, prefer reusing the existing `signed_volume_pressure` excess-move variant over introducing CMF (avoids a redundant, correlated indicator).
+- **Rec 3 (pressure-divergence young-position exit)** → *Balanced-holding pillar H (contextual extension)*, which already notes the pressure primitives "exist but are not yet plumbed into the trajectory checker."
+
+### The one part worth keeping: the "do NOT add" list
+
+The review's closing table (no more correlated OBV/CMF lookbacks at 45/120/150d; no Twiggs/Klinger/EOM; no intraday/CVD under the EOD-only constraint; wire the existing `block_deals.py` classifier before adding new data sources) is **correct and aligned** with this file and with the *Multi-window accumulation-strength label* entry. It is the right answer to the original "should I add more rolling accumulation windows?" question: **no** — relative context and evidence-based wiring beat more correlated windows.
+
+### Signal to revisit
+
+Identical to the pillars above — do not re-open from this entry. The single unblocking action, whenever a real data run becomes possible again, is the **trace-scope + signed-pressure instrumentation**: emit `ewm_signed_pressure` (halflife 3/10/30) and `dv_would_veto` on every `[HR]`-passer (not just picks — see *Precision-first refit* prereq C), then let `weekly-learn` regress them against T+90/T+180 outcomes. Only after that shows signal do Recs 1–3 earn a weight. Until then they stay parked.
+
+> **Update 2026-07-24 — the signed-pressure emission half of this shipped.** `[VD]` now writes `signed_pressure_ewm.{hl3,hl10,hl30}` to the trace (shadow-only). Still parked: (a) the same emission on non-selected `[HR]`-passers (prereq C — needs `stages/outcome.py` scope widening), and (b) any composite weight / veto-block / pressure-exit wiring, all still gated on matured outcomes.
+
+---
+
+## Matured outcomes via offline backtest (skip the 90-day wait)
+
+**Date parked:** 2026-07-24
+**Status:** Deferred — actionable whenever the user wants evidence sooner than live maturation.
+
+### The idea
+
+Live outcome capture is now automatic (`[O]` wired into `nightly.py` + standalone `python -m backend.stages.outcome`, catch-up + as-of pricing — CHANGELOG 2026-07-24). But a pick entered today still needs 90–180 real days to mature. To decide the parked signed-pressure / veto / pressure-exit items *sooner*, replay history instead of waiting: `backend/backtest.py` already re-runs the live gates as-of a past date and forward-walks real EOD bars to produce matured T+90/T+180 outcomes immediately.
+
+### Why parked (not a code change — a data + run step)
+
+1. **Needs a point-in-time OHLCV drop.** `yahoo.py` caches only in-memory (no disk cache), so backtesting offline here needs per-symbol CSVs (bhavcopy schema `Date,Open,High,Low,Close,Volume`, ~2yr deep: ≥260 bars before as-of + ≥180 after) placed in a Stockya-local `STOCKYA_OHLCV_DIR` — produced by a yfinance fetch script the user runs on the internet-connected laptop. Never source from the sibling tuner repo.
+2. **Signed pressure must be emitted first** so backtested traces carry it — done for `[VD]` (2026-07-24); the `[HR]`-passer widening (prereq C) is still open.
+3. **Survivorship caveat** (backtest uses today's universe, as-of ≥ 2022-01-01) is acceptable for a first-pass correlation but must be stated on any result.
+
+### Signal to revisit
+
+When the user wants to decide the signed-pressure/veto items without waiting for live maturation: (i) run the fetch script on the laptop → drop CSVs; (ii) `backtest.py` Mode B across a span of past as-of dates → `outcomes.jsonl` with matured labels + shadow metrics; (iii) `weekly-learn` / `scripts/tune_weights.py` regress. Only a positive, survivorship-caveated correlation promotes anything off the parked list.
+
+### Fix-points if it ships
+
+- Fetch script (laptop-side, standalone): reads `config/nifty100.txt` equivalent (universe from `backend/universe.py::NIFTY_100`), writes `SYMBOL.NS.csv` per ticker. Not committed data.
+- Run: `DATA_SOURCE=bhavcopy STOCKYA_OHLCV_DIR=<stockya-local dir> python -m backend.backtest` (Mode B).
+- `[HR]`-passer outcome widening: `stages/outcome.py` (+ `was_selected` column) — prereq C, shared with *Precision-first refit*.

@@ -9,6 +9,16 @@ Columns:
   return_pct, hit_target, hit_stop, exit_reason
 
 The same file is the dataset for the contextual bandit / offline RL trainer.
+
+Reliability contract (2026-07-24): an outcome is recorded for EVERY pick at
+EVERY target date it reaches —
+  * the pick's OWN target horizon (its `horizon_days` / end_date bucket), and
+  * the tuner's standard 90 / 180 windows,
+and the snapshot fires ON OR AFTER the target date (catch-up), never only on
+the exact calendar day, so a missed run (weekend / holiday / app off) can never
+lose an outcome. `_already_logged(trace_id, horizon)` keeps it idempotent. Each
+row documents `nominal_target_date`, `snapshot_date`, and `snapshot_lag_days`
+so a late capture is honest and auditable.
 """
 
 from __future__ import annotations
@@ -60,6 +70,24 @@ _CLOSED_STATUSES: frozenset[str] = frozenset({
 })
 
 
+def _pick_horizon_days(r: dict) -> Optional[int]:
+    """The pick's OWN target horizon (its end_date bucket), if recorded.
+
+    Portfolio rows carry `horizon_days` (30/60/90/120/180/...). Returning it
+    lets the tracker snapshot an outcome at the pick's own target date, not
+    only at the tuner's standard 90/180 windows. Returns None when blank or
+    unparseable so a missing bucket never crashes the tracker.
+    """
+    raw = r.get("horizon_days")
+    if raw in (None, ""):
+        return None
+    try:
+        h = int(float(raw))
+    except (TypeError, ValueError):
+        return None
+    return h if h > 0 else None
+
+
 def _read_portfolio() -> list[dict]:
     if not _PORTFOLIO_CSV.exists():
         return []
@@ -101,14 +129,17 @@ def _append_outcome(row: dict) -> None:
 
 
 def run_outcome_tracker(
-    fetch_close: Callable[[str], Optional[float]],
+    fetch_close: Callable[[str, Optional[date]], Optional[float]],
     today: Optional[date] = None,
 ) -> dict:
-    """Walk portfolio.csv; for each pick whose entry_date + 90 (or 180) is
-    today, fetch today's close and append an outcome row.
+    """Walk portfolio.csv; for each pick that has reached a target date (its
+    own horizon and/or the standard 90/180 windows), append an outcome row.
 
-    `fetch_close(symbol) -> float | None` is caller-supplied so we don't lock
-    this stage to yfinance.
+    `fetch_close(symbol, as_of) -> float | None` is caller-supplied so we don't
+    lock this stage to yfinance. It MUST return the close AS OF `as_of` (the
+    nearest trading day <= as_of), not merely the latest close — this keeps a
+    caught-up snapshot priced at the true target date rather than the run day.
+    Passing `as_of=None` means "latest".
     """
     today = today or datetime.now(IST).date()
     rows = _read_portfolio()
@@ -129,9 +160,25 @@ def run_outcome_tracker(
         except ValueError:
             continue
 
-        for horizon in HORIZONS_DAYS:
+        # Horizons to snapshot for THIS pick: the tuner's standard windows
+        # (90/180) PLUS the pick's own target horizon (its end_date bucket),
+        # so every pick gets an outcome AT ITS OWN target date — not only at
+        # 90/180. See the reliability contract in the module docstring.
+        horizons: dict[int, str] = {h: "standard" for h in HORIZONS_DAYS}
+        pick_horizon = _pick_horizon_days(r)
+        if pick_horizon:
+            horizons[pick_horizon] = (
+                "standard+pick_target" if pick_horizon in HORIZONS_DAYS
+                else "pick_target"
+            )
+
+        for horizon, horizon_kind in sorted(horizons.items()):
             target_d = entry_d + timedelta(days=horizon)
-            if target_d != today:
+            # Fire ON OR AFTER the target date (catch-up), never only on the
+            # exact calendar day: a missed run (weekend / holiday / app off)
+            # must not lose the outcome forever. _already_logged keeps re-runs
+            # idempotent so no row is ever duplicated.
+            if today < target_d:
                 continue
 
             summary["checked"] += 1
@@ -143,7 +190,7 @@ def run_outcome_tracker(
                 summary["skipped_already_logged"] += 1
                 continue
 
-            close = fetch_close(r["symbol"])
+            close = fetch_close(r["symbol"], target_d)
             if close is None:
                 summary["no_price"] += 1
                 continue
@@ -179,6 +226,7 @@ def run_outcome_tracker(
                 realized_return_pct = round((exit_px / entry_px - 1) * 100, 2)
                 exit_reason_final = r.get("exit_reason") or None
 
+            snapshot_lag = (today - target_d).days
             _append_outcome({
                 "ts": datetime.now(IST).isoformat(timespec="seconds"),
                 "label_schema_version": LABEL_SCHEMA_VERSION,
@@ -188,6 +236,15 @@ def run_outcome_tracker(
                 "entry_date": entry_iso,
                 "entry_price": entry_px,
                 "horizon_days": horizon,
+                # Which target this row documents + run-timing audit.
+                # The close is priced AS OF nominal_target_date (fetch_close is
+                # asked for that date), so mtm/realized are honest at the target
+                # even when the logging run was late. snapshot_lag_days records
+                # only how late the RUN was (run-cadence audit), not price error.
+                "horizon_kind": horizon_kind,
+                "nominal_target_date": target_d.isoformat(),
+                "snapshot_date": today.isoformat(),
+                "snapshot_lag_days": snapshot_lag,
                 "exit_price": round(close, 2),
                 # ---- v2 dual-label ----
                 "mtm_return_pct": round(mtm_ret, 2),
@@ -214,3 +271,46 @@ def run_outcome_tracker(
             summary["appended"] += 1
 
     return summary
+
+
+def _default_asof_close(symbol: str, as_of: Optional[date] = None) -> Optional[float]:
+    """Deterministic close AS OF `as_of` (nearest trading day <= as_of).
+
+    Single source of truth for both the nightly run and the standalone script
+    below, so the two can never drift. Reads through the app's own data layer
+    (`backend.fetch.fetch_ohlcv`, whichever DATA_SOURCE is configured) — no LLM,
+    no extra dependency beyond what the configured source already uses. Returns
+    None on any failure so a missing ticker can never break outcome logging.
+    """
+    try:
+        from ..fetch import fetch_ohlcv
+        end = as_of.isoformat() if as_of is not None else None
+        df = fetch_ohlcv(symbol, end=end)
+        if df is None or df.empty:
+            return None
+        return float(df["Close"].iloc[-1])
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def main() -> dict:
+    """Standalone automatic outcome generation — `python -m backend.stages.outcome`.
+
+    Deterministic and self-contained: walks portfolio.csv, prices every reached
+    target AS OF its date, appends matured rows to outcomes.jsonl. Safe to run
+    on any schedule (cron / Task Scheduler) independently of the full pipeline;
+    catch-up + idempotency mean extra runs never duplicate or miss a row. The
+    RUNTIME NEVER CALLS AN LLM — an LLM's role is offline advice only.
+    """
+    import logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] outcome: %(message)s",
+    )
+    summary = run_outcome_tracker(_default_asof_close)
+    logging.getLogger("outcome").info("Outcome tracker: %s", summary)
+    return summary
+
+
+if __name__ == "__main__":
+    main()

@@ -1,5 +1,100 @@
 # Changelog
 
+## 2026-07-24 — Outcome documentation made reliable (tracker was never wired)
+
+The reward signal the whole tuner depends on was being recorded **never**.
+Three defects, all fixed:
+
+**1. `run_outcome_tracker` was dead code — called from nowhere.** Wired into
+the daily driver `backend/nightly.py` (guarded, non-fatal, reuses the same
+snapshot-based close as the position-trace block). Now every daily run records
+matured outcomes.
+
+**2. Only the hardcoded 90/180 windows were checked — not the pick's own
+target.** Portfolio rows carry their own `horizon_days` (30/60/90/...). The
+tracker now snapshots at the pick's OWN target horizon *and* the tuner's
+standard 90/180, tagged by a new `horizon_kind` field
+(`standard` / `pick_target` / `standard+pick_target`). New helper
+`outcome._pick_horizon_days`.
+
+**3. Exact-day equality lost outcomes permanently on a missed run.** The old
+`if target_d != today: continue` meant a target date landing on a weekend /
+holiday / app-off day was never captured — the window closed forever. Now fires
+**on or after** the target date (catch-up), with idempotency preserved by
+`_already_logged(trace_id, horizon)`. Each row documents `nominal_target_date`,
+`snapshot_date`, and `snapshot_lag_days` so a late capture is honest and
+auditable.
+
+**4. Late catch-up is now priced AS OF the target date.** The close callable
+signature is `fetch_close(symbol, as_of)`; the shared builder
+`outcome._default_asof_close` returns the close as of the target date via
+`fetch_ohlcv(end=...)`, so mtm/realized are honest at the target even when the
+logging run was late. `snapshot_lag_days` now records only run lateness, not
+price error. (This was flagged as a parked refinement in the prior draft — now
+shipped.)
+
+**5. Automatic, deterministic, no-LLM generation.** `outcome.main()` +
+`if __name__ == "__main__"` make it runnable standalone
+(`python -m backend.stages.outcome`) on any schedule, and `nightly.py` reuses
+the same `_default_asof_close` (single source of truth, no drift). The runtime
+never calls an LLM — outcome generation is pure data-layer + arithmetic; any
+LLM advice happens offline against the produced `outcomes.jsonl`.
+
+**Blast radius / risk — measurement only.** No change to selection, sizing, or
+exits; this is the `[O]` documentation path. Additive fields + additional rows
+only (tolerant readers unaffected; `label_schema_version` stays 2). Verified
+offline: new stdlib unit tests (`backend/tests/test_outcome_and_indicators.py`,
+`python -m unittest` — 5 pass) cover as-of pricing, catch-up, per-pick horizons,
+idempotency, `declined` skipping, not-due deferral, and signed-pressure math on
+real ABB bars. Earlier dry-run against the real 22-pick `portfolio.csv` wrote 31
+rows at correct horizons, idempotent on re-run, with the real `outcomes.jsonl`
+untouched.
+
+## 2026-07-24 — Signed-pressure SHADOW instrumentation in `[VD]` (+ KIMI3 review verdict)
+
+Evaluated an external "KIMI3" accumulation review against the live code and a
+2-week personal-laptop run (traces Jul 2–23, ~2000 files). **Shipped one
+trace-only change; everything else was rejected on evidence and parked in
+`ideas.md`.**
+
+**1. `[VD]` now emits `signed_pressure_ewm.{hl3,hl10,hl30}` — trace-only.**
+
+The signed-pressure primitives (`indicators.signed_volume_pressure` /
+`ewm_signed_pressure`, built 2026-07-17) were pure but **dead code** — never
+called, confirmed by 0 of ~2000 laptop traces containing them. Without emission
+the shadow-correlation gate the refit plan requires could never accumulate.
+`backend/stages/volume.py` now computes the three-horizon EWM reads (halflife
+3/10/30 ≈ week / mid-swing / base-period) and writes them into the `[VD]`
+trace features.
+
+**Blast radius / risk — none to selection.** Does NOT touch `passed`, `score`,
+or `margin`; composite weight stays 0, distribution veto stays `shadow`. Which
+stocks get picked is unchanged. None-safe (nulls under 61 bars). Verified on
+real ABB bars (`hl3/10/30 = 0.199 / 0.121 / 0.091`) and on a 10-bar slice (all
+null). Deterministic; backtests remain byte-identical for any ticker whose
+prior traces lacked the new key.
+
+**2. KIMI3 recommendations — rejected, documented in `ideas.md`.**
+
+- **Flip distribution veto to `block`** — rejected *on evidence*: over Jul 2–23
+  the shadow veto would have fired on **35% of breakout candidates (203/582)**,
+  ~90% from one rule (`dist_day_cluster`). Blocking would cull a third of the
+  funnel on a single trailing-down-day signal. Stays in shadow.
+- **Wire signed pressure into live scoring / young-position exit** — no shadow
+  history yet (that is what change #1 begins to fix); also re-points at the
+  single-bar-sensitivity failure mode that the post-Bajaj-Auto velocity-bonus
+  cut and symmetric flip thresholds were built to avoid.
+- **Sector-relative CMF bonus** — references a `cmf_21d` indicator that does not
+  exist and sector data that is not wired. Duplicate of the parked
+  *Precision-first refit → Follow-up B*.
+- KIMI's `avwap_20` / `cmf_21d` were hallucinated; its "50% accuracy" and
+  "enough shadow history" premises were fabricated (no matured outcomes).
+
+The qualified/parked detail lives in `ideas.md` → *"KIMI3 accumulation
+recommendations — evaluated & parked (2026-07-24)"*, which cross-links the
+owning pillars (*Precision-first refit*, *Balanced-holding pillar H*,
+*Multi-window accumulation label*).
+
 ## 2026-07-21 — VSA effort-vs-result gate on the pocket pivot
 
 Tightens the pocket-pivot trigger so a big-volume bar that *didn't move price*

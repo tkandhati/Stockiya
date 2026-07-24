@@ -1,11 +1,49 @@
 # Agent Handoff
 
-Last updated: 2026-07-19
+Last updated: 2026-07-24
 
 For proposals that have been analyzed but not shipped, see `WISHLIST.md`.
 For ideas parked pending trace evidence, see `ideas.md`.
 
-## Latest Change (2026-07-19) — Weekend / holiday no-fire guard
+## Latest Change (2026-07-24) — Outcome documentation reliability + signed-pressure shadow emission + KIMI3 verdict
+
+Three shipped changes, all **measurement-only** (no change to selection, sizing,
+or exits). Full narrative in `CHANGELOG.md → 2026-07-24`. Summary for the next agent:
+
+- **Outcome tracker was DEAD CODE — `run_outcome_tracker` was called from
+  nowhere, so outcomes were recorded *never*.** Now wired into
+  `backend/nightly.py` and runnable standalone
+  (`python -m backend.stages.outcome`, deterministic, no LLM at runtime). It
+  records an outcome for **every pick at every target date it reaches** — the
+  pick's own `horizon_days` bucket (30/60/90/…) *and* the standard 90/180 —
+  firing **on or after** the target (catch-up: a missed weekend/holiday/app-off
+  run no longer loses an outcome forever), idempotent via `_already_logged`, and
+  priced **as of the target date** through the shared `_default_asof_close`
+  (→ `fetch_ohlcv(end=…)`). New row fields: `horizon_kind`,
+  `nominal_target_date`, `snapshot_date`, `snapshot_lag_days`. Populates only
+  where a close is fetchable (laptop `DATA_SOURCE=yahoo`); on the firewalled box
+  it returns None → counted `no_price`, non-fatal.
+- **`[VD]` now emits `signed_pressure_ewm.{hl3,hl10,hl30}` to the trace** —
+  SHADOW-only, does NOT touch `passed`/`score`/`margin`. The signed-pressure
+  primitives (built 2026-07-17) were pure but never called; this begins
+  accumulating the shadow history the *Precision-first refit* gate needs.
+- **KIMI3 accumulation review evaluated and parked** (`ideas.md`). Rejected on
+  evidence: a 2-week laptop run (traces Jul 2–23) shows the shadow distribution
+  veto would fire on **35% of breakout candidates, ~90% from one rule
+  (`dist_day_cluster`)** — do NOT flip `distribution_veto_mode` to `block`.
+  KIMI's `cmf_21d` / `avwap_20` don't exist; its "50% accuracy" and "enough
+  shadow history" premises were fabricated (no matured outcomes).
+- **First project unit tests:** `backend/tests/test_outcome_and_indicators.py`
+  (`python -m unittest backend.tests.test_outcome_and_indicators` — 5 pass).
+  Stdlib `unittest` only (no pytest/PyPI on the firewalled box).
+
+**Still parked (`ideas.md`):** signed pressure → composite weight, veto →
+`block`, pressure-divergence exit, `[HR]`-passer outcome widening (prereq C),
+and the offline-backtest route to mature outcomes without the 90-day wait.
+**Doc debt:** `ARCHITECTURE.md` / `PROCESS_FLOW.md` still describe `[O]` as
+T+90/T+180 only — refresh when next editing them.
+
+## Previous Change (2026-07-19) — Weekend / holiday no-fire guard
 
 Small, focused behavior change. On non-trading days the pipeline no
 longer writes `data/picks_<date>.json` or touches the portfolio ledger;

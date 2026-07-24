@@ -90,6 +90,24 @@ def run_nightly() -> dict:
         log.exception("daily position trace failed (non-fatal)")
         errors.append(f"position_trace: {e}")
 
+    # Outcome documentation. For every open pick that has reached a target
+    # date (its own horizon and/or the tuner's 90/180 windows), append a
+    # matured outcome row to data/traces/outcomes.jsonl. Catch-up + idempotent,
+    # so a missed run day never loses an outcome. Guarded: a failure here must
+    # not break the pipeline. (Previously run_outcome_tracker was never called
+    # from anywhere — outcomes were recorded never; fixed 2026-07-24.)
+    log.info("Recording matured pick outcomes...")
+    try:
+        from backend.stages.outcome import run_outcome_tracker, _default_asof_close
+
+        # Same as-of close builder the standalone script uses (single source of
+        # truth) — deterministic, prices each target as of its own date.
+        osum = run_outcome_tracker(_default_asof_close)
+        log.info("Outcome tracker: %s", osum)
+    except Exception as e:
+        log.exception("outcome tracker failed (non-fatal)")
+        errors.append(f"outcome: {e}")
+
     finished = datetime.now(IST).isoformat(timespec="seconds")
     try:
         from backend.data_health import record_run

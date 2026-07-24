@@ -212,13 +212,13 @@ See [WEEKLY_TRACKING.md](./WEEKLY_TRACKING.md) — what to monitor weekly, bi-we
 | ✅ done | Pipeline of swappable stages |
 | ✅ done | Per-ticker JSONL traces (RL dataset) |
 | ✅ done | NSE block + bulk deals downloader |
-| ✅ done | Outcome tracker (T+90 / T+180 writes to `outcomes.jsonl`) |
+| ✅ done | Outcome tracker — auto-generated, wired into `nightly.py` + standalone `python -m backend.stages.outcome`. Records **every pick's own target date** *and* standard T+90/T+180; catch-up firing, as-of-target pricing, idempotent. (2026-07-24: was dead code — never called — until wired; see CHANGELOG + `backend/tests/`.) |
 | ✅ done | Wyckoff-VPA spec documented (PRINCIPLES.md, ARCHITECTURE.md §0-§0.3) |
 | ✅ done | v3 soft-gate composite spine (ACS + AC wired, composite `S ≥ τ`) |
 | ✅ done | Champion-challenger tuner (`scripts/tune_weights.py`, monotone metric) |
 | ✅ done | NIFTY 500 universe + `STOCKYA_UNIVERSE=custom` file loader |
 | ✅ done | Empty-state UI collapsed to one tabbed `ClosestToFiringPanel` |
-| ✅ done | Precision-first refit dark-launch (2026-07-17): signed-pressure primitives, ingest hygiene, distribution veto `[DV]` in shadow, classified deal flow, `accumulation_assessment` envelope. See CHANGELOG for the full contract; flip `distribution_veto_mode` in `config/stage_weights.json` to activate. |
+| ✅ done | Precision-first refit dark-launch (2026-07-17): signed-pressure primitives, ingest hygiene, distribution veto `[DV]` in shadow, classified deal flow, `accumulation_assessment` envelope. See CHANGELOG for the full contract; flip `distribution_veto_mode` in `config/stage_weights.json` to activate. (2026-07-24: `[VD]` now emits `signed_pressure_ewm` to the trace — still shadow/unweighted. Do **not** flip the veto: a 2-week run shows it would cull ~35% of breakout candidates, ~90% from one rule. See `ideas.md` → KIMI3 verdict.) |
 | ✅ done | Balanced-holding foundation (2026-07-17): action-priority correction (URGENT bug fix — stop/T2/T1 now precede distribution/day_180/end_date), outcome label v2 (mtm/realized split with is_open flag), split-date advisory labels, 9-state action ladder, sliding-window trigger every 5 T+90 outcomes with auto champion-challenger invocation (tuner's `MIN_OUTCOMES_TO_TUNE=20` floor + strict-beat ratchet gate every write). 13 medium/larger items parked in `ideas.md` D–P. |
 | ⏳ next | Wire `stages/wyckoff.py`, `vsa.py`, `avwap.py` into `PER_TICKER_CHAIN` (see AGENT_HANDOFF.md for step-by-step) |
 | ⏳ next | `stages/exit_watch.py` daily scan on held picks |
