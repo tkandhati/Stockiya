@@ -10,8 +10,6 @@ import {
 } from 'lucide-react'
 import { fetchStockDetail, fmtINR, fmtPct } from '../api'
 import { AccumulationCard } from '../components/AccumulationCard'
-import { PriceSparkline } from '../components/PriceSparkline'
-import { ExitScenarios } from '../components/ExitScenarios'
 import { ReasoningChecklist } from '../components/ReasoningChecklist'
 import { DemoBanner } from '../components/DemoBanner'
 
@@ -223,16 +221,6 @@ export function StockDetailPage() {
           {/* PRIMARY: volume signature — the heart of the analysis */}
           <section className="mt-6">
             <AccumulationCard accum={data.accumulation} />
-          </section>
-
-          {data.pick_today && (
-            <section className="mt-6">
-              <ExitScenarios pick={data.pick_today} />
-            </section>
-          )}
-
-          <section className="mt-6">
-            <PriceSparkline data={data.history_6m} />
           </section>
         </>
       )}

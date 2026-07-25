@@ -354,21 +354,22 @@ class PositionDatesResponse(BaseModel):
 
 
 class PositionAsOf(BaseModel):
-    """One position's accumulation card reconstructed as of a past date,
+    """"If I'd entered on date D, is it safe or risky as of today?" — computed
     from persisted trace files only (no live fetch). `available` is False when
-    no trace exists for that day (market holiday / never scanned)."""
+    no trace exists for the selected day (market holiday / never scanned)."""
     available: bool
     symbol: str
-    date: str
-    close: Optional[float] = None
-    pnl_pct: Optional[float] = None
-    entry_price: Optional[float] = None
-    stop_price: Optional[float] = None
-    t1_price: Optional[float] = None
-    t2_price: Optional[float] = None
-    entry_date: Optional[str] = None
+    date: str                                    # selected hypothetical entry day
+    as_of_date: Optional[str] = None             # "today" = latest data on file
+    entry_price: Optional[float] = None          # that day's close
+    current_price: Optional[float] = None        # latest close on file
+    stop_price: Optional[float] = None           # entry - STOP_PCT
+    pnl_pct: Optional[float] = None              # since the selected day
+    verdict: Optional[str] = None                # safe | caution | risky
+    safe: Optional[bool] = None
+    headline: Optional[str] = None
+    trajectory_overall: Optional[str] = None
     accumulation_gauge: Optional[dict] = None
-    stages_present: list[str] = []
 
 
 class TakePositionRequest(BaseModel):

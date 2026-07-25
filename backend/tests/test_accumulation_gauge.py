@@ -7,12 +7,17 @@ boundaries so the mapping is auditable and re-runs are byte-identical.
 """
 from __future__ import annotations
 
+import json
+import tempfile
 import unittest
 from datetime import datetime
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import backend.accumulation_gauge as G
 from backend import day_freshness as F
+from backend import position_history as PH
+from backend import signal_trajectory as ST
 
 IST = ZoneInfo("Asia/Kolkata")
 
@@ -184,6 +189,94 @@ class TestFreshness(unittest.TestCase):
     def test_naive_datetime_assumed_ist(self):
         self.assertFalse(F.is_frozen(datetime(2026, 7, 24, 9, 0)))
         self.assertTrue(F.is_frozen(datetime(2026, 7, 24, 18, 0)))
+
+
+class TestRecommendedDates(unittest.TestCase):
+    """available_position_dates lists only days the symbol was recommended."""
+
+    def test_only_recommended_dates(self):
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            (base / "picks_2026-07-20.json").write_text(
+                json.dumps({"picks": [{"symbol": "RELIANCE.NS"}]}))
+            (base / "picks_2026-07-21.json").write_text(
+                json.dumps({"picks": [{"symbol": "TCS.NS"}]}))
+            (base / "picks_2026-07-22.json").write_text(
+                json.dumps({"picks": [{"symbol": "RELIANCE.NS"}, {"symbol": "INFY.NS"}]}))
+            (base / "picks_bad.json").write_text("not json")
+            old = PH._DATA_DIR
+            PH._DATA_DIR = base
+            try:
+                got = PH.available_position_dates("reliance.ns")  # case-insensitive
+            finally:
+                PH._DATA_DIR = old
+        # newest first, only the two days RELIANCE was in picks
+        self.assertEqual(got, ["2026-07-22", "2026-07-20"])
+
+
+class TestIfEnteredOn(unittest.TestCase):
+    """position_if_entered_on: D -> latest trajectory, safe/risky verdict."""
+
+    def _write(self, base, date, close, obv, updown, ma150):
+        # Real traces carry both "stage" and "stage_id"; signal_trajectory reads
+        # "stage", position_history reads either — set both.
+        def row(sid, feats):
+            return {"stage": sid, "stage_id": sid, "features": feats}
+        rows = [
+            row("I", {"current": close}),
+            row("LT", {
+                "obv_90d_slope_pct": obv,
+                "up_down_vol_ratio_90d": updown,
+                "ma150_slope_pct": ma150,
+            }),
+            row("CS", {"atr_pct": 2.0}),
+        ]
+        (base / f"run_{date}_TEST.NS.jsonl").write_text(
+            "\n".join(json.dumps(r) for r in rows) + "\n")
+
+    def _run(self, base):
+        # position_history and signal_trajectory each hold their own _TRACES_DIR
+        # constant (same real path in prod); patch both for the fixture.
+        old_ph, old_st = PH._TRACES_DIR, ST._TRACES_DIR
+        PH._TRACES_DIR = base
+        ST._TRACES_DIR = base
+        try:
+            return PH.position_if_entered_on("TEST.NS", "2026-07-01")
+        finally:
+            PH._TRACES_DIR = old_ph
+            ST._TRACES_DIR = old_st
+
+    def test_weakened_since_entry_is_risky(self):
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            self._write(base, "2026-07-01", 100.0, 8.0, 1.4, 5.0)   # entry: strong
+            self._write(base, "2026-07-20", 95.0, 8.0, 0.7, 5.0)    # today: up/down flipped
+            r = self._run(base)
+        self.assertTrue(r["available"])
+        self.assertEqual(r["date"], "2026-07-01")
+        self.assertEqual(r["as_of_date"], "2026-07-20")
+        self.assertEqual(r["entry_price"], 100.0)
+        self.assertEqual(r["current_price"], 95.0)
+        self.assertEqual(r["pnl_pct"], -5.0)
+        self.assertEqual(r["verdict"], "risky")
+        self.assertEqual(r["accumulation_gauge"]["level"], 1)
+
+    def test_still_strong_is_safe(self):
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            self._write(base, "2026-07-01", 100.0, 8.0, 1.4, 5.0)
+            self._write(base, "2026-07-20", 108.0, 8.0, 1.4, 5.0)   # unchanged strong
+            r = self._run(base)
+        self.assertEqual(r["verdict"], "safe")
+        self.assertEqual(r["pnl_pct"], 8.0)
+        self.assertGreaterEqual(r["accumulation_gauge"]["level"], 4)
+
+    def test_missing_entry_trace_unavailable(self):
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            self._write(base, "2026-07-20", 95.0, 8.0, 1.4, 5.0)   # only 'today'
+            r = self._run(base)
+        self.assertFalse(r["available"])
 
 
 if __name__ == "__main__":

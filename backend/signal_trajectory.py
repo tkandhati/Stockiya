@@ -456,6 +456,58 @@ def compute_trajectory(
     )
 
 
+def trajectory_between_traces(
+    symbol: str,
+    entry_date_iso: str,
+    current_date_iso: str,
+    *,
+    trading_days_since_entry: Optional[int] = None,
+) -> TrajectoryReport:
+    """File-only trajectory: compare the entry-date trace to a LATER trace date.
+
+    Like `compute_trajectory`, but "current" is read from a persisted trace
+    (`current_date_iso`) instead of a live OHLCV fetch — so it is deterministic
+    and firewall-safe. Used for the "if I had entered on D, is it safe or risky
+    as of <latest date>?" replay. Reuses the exact same classifier
+    (`_build_report`) as the live path, so the verdict is consistent.
+    """
+    entry_lt = _load_stage_features(symbol, entry_date_iso, "LT")
+    if not entry_lt:
+        return TrajectoryReport(
+            overall="unknown",
+            headline=f"No entry trace for {symbol} on {entry_date_iso}",
+        )
+    cur_lt = _load_stage_features(symbol, current_date_iso, "LT")
+    if not cur_lt:
+        return TrajectoryReport(
+            overall="unknown",
+            headline=f"No current trace for {symbol} on {current_date_iso}",
+        )
+    entry_vd = _load_stage_features(symbol, entry_date_iso, "VD")
+    entry_br = _load_stage_features(symbol, entry_date_iso, "BR")
+    cur_vd = _load_stage_features(symbol, current_date_iso, "VD")
+    cur_i = _load_stage_features(symbol, current_date_iso, "I")
+
+    # Map the later trace's stage features onto the `current` dict shape that
+    # _build_report expects. Missing fields (e.g. last_volume) simply leave
+    # their windowed indicators "unknown" — the 3 LT signals drive the verdict.
+    current = {
+        "obv_90d_slope_pct": cur_lt.get("obv_90d_slope_pct"),
+        "up_down_vol_ratio_90d": cur_lt.get("up_down_vol_ratio_90d"),
+        "ma150_slope_pct": cur_lt.get("ma150_slope_pct"),
+        "obv_flow_inflection": cur_vd.get("obv_flow_inflection"),
+        "last_close": cur_i.get("current"),
+        "adv_50d": cur_vd.get("adv_50d"),
+    }
+    return _build_report(
+        entry_lt=entry_lt,
+        entry_vd=entry_vd,
+        entry_br=entry_br,
+        current=current,
+        trading_days_since_entry=trading_days_since_entry or 0,
+    )
+
+
 def _build_report(
     *,
     entry_lt: dict,

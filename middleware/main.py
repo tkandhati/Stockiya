@@ -206,24 +206,11 @@ def position_dates(symbol: str) -> PositionDatesResponse:
     response_model=PositionAsOf,
 )
 def position_as_of_endpoint(symbol: str, date: str) -> PositionAsOf:
-    """Reconstruct a position's accumulation card as of a past date, from
-    persisted traces only (deterministic, firewall-safe — never fetches)."""
-    from backend.position_history import open_position_targets, position_as_of
+    """"If I'd entered on `date`, is it safe or risky as of today?" — computed
+    from persisted traces only (deterministic, firewall-safe — never fetches)."""
+    from backend.position_history import position_if_entered_on
     symbol = symbol.upper()
-    targets = open_position_targets(symbol)
-    if targets is None:
-        raise HTTPException(
-            status_code=404, detail=f"no active position for {symbol}",
-        )
-    card = position_as_of(
-        symbol, date,
-        entry_price=targets["entry_price"],
-        stop_price=targets["stop_price"],
-        t1_price=targets["t1_price"],
-        t2_price=targets["t2_price"],
-        entry_date=targets["entry_date"],
-    )
-    return PositionAsOf(**card)
+    return PositionAsOf(**position_if_entered_on(symbol, date))
 
 
 @app.post("/api/positions/{pick_id}/take", response_model=PositionsResponse)

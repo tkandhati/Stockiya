@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { getPositionAsOf, getPositionDates, fmtINR, fmtPct } from '../api'
+import { getPositionAsOf, getPositionDates, fmtPct } from '../api'
 import type { AccumulationGauge, Position } from '../types'
 
 /**
@@ -96,10 +96,19 @@ export function AccumulationStrength({ position: p }: { position: Position }) {
         <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
           Accumulation strength
           {isHistorical && asOfData?.available && (
-            <span className="ml-2 rounded bg-slate-200 px-1.5 py-0.5 font-mono text-[9px] text-slate-700">
-              AS OF {asOf}
-              {asOfData.close != null && ` · ${fmtINR(asOfData.close)}`}
+            <span
+              className={`ml-2 rounded px-1.5 py-0.5 font-mono text-[9px] ${
+                asOfData.verdict === 'safe'
+                  ? 'bg-emerald-100 text-emerald-900'
+                  : asOfData.verdict === 'risky'
+                  ? 'bg-rose-100 text-rose-900'
+                  : 'bg-amber-100 text-amber-900'
+              }`}
+              title={asOfData.headline ?? ''}
+            >
+              IF ENTERED {asOf} → {String(asOfData.verdict ?? '').toUpperCase()}
               {asOfData.pnl_pct != null && ` · ${fmtPct(asOfData.pnl_pct)}`}
+              {asOfData.as_of_date && ` · as of ${asOfData.as_of_date}`}
             </span>
           )}
         </span>
@@ -112,9 +121,9 @@ export function AccumulationStrength({ position: p }: { position: Position }) {
               setAsOf(e.target.value === 'latest' ? null : e.target.value)
             }
             className="rounded-md border border-slate-300 bg-white px-1.5 py-0.5 font-mono text-[10px] text-slate-700"
-            title="Replay this position's strength as of a past date"
+            title="Days this stock was recommended — see its accumulation strength as of that day"
           >
-            <option value="latest">Latest</option>
+            <option value="latest">Latest (today)</option>
             {dates.map((d) => (
               <option key={d} value={d}>
                 {d}

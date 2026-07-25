@@ -4,9 +4,10 @@
 
 A per-position **"how strong is the accumulation, and how much adversity can it
 absorb"** gauge, shown as a low→high 5-segment bar on every position card, plus
-a date-picker that replays a position's strength as of any past trading day.
-Deterministic and firewall-safe (reads persisted files; never fetches).
-**Purely additive — no selection, sizing, or exit decision changes.**
+a date-picker that replays **how a position opened on a past recommendation day
+would stand today — safe or risky**. Deterministic and firewall-safe (reads
+persisted files; never fetches). **Purely additive — no selection, sizing, or
+exit decision changes.**
 
 **1. Pure gauge — `backend/accumulation_gauge.py` (no I/O).** Maps signals the
 system already computes to a 1..5 level (1 red FLIPPED → 5 dark-green STRONG).
@@ -14,10 +15,10 @@ The colour SPINE is `trajectory.overall` (strong/stable/unknown/weakening/
 flipped — already a 5-rung ladder). `action_label` / `trajectory_flip` /
 `close≤stop` only ESCALATE toward red or CONFIRM green — they never set a colour
 alone (this avoids the collapse a pure-`action_label` gauge would suffer, since
-the soft-weakness labels rarely fire while `soft_signal_count` is unwired). Two
-feeders, one renderer: `gauge_from_position` (live) and
-`gauge_from_trace_features` (historical, a deterministic 0–100 score over
-validated per-date trace fields — no shadow pressure, no AVWAP).
+the soft-weakness labels rarely fire while `soft_signal_count` is unwired).
+`gauge_from_position` renders both the live card and the date-replay (via a
+hypothetical position); `gauge_from_trace_features` is a pure 0–100 absolute-
+strength scorer over validated per-date fields (no shadow pressure, no AVWAP).
 
 **2. Per-stock adversity buffer (dynamic, not a global setting).**
 `buffer_sessions ≈ headroom_to_stop_% ÷ atr_pct`, where `atr_pct` is the stock's
@@ -27,14 +28,18 @@ user's review cadence — **2 checks/day (afternoon + night)** — with advisory
 text (ACT_NOW → SKIP_SEVERAL). The buffer is an advisory, clearly not a market
 prediction.
 
-**3. Historical replay — `backend/position_history.py` (file-only, no fetch).**
-`available_position_dates(symbol)` globs `data/traces/run_*_<symbol>.jsonl`;
-`position_as_of(symbol, date, …)` reconstructs that day's card from the trace
-(close from `[I]`, features merged across stages) + targets from
-`portfolio.csv`. Deliberately does **not** use `backtest.py`'s `as_of` path,
-which fetches Yahoo. Because past traces are immutable and today only appears
-once its trace exists, freeze-after-EOD and holiday-fallback (latest = previous
-working day) come for free.
+**3. "If I'd entered on D, is it safe today?" replay — `position_history.py`
+(file-only, no fetch).** `available_position_dates(symbol)` lists the days the
+symbol was **recommended** (scans `data/picks_<date>.json`, **not** every
+scanned day). `position_if_entered_on(symbol, D)` treats D as a hypothetical
+entry and compares the accumulation trajectory **from D to the latest trace on
+file** — reusing the *same* classifier as the live bar via the new pure
+`signal_trajectory.trajectory_between_traces` (no live fetch; "current" comes
+from the latest trace, not Yahoo). It derives the hypothetical entry (D's close),
+a −`STOP_PCT` stop, P&L since D, and a **safe / caution / risky** verdict, then
+renders through the same gauge. "Today" = the latest trace on disk (a holiday
+just means that's the previous working day). Deliberately does **not** use
+`backtest.py`'s `as_of` path (which fetches Yahoo).
 
 **4. Freshness gate — `backend/day_freshness.py`, wired into the picks server.**
 One simple 16:00 IST cutoff, applied in `middleware/picks.get_or_generate_picks`:
@@ -57,17 +62,29 @@ deliberately over a staleness guard for simplicity.)
 picker at the top of each `PositionCard` (outside the card `<Link>` so controls
 don't navigate). `types.ts` / `api.ts` extended. **Removed the SEBI "consult a
 SEBI-registered advisor" `Disclaimer` banner from all pages** (Picks, Positions,
-Backtest); the `ExitScenarios` "SEBI/RBI action" risk example was left intact.
+Backtest).
+
+**7. Stock detail page decluttered.** Removed the hardcoded `ExitScenarios`
+block (the same five A/B1/B2/C/D scenarios with identical prose on every stock,
+only prices interpolated — repetitive filler) and both charts. An accumulation
+time-series chart was briefly added then removed at the user's request; the
+6-month `PriceSparkline` is also gone. The *enforced* exits are unchanged
+(position action pill + time-stops); the exit strategy still lives in
+`PRINCIPLES.md` §4. `PriceSparkline.tsx` / `ExitScenarios.tsx` remain in the tree,
+unused, for easy revert. The "if I'd entered on D" replay (point 3) is where the
+per-date safe/risky read now lives.
 
 **Blast radius / risk — annotation only.** No gate, sizing, or exit change; a
 gauge failure is caught and yields `None` (bar hides, card renders). Old traces
 and payloads still validate (optional field).
 
-**Verified offline.** 25 new stdlib unit tests
+**Verified offline.** 29 new stdlib unit tests
 (`backend/tests/test_accumulation_gauge.py`, `python -m unittest` — all pass)
-cover the level mapping, red overrides, action caps, ATR buffer math, historical
-score bands + renormalization, and the single-cutoff freshness gate (before
-16:00 regenerates, at/after 16:00 frozen, naive-time assumed IST). `py_compile`
+cover the level mapping, red overrides, action caps, ATR buffer math, absolute
+score bands + renormalization, the single-cutoff freshness gate (before 16:00
+regenerates, at/after 16:00 frozen, naive-time assumed IST), the
+recommendation-only date filter, and the "if entered on D" replay (weakened →
+risky, still-strong → safe, missing-entry → unavailable). `py_compile`
 on all touched backend files, FastAPI route registration, a synthetic live-gauge
 call, an import check of the wired picks server, and `tsc --noEmit` on the
 frontend all pass. Not run against live data / the browser (firewall; no live

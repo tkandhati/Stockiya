@@ -296,19 +296,21 @@ export interface PositionDatesResponse {
 }
 
 // GET /api/positions/{symbol}/as_of/{date}
+// "If I'd entered on `date`, is it safe or risky as of today?"
 export interface PositionAsOf {
   available: boolean
   symbol: string
-  date: string
-  close: number | null
-  pnl_pct: number | null
-  entry_price: number | null
-  stop_price: number | null
-  t1_price: number | null
-  t2_price: number | null
-  entry_date: string | null
-  accumulation_gauge: AccumulationGauge | null
-  stages_present: string[]
+  date: string                       // selected hypothetical entry day
+  as_of_date?: string | null         // "today" = latest data on file
+  entry_price?: number | null        // that day's close
+  current_price?: number | null      // latest close on file
+  stop_price?: number | null
+  pnl_pct?: number | null            // since the selected day
+  verdict?: 'safe' | 'caution' | 'risky' | string | null
+  safe?: boolean | null
+  headline?: string | null
+  trajectory_overall?: string | null
+  accumulation_gauge?: AccumulationGauge | null
 }
 
 export type PositionOwnership = 'suggested' | 'paper' | 'live'
