@@ -17,6 +17,37 @@ Rules for this file:
 
 ## Active — approved, awaiting the right window
 
+### Historical gauge parity — recompute trajectory as-of D
+
+The live bar's colour comes from `trajectory.overall` (a delta-vs-entry signal);
+the historical (date-picker) bar comes from an absolute 0–100 score of that day's
+trace features. Both are honest "1..5 accumulation strength", but they are not the
+*same* computation, so a stock can read one level live and a neighbouring level
+for today's date in replay. For exact parity, recompute the trajectory as-of D
+(compare entry features vs the day-D trace) in `position_history.position_as_of`
+instead of scoring.
+
+**Why deferred:** the score path is simpler, fully file-only, and good enough for
+a base version; parity is a refinement, not a correctness bug.
+
+**Scope:** reuse `signal_trajectory` comparison logic against two trace snapshots
+(entry + as-of) — no live fetch, both are on disk.
+
+### Real ATR runway for the adversity buffer
+
+The buffer uses the stock's **entry-time** `atr_pct` (from the entry `[CS]`
+trace). A truer per-day runway would use the atr_pct on the *viewed* date and,
+ideally, emit `atr_pct` into the FINAL / position trace so the buffer tracks
+current volatility rather than entry volatility.
+
+**Why deferred:** entry-time ATR is a stable, defensible per-stock proxy and is
+already on disk; per-day ATR is a precision upgrade, not a fix. The historical
+replay already uses the viewed date's `[CS].atr_pct` when present — only the live
+card is pinned to entry ATR.
+
+**Scope:** add `atr_pct` to `position_trace` rows (bump SCHEMA_VERSION) and read
+it in the live gauge; ~10 lines.
+
 ### Step 5 — `trigger_state` trace enrichment
 
 Add `trigger_state ∈ {sos, pocket_pivot, none}` to the FINAL trace row

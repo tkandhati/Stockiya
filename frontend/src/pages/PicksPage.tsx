@@ -1,8 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { Briefcase, FlaskConical, RefreshCw, Sparkles } from 'lucide-react'
-import { fetchPicks, refreshPicks } from '../api'
-import { Disclaimer } from '../components/Disclaimer'
+import { fetchPicks, fmtDateTimeIST, refreshPicks } from '../api'
 import { DemoBanner } from '../components/DemoBanner'
 import { DataHealthPill } from '../components/DataHealthPill'
 import { ClosestToFiringPanel } from '../components/ClosestToFiringPanel'
@@ -37,6 +36,11 @@ export function PicksPage() {
           <p className="mt-0.5 text-xs text-slate-500">
             Swing trading · 3-week to 3-month typical hold · daily review ·{' '}
             <span className="font-mono">{data?.date ?? '—'}</span>
+            {data?.generated_at && (
+              <span className="ml-2 font-mono text-slate-400">
+                · generated {fmtDateTimeIST(data.generated_at)}
+              </span>
+            )}
             {data && (
               <span className="ml-2 rounded bg-slate-100 px-2 py-0.5 text-xs uppercase tracking-wide text-slate-600">
                 volume pipeline
@@ -87,10 +91,6 @@ export function PicksPage() {
           <DemoBanner />
         </div>
       )}
-
-      <div className="mt-6">
-        <Disclaimer />
-      </div>
 
       <main className="mt-8">
         {isLoading && <SkeletonGrid />}

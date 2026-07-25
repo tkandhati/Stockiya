@@ -16,6 +16,7 @@ from __future__ import annotations
 import logging
 import os
 
+from backend.day_freshness import should_serve_cache
 from backend.orchestrator import run_universe
 from backend.stages.render import PICKS_SCHEMA_VERSION
 from backend.trading_day import (
@@ -23,21 +24,26 @@ from backend.trading_day import (
     load_previous_picks,
 )
 
-from .picks_cache import ist_today_iso, read_picks, write_picks
+from .picks_cache import delete_picks, ist_today_iso, read_picks, write_picks
 from .schemas import PicksResponse
 
 log = logging.getLogger("picks")
 
 
-def generate_picks() -> PicksResponse:
+def generate_picks(force: bool = False) -> PicksResponse:
     """Run the pipeline and persist results. Returns the validated DTO.
 
     Only writes `picks_<today>.json` when the pipeline actually ran for
     today. On a non-trading day the orchestrator returns the previous
     active day's picks unchanged — writing that back under today's key
     would obscure the source date and pollute the historical archive.
+
+    `force=True` (the Refresh button) first DELETES today's file so this is a
+    clean delete-and-recreate rather than an in-place overwrite.
     """
     today = ist_today_iso()
+    if force and delete_picks(today):
+        log.info("Refresh: deleted existing picks file for %s", today)
     log.info("Running orchestrator for %s", today)
     response = run_universe(today_iso=today)
     if response.get("date") == today:
@@ -52,20 +58,23 @@ def generate_picks() -> PicksResponse:
 
 
 def get_or_generate_picks() -> PicksResponse:
-    """Read the cached picks for today, or run the pipeline if missing.
+    """Read the cached picks for today, or run the pipeline if missing/stale.
 
-    Order of preference:
-      1. Today's cached picks file — happy path.
-      2. If today is a non-trading day (weekend), serve the previous
-         active trading day's file directly without invoking the
-         pipeline. Cheap, avoids spinning up the fetch layer on Sun.
-      3. Trading day with no cache → run the pipeline. If ingest
-         returns no data (holiday), the orchestrator itself falls
-         through to the previous file.
+    Freshness policy (backend/day_freshness.py):
+      * Before 16:00 IST — always regenerate on load so intraday data shows.
+      * 16:00 IST onward — if the day's file exists it is FROZEN and served
+        as-is (no recompute).
+      * No data for the day (holiday) — fall through to the previous working
+        day's file (below), never fabricating a snapshot.
+      * Manual refresh (POST /api/picks/refresh) bypasses this entirely via
+        generate_picks(force=True) — a full delete & recreate.
     """
     today = ist_today_iso()
     cached = read_picks(today)
-    if cached and int(cached.get("schema_version") or 0) >= PICKS_SCHEMA_VERSION:
+    cache_valid = bool(
+        cached and int(cached.get("schema_version") or 0) >= PICKS_SCHEMA_VERSION
+    )
+    if cache_valid and should_serve_cache():
         return PicksResponse(**cached)
 
     pre = classify_pre_pipeline(today)

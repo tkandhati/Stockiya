@@ -5,7 +5,6 @@ import { ArrowLeft, Briefcase } from 'lucide-react'
 import { fetchPositions } from '../api'
 import { PositionCard } from '../components/PositionCard'
 import { DemoBanner } from '../components/DemoBanner'
-import { Disclaimer } from '../components/Disclaimer'
 import type { Position } from '../types'
 
 /**
@@ -89,10 +88,6 @@ export function PositionsPage() {
           <DemoBanner />
         </div>
       )}
-
-      <div className="mt-6">
-        <Disclaimer />
-      </div>
 
       <main className="mt-6 space-y-8">
         {isLoading && (

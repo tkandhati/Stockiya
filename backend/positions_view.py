@@ -437,6 +437,15 @@ def list_active_positions(
         except Exception:
             entry_stage_str = "DATA_UNAVAILABLE"
 
+        # ATR%/day for this stock, read from its entry [CS] trace. Powers the
+        # per-stock adversity buffer in the accumulation gauge below. None-safe:
+        # a missing trace leaves the buffer unknown but the colour still renders.
+        try:
+            from .position_history import entry_atr_pct
+            atr_pct_for_buffer = entry_atr_pct(sym, r["entry_date"])
+        except Exception:
+            atr_pct_for_buffer = None
+
         # ---- Expected T1 day (Q1) ----
         expected_t1_date = _add_trading_days(entry_d, EXPECTED_T1_TRADING_DAYS)
         days_to_expected_t1 = _trading_days_between(today, expected_t1_date)
@@ -447,7 +456,7 @@ def list_active_positions(
         else:
             t1_status = "on_track"
 
-        out.append({
+        row = {
             "pick_id": r["pick_id"],
             "trace_id": r.get("trace_id", ""),
             "symbol": sym,
@@ -515,7 +524,21 @@ def list_active_positions(
             "user_entry_price": user_entry_px if user_entry_px > 0 else None,
             "user_shares": user_shares_val if user_shares_val > 0 else None,
             "user_notes": r.get("user_notes") or "",
-        })
+        }
+
+        # ---- 5-color accumulation gauge (advisory, additive) ----
+        # Colour spine is trajectory.overall; action_label / flip / close<=stop
+        # only escalate. Buffer is the per-stock ATR-based runway to the stop.
+        # Read-only: changes no selection / sizing / exit decision.
+        try:
+            from .accumulation_gauge import gauge_from_position
+            row["accumulation_gauge"] = gauge_from_position(
+                row, atr_pct=atr_pct_for_buffer,
+            )
+        except Exception:
+            row["accumulation_gauge"] = None
+
+        out.append(row)
 
     # Sort: action urgency first (exits before holds), then by days_held desc
     urgency = {

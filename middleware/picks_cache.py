@@ -44,3 +44,13 @@ def write_picks(date_iso: str, payload: dict) -> None:
     _picks_path(date_iso).write_text(
         json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8"
     )
+
+
+def delete_picks(date_iso: str) -> bool:
+    """Delete the day's picks file if it exists. Returns True if a file was
+    removed. Used by the Refresh button for a full delete-and-recreate."""
+    p = _picks_path(date_iso)
+    if p.exists():
+        p.unlink()
+        return True
+    return False

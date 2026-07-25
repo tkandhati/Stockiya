@@ -270,6 +270,47 @@ export interface TimeStops {
   day_180: string
 }
 
+// 5-color accumulation-strength gauge (advisory). level 1..5 = weak..strong.
+// Rendered as a low->high horizontal bar. Mirrors backend/accumulation_gauge.py.
+export interface AccumulationGauge {
+  level: number            // 1 (red) .. 5 (dark green)
+  color: string            // hex for the active level
+  label: string            // FLIPPED | WARNING | CAUTION | HEALTHY | STRONG
+  message: string          // one-liner incl. cadence-aware buffer text
+  buffer_bucket: string    // ACT_NOW | THIS_REVIEW | NEXT_REVIEW | SKIP_ONE | SKIP_SEVERAL
+  buffer_text: string      // cadence-aware advisory phrasing
+  buffer_sessions: number | null   // ~trading sessions of runway to the stop
+  headroom_pct: number | null      // (close - stop) / close * 100
+  atr_pct: number | null           // stock's ATR(14)/close — buffer basis
+  reviews_per_day: number
+  reasons: string[]
+  source: 'live' | 'historical' | string
+  score: number | null     // 0-100, historical only
+  as_of: string | null
+}
+
+// GET /api/positions/{symbol}/dates
+export interface PositionDatesResponse {
+  symbol: string
+  dates: string[]          // newest first
+}
+
+// GET /api/positions/{symbol}/as_of/{date}
+export interface PositionAsOf {
+  available: boolean
+  symbol: string
+  date: string
+  close: number | null
+  pnl_pct: number | null
+  entry_price: number | null
+  stop_price: number | null
+  t1_price: number | null
+  t2_price: number | null
+  entry_date: string | null
+  accumulation_gauge: AccumulationGauge | null
+  stages_present: string[]
+}
+
 export type PositionOwnership = 'suggested' | 'paper' | 'live'
 
 export interface Position {
@@ -304,6 +345,8 @@ export interface Position {
   days_to_expected_t1?: number
   // Q2 — signal trajectory since entry
   trajectory?: Trajectory | null
+  // 5-color accumulation-strength gauge (advisory, additive)
+  accumulation_gauge?: AccumulationGauge | null
   // V1 — ownership + user-actual fill.
   // `entry_date` / `entry_price` / `shares_total` above are the *effective*
   // values (user's if given, scanner's otherwise); scanner_* fields carry

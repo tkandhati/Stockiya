@@ -50,7 +50,8 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _TRACES_DIR = _PROJECT_ROOT / "data" / "position_traces"
 
 # Bump when the row shape changes in a way a reader must branch on.
-SCHEMA_VERSION = 1
+# v2 (2026-07-25): added `accumulation_gauge` (advisory 5-color strength gauge).
+SCHEMA_VERSION = 2
 
 # Below this absolute-price delta a "new stop" is treated as unchanged, so a
 # floating-point round-trip on a break-even raise doesn't log a phantom move.
@@ -172,6 +173,8 @@ def build_position_trace_row(pos: dict, today_iso: str) -> dict:
         "action_note": pos.get("action_note"),
         "proposed_new_stop": pos.get("new_stop"),
         "alterations": _alterations_for(pos),
+        # ---- 5-color accumulation gauge (advisory, schema v2) ----
+        "accumulation_gauge": pos.get("accumulation_gauge"),
     }
 
 

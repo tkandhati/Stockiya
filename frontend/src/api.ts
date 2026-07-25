@@ -3,6 +3,8 @@ import type {
   BacktestResponse,
   DataHealthReport,
   PicksResponse,
+  PositionAsOf,
+  PositionDatesResponse,
   PositionsResponse,
   StockDetail,
   TakePositionRequest,
@@ -49,6 +51,19 @@ export function fetchStockDetail(symbol: string): Promise<StockDetail> {
   return fetch(`/api/stock/${encodeURIComponent(symbol)}`).then(jsonOrThrow<StockDetail>)
 }
 
+// Dates a symbol has an on-disk trace for (newest first) — date-picker options.
+export function getPositionDates(symbol: string): Promise<PositionDatesResponse> {
+  return fetch(`/api/positions/${encodeURIComponent(symbol)}/dates`)
+    .then(jsonOrThrow<PositionDatesResponse>)
+}
+
+// A position's accumulation card reconstructed as of a past date (file-only).
+export function getPositionAsOf(symbol: string, date: string): Promise<PositionAsOf> {
+  return fetch(
+    `/api/positions/${encodeURIComponent(symbol)}/as_of/${encodeURIComponent(date)}`,
+  ).then(jsonOrThrow<PositionAsOf>)
+}
+
 export function fetchDataHealth(): Promise<DataHealthReport> {
   return fetch('/api/health/data').then(jsonOrThrow<DataHealthReport>)
 }
@@ -75,4 +90,16 @@ export function fmtPct(n: number | null | undefined, digits = 1): string {
   if (n == null || Number.isNaN(n)) return '—'
   const sign = n > 0 ? '+' : ''
   return `${sign}${n.toFixed(digits)}%`
+}
+
+// Format an ISO timestamp (e.g. picks `generated_at`) as an IST date + time.
+export function fmtDateTimeIST(iso: string | null | undefined): string {
+  if (!iso) return '—'
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return iso
+  return new Intl.DateTimeFormat('en-IN', {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+    timeZone: 'Asia/Kolkata',
+  }).format(d)
 }

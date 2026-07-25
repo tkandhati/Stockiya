@@ -317,6 +317,10 @@ class Position(BaseModel):
     days_to_expected_t1: Optional[int] = None
     # Q2 -- signal trajectory since entry
     trajectory: Optional[TrajectoryDTO] = None
+    # 5-color accumulation gauge (advisory, additive). Optional dict so an
+    # older payload without it still validates; the frontend has the
+    # AccumulationGauge TypeScript type describing the shape.
+    accumulation_gauge: Optional[dict] = None
     # V1 -- ownership + user-actual fill.
     # `ownership` = suggested | paper | live | declined (`declined` never
     # returned by /api/positions). `entry_date`, `entry_price`, `shares_total`
@@ -340,6 +344,31 @@ class PositionsResponse(BaseModel):
     # render a "synthetic data, do not trade" banner on every card. Matches
     # the flag already present on PicksResponse and StockDetail.
     demo_mode: bool = False
+
+
+class PositionDatesResponse(BaseModel):
+    """Dates a symbol has an on-disk trace for — feeds the positions
+    date-picker. Newest first. Empty if the symbol has never been scanned."""
+    symbol: str
+    dates: list[str] = []
+
+
+class PositionAsOf(BaseModel):
+    """One position's accumulation card reconstructed as of a past date,
+    from persisted trace files only (no live fetch). `available` is False when
+    no trace exists for that day (market holiday / never scanned)."""
+    available: bool
+    symbol: str
+    date: str
+    close: Optional[float] = None
+    pnl_pct: Optional[float] = None
+    entry_price: Optional[float] = None
+    stop_price: Optional[float] = None
+    t1_price: Optional[float] = None
+    t2_price: Optional[float] = None
+    entry_date: Optional[str] = None
+    accumulation_gauge: Optional[dict] = None
+    stages_present: list[str] = []
 
 
 class TakePositionRequest(BaseModel):

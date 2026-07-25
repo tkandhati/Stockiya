@@ -14,6 +14,7 @@ import {
 } from 'lucide-react'
 import type { Position, PositionAction, PositionOwnership } from '../types'
 import { declinePosition, fmtINR, fmtPct, takePosition } from '../api'
+import { AccumulationStrength } from './StrengthBar'
 
 /**
  * Single position card. Action is the headline; ladder is the body.
@@ -126,6 +127,10 @@ export function PositionCard({ position: p }: { position: Position }) {
     <article
       className={`group block rounded-2xl border bg-white p-5 shadow-sm ${TONE_BORDER[meta.tone]}`}
     >
+      {/* 5-color accumulation-strength bar + date-replay picker (advisory).
+          Outside the Link so the picker controls don't trigger navigation. */}
+      <AccumulationStrength position={p} />
+
       <Link
         to={`/stock/${encodeURIComponent(p.symbol)}`}
         className="block transition hover:-translate-y-0.5"

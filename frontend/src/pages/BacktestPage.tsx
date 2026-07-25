@@ -11,7 +11,6 @@ import {
 } from 'lucide-react'
 import { FlaskConical, Layers } from 'lucide-react'
 import { fmtINR, fmtPct, runBacktest } from '../api'
-import { Disclaimer } from '../components/Disclaimer'
 import { RegimeBanner } from '../components/RegimeBanner'
 import type {
   BacktestOverrides,
@@ -587,9 +586,6 @@ export function BacktestPage() {
         </>
       )}
 
-      <div className="mt-8">
-        <Disclaimer />
-      </div>
     </div>
   )
 }

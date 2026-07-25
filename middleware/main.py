@@ -37,6 +37,8 @@ from .schemas import (  # noqa: E402
     Pick,
     PicksResponse,
     Position,
+    PositionAsOf,
+    PositionDatesResponse,
     PositionsResponse,
     StockDetail,
     StrategySignalDTO,
@@ -166,7 +168,8 @@ def get_picks() -> PicksResponse:
 
 @app.post("/api/picks/refresh", response_model=PicksResponse)
 def refresh_picks() -> PicksResponse:
-    return generate_picks()
+    """Full delete-and-recreate of today's picks, regardless of the clock."""
+    return generate_picks(force=True)
 
 
 @app.get("/api/positions", response_model=PositionsResponse)
@@ -182,6 +185,45 @@ def get_positions() -> PositionsResponse:
         positions=[Position(**p) for p in items],
         demo_mode=os.environ.get("DEMO_MODE", "0") == "1",
     )
+
+
+@app.get(
+    "/api/positions/{symbol}/dates",
+    response_model=PositionDatesResponse,
+)
+def position_dates(symbol: str) -> PositionDatesResponse:
+    """Dates this symbol has an on-disk trace for (newest first) — the
+    date-picker options. File-only, no fetch."""
+    from backend.position_history import available_position_dates
+    symbol = symbol.upper()
+    return PositionDatesResponse(
+        symbol=symbol, dates=available_position_dates(symbol),
+    )
+
+
+@app.get(
+    "/api/positions/{symbol}/as_of/{date}",
+    response_model=PositionAsOf,
+)
+def position_as_of_endpoint(symbol: str, date: str) -> PositionAsOf:
+    """Reconstruct a position's accumulation card as of a past date, from
+    persisted traces only (deterministic, firewall-safe — never fetches)."""
+    from backend.position_history import open_position_targets, position_as_of
+    symbol = symbol.upper()
+    targets = open_position_targets(symbol)
+    if targets is None:
+        raise HTTPException(
+            status_code=404, detail=f"no active position for {symbol}",
+        )
+    card = position_as_of(
+        symbol, date,
+        entry_price=targets["entry_price"],
+        stop_price=targets["stop_price"],
+        t1_price=targets["t1_price"],
+        t2_price=targets["t2_price"],
+        entry_date=targets["entry_date"],
+    )
+    return PositionAsOf(**card)
 
 
 @app.post("/api/positions/{pick_id}/take", response_model=PositionsResponse)
