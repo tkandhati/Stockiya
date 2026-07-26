@@ -1,11 +1,50 @@
 # Agent Handoff
 
-Last updated: 2026-07-24
+Last updated: 2026-07-26
 
 For proposals that have been analyzed but not shipped, see `WISHLIST.md`.
 For ideas parked pending trace evidence, see `ideas.md`.
 
-## Latest Change (2026-07-24) — Outcome documentation reliability + signed-pressure shadow emission + KIMI3 verdict
+## Latest Change (2026-07-26) — Accumulation gauge + delivery-% + freshness + archiver (all advisory, additive)
+
+Several **advisory, additive** layers on top of the existing picks/positions —
+**none change selection, sizing, or exits.** All offline-verified (stdlib
+unittest; `tsc --noEmit`); nothing runs against the network. Full per-feature
+detail in `CHANGELOG.md` (2026-07-25 / 2026-07-26 entries).
+
+**User-facing:**
+- **5-color accumulation-strength bar** on every position card
+  (`backend/accumulation_gauge.py`). Spine = `trajectory.overall`;
+  `action_label` / flip / `close≤stop` only escalate. Per-stock **adversity
+  buffer** = headroom-to-stop ÷ ATR%, bucketed to the user's 2 checks/day
+  (afternoon + night).
+- **Date-picker replay** on positions — "if I'd entered on recommendation day D,
+  am I safe or risky as of today?" (`backend/position_history.py` +
+  `signal_trajectory.trajectory_between_traces`). File-only; offered dates come
+  from `data/picks_<date>.json` (recommended days only). Endpoints
+  `GET /api/positions/{symbol}/dates` + `/as_of/{date}`.
+- **NSE delivery-% advisory** on pick + position cards (`backend/delivery.py`) —
+  accumulation-vs-churn. Manual offline drop of NSE MTO files into
+  `data/delivery/` (see its README). Advisory only; feeding it into the
+  composite score stays parked (`ideas.md` Follow-up A) pending trace evidence.
+- Removed the SEBI disclaimer banner (all pages) and the hardcoded
+  `ExitScenarios` block + charts on the stock page.
+
+**Ops:**
+- **Freshness gate** (`backend/day_freshness.py`, wired in `middleware/picks.py`):
+  before 16:00 IST always regenerate; 16:00+ serve the frozen file; holiday →
+  previous working day; Refresh = full delete-and-recreate. Picks header shows
+  `generated_at` with time.
+- **Data-file archiver** (`backend/archive.py`): moves aged dated files to
+  `data/archive/<family>/` (delivery / picks / position-traces 260d; scan-traces
+  400d). Runs as a guarded step inside `backend.nightly` (the same way the
+  `daily_diagnostic.md` insights file does) + standalone `python -m backend.archive`.
+
+**New modules:** `accumulation_gauge.py`, `day_freshness.py`,
+`position_history.py`, `delivery.py`, `archive.py`, `datekeys.py` (shared
+filename-date parser).
+
+## Previous Change (2026-07-24) — Outcome documentation reliability + signed-pressure shadow emission + KIMI3 verdict
 
 Three shipped changes, all **measurement-only** (no change to selection, sizing,
 or exits). Full narrative in `CHANGELOG.md → 2026-07-24`. Summary for the next agent:

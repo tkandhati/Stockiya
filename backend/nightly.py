@@ -108,6 +108,19 @@ def run_nightly() -> dict:
         log.exception("outcome tracker failed (non-fatal)")
         errors.append(f"outcome: {e}")
 
+    # Archive aged data files (delivery / picks / position-traces / old scan
+    # traces) into data/archive/. Runs here so it "rides" the nightly job the
+    # same way the daily_diagnostic insights file does. Cheap + mostly a no-op;
+    # guarded so a move failure never breaks the pipeline.
+    log.info("Archiving aged data files...")
+    try:
+        from backend.archive import run_archive
+        asum = run_archive()
+        log.info("Archive: %s", asum)
+    except Exception as e:
+        log.exception("archive failed (non-fatal)")
+        errors.append(f"archive: {e}")
+
     finished = datetime.now(IST).isoformat(timespec="seconds")
     try:
         from backend.data_health import record_run

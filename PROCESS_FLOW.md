@@ -85,6 +85,7 @@ integration points are `backend/orchestrator.py::run_universe`,
 | Yahoo Finance — `^CNX100` 1y | in-memory per run | Regime index (matches Nifty 100 universe) |
 | NSE block-deal CSV (`archives.nseindia.com/.../block.csv`) | `data/deals/block_<date>.csv` | Bonus rank signal |
 | NSE bulk-deal CSV | `data/deals/bulk_<date>.csv` | Bonus rank signal |
+| NSE delivery / MTO ("Security-wise Delivery Position") — **manual offline drop** | `data/delivery/` | Advisory delivery % (accumulation vs churn) on picks + positions; not in scoring (parked) |
 | `backend/universe.py:UNIVERSE` | code-tracked | The 100 tickers |
 | `data/portfolio.csv` | persistent CSV | Open picks tracked for outcome |
 | `data/picks_<prior_date>.json` | persistent JSON | Self-heal on middleware boot |
@@ -520,7 +521,8 @@ Renders two sections:
 
 | Interval | Job | Module |
 |---|---|---|
-| Once daily, post-EOD (16:30 IST) | Full pipeline | `backend/nightly.py` |
+| Once daily, post-EOD (16:30 IST) | Full pipeline (also writes `daily_diagnostic.md`, position traces, outcomes, and archives aged data) | `backend/nightly.py` |
+| Within the nightly run (or standalone) | Archive aged dated files to `data/archive/<family>/` (move, not delete) | `backend/archive.py` |
 | Once daily, post-EOD (17:15 IST) | Exit-watch scan on every open pick | `backend/stages/exit_watch.py` |
 | On middleware boot | Backfill: walk every missing trading day since the last picks file (capped at 30) | `backend/catchup.py` |
 | Once daily, late evening | Outcome check on all open picks (T+90 / T+180) | `backend/stages/outcome.py` |

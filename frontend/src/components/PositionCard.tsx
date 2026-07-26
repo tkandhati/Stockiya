@@ -15,6 +15,7 @@ import {
 import type { Position, PositionAction, PositionOwnership } from '../types'
 import { declinePosition, fmtINR, fmtPct, takePosition } from '../api'
 import { AccumulationStrength } from './StrengthBar'
+import { DeliveryPill } from './DeliveryPill'
 
 /**
  * Single position card. Action is the headline; ladder is the body.
@@ -162,6 +163,13 @@ export function PositionCard({ position: p }: { position: Position }) {
         <p className={`mt-3 rounded-lg px-3 py-2 text-sm leading-snug ${TONE_PILL[meta.tone]}`}>
           {p.action_note}
         </p>
+
+        {/* Delivery-% advisory (accumulation vs churn) */}
+        {p.delivery?.available && (
+          <div className="mt-2">
+            <DeliveryPill delivery={p.delivery} />
+          </div>
+        )}
 
         {/* Price ladder */}
         <div className="mt-4 grid grid-cols-2 gap-3 rounded-xl border border-slate-200 bg-slate-50/60 p-3 text-xs md:grid-cols-5">

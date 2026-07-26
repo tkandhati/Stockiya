@@ -13,6 +13,7 @@ import {
 } from 'lucide-react'
 import type { Pick } from '../types'
 import { fmtINR, fmtPct } from '../api'
+import { DeliveryPill } from './DeliveryPill'
 
 /**
  * Pick card — gates-based spine.
@@ -81,6 +82,13 @@ export function PickCard({ pick }: { pick: Pick }) {
               {conf.bonuses_fired.length > 2 && ` +${conf.bonuses_fired.length - 2}`}
             </span>
           )}
+        </div>
+      )}
+
+      {/* 2a2. Delivery-% advisory (accumulation vs churn) */}
+      {pick.delivery?.available && (
+        <div className="mt-3">
+          <DeliveryPill delivery={pick.delivery} />
         </div>
       )}
 
@@ -384,7 +392,7 @@ export function PickCard({ pick }: { pick: Pick }) {
 
       {/* 6. Drill-down hint */}
       <div className="mt-4 text-[11px] text-slate-400">
-        Click for exit schedule, all gate evidence, and price chart →
+        Click for full gate evidence and accumulation detail →
       </div>
     </Link>
   )

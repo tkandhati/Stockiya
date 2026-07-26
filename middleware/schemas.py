@@ -121,6 +121,11 @@ class Pick(BaseModel):
     # so a picks_<date>.json written by an older binary still validates.
     accumulation_assessment: Optional[dict] = None
 
+    # Advisory NSE delivery-% block (accumulation vs churn). Optional dict so a
+    # picks file written without it (or with no delivery data on disk) still
+    # validates. Frontend has the DeliveryInfo TypeScript type.
+    delivery: Optional[dict] = None
+
     # Legacy aliases — populated by build_pick_payload for transition-period
     # frontends that still expect the old field names.
     best_buy_at: Optional[float] = None
@@ -321,6 +326,8 @@ class Position(BaseModel):
     # older payload without it still validates; the frontend has the
     # AccumulationGauge TypeScript type describing the shape.
     accumulation_gauge: Optional[dict] = None
+    # Advisory NSE delivery-% block (accumulation vs churn). Optional dict.
+    delivery: Optional[dict] = None
     # V1 -- ownership + user-actual fill.
     # `ownership` = suggested | paper | live | declined (`declined` never
     # returned by /api/positions). `entry_date`, `entry_price`, `shares_total`

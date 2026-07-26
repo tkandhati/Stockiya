@@ -401,6 +401,14 @@ def run_universe(
                 account_value=account_value,
                 today_iso=today_iso,
             )
+            # Advisory NSE delivery-% (accumulation vs churn). File-only, no
+            # fetch; None-safe when no delivery files are on disk. Attached here
+            # (orchestrator I/O layer) so the pure stages stay I/O-free.
+            try:
+                from .delivery import delivery_advisory
+                payload["delivery"] = delivery_advisory(res.symbol)
+            except Exception:
+                payload["delivery"] = None
             pick_payloads.append(payload)
         except Exception:
             log.exception("build_pick_payload failed for %s", res.symbol)

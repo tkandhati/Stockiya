@@ -172,6 +172,8 @@ export interface Pick {
   already_held?: AlreadyHeld
   change_since_prev_pick?: ChangeSincePrevPick
   pick_history?: PickHistoryEntry[]
+  // Advisory NSE delivery-% (accumulation vs churn)
+  delivery?: DeliveryInfo | null
   // `suppressed_from_ui` is only present on picks written to portfolio.csv
   // (not to picks_<date>.json), so the UI shouldn't normally see it.
   suppressed_from_ui?: {
@@ -295,6 +297,20 @@ export interface PositionDatesResponse {
   dates: string[]          // newest first
 }
 
+// Advisory NSE delivery-% block (accumulation vs churn). Attached to picks and
+// positions. Mirrors backend/delivery.py delivery_advisory().
+export interface DeliveryInfo {
+  available: boolean
+  latest_pct: number | null
+  latest_date: string | null
+  avg_5d: number | null
+  avg_20d: number | null
+  trend: 'rising' | 'falling' | 'flat' | null
+  level: 'strong' | 'moderate' | 'weak' | null
+  note: string
+  days: number
+}
+
 // GET /api/positions/{symbol}/as_of/{date}
 // "If I'd entered on `date`, is it safe or risky as of today?"
 export interface PositionAsOf {
@@ -349,6 +365,8 @@ export interface Position {
   trajectory?: Trajectory | null
   // 5-color accumulation-strength gauge (advisory, additive)
   accumulation_gauge?: AccumulationGauge | null
+  // Advisory NSE delivery-% (accumulation vs churn)
+  delivery?: DeliveryInfo | null
   // V1 — ownership + user-actual fill.
   // `entry_date` / `entry_price` / `shares_total` above are the *effective*
   // values (user's if given, scanner's otherwise); scanner_* fields carry

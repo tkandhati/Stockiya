@@ -538,6 +538,13 @@ def list_active_positions(
         except Exception:
             row["accumulation_gauge"] = None
 
+        # Advisory NSE delivery-% (accumulation vs churn). File-only, None-safe.
+        try:
+            from .delivery import delivery_advisory
+            row["delivery"] = delivery_advisory(sym)
+        except Exception:
+            row["delivery"] = None
+
         out.append(row)
 
     # Sort: action urgency first (exits before holds), then by days_held desc

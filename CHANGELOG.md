@@ -1,5 +1,101 @@
 # Changelog
 
+## 2026-07-26 — Cleanup: prune dead code + dedup filename-date parsing
+
+Keep-only-what's-used pass over this session's work:
+
+- **Deleted 3 now-unused frontend components** — `Disclaimer.tsx`,
+  `ExitScenarios.tsx`, `PriceSparkline.tsx`. All were removed from their pages
+  earlier this session and left as dead files "for revert"; confirmed zero
+  imports remain, so they're gone.
+- **Consolidated the filename-date parser** (ISO / DDMMYYYY / DDMMYY) that was
+  duplicated in `delivery.py` and `archive.py` into one helper,
+  `backend/datekeys.py` (`date_from_filename` / `iso_from_filename`). Both
+  callers now share it.
+
+Verified: 41 offline tests pass; `tsc --noEmit` clean (proves no dangling
+imports of the deleted components).
+
+## 2026-07-26 — Data-file archiver (`backend/archive.py`)
+
+Keeps `data/` small and fast without losing history: aged **dated** files are
+**moved** (not deleted) into `data/archive/<family>/`. Deterministic, offline,
+None-safe.
+
+**Scheduling — mirrors the insights file.** `data/daily_diagnostic.md` has no
+schedule of its own; it's written as a guarded step inside the nightly pipeline
+run. The archiver is wired the same way — `run_archive()` runs as a guarded,
+non-fatal step in `backend.nightly` (cheap, mostly a no-op) — and is also a
+standalone entry point for an independent cron / Task Scheduler line:
+
+    python -m backend.archive            # archive per the retention table
+    python -m backend.archive --dry-run  # report only, move nothing
+
+It reports health via `data_health.record_run(kind="archive", …)` like the other
+jobs.
+
+**Retention table** (calendar days; ~180 trading ≈ 260 calendar):
+`data/delivery/` 260d · `picks_<date>.json` 260d · `position_traces/` 260d ·
+`traces/run_*` 400d (safety net — weekly-learn is the primary manager of scan
+traces). All tunable in `DEFAULT_RULES`.
+
+**Safety.** MOVE, not delete (recoverable). Only files with a parseable date in
+the name are touched. A protected-name guard (`outcomes.jsonl`, `portfolio*`,
+`daily_diagnostic.md`, `.last_run`, `*.bak.*`, `README`) is a second line of
+defense so cumulative/stateful files are never archived. Missing source dirs are
+a no-op.
+
+**Verified offline.** 7 new tests (`backend/tests/test_archive.py` — date
+parsing, aged-only moves, dry-run moves nothing, protected-never-moves,
+missing-dir safe) pass; a `--dry-run` on the real `data/` correctly flagged only
+ancient (2024) scan traces and nothing else; `py_compile` + `backend.nightly`
+import clean.
+
+## 2026-07-26 — NSE delivery-% advisory on picks + positions
+
+Delivery % (deliverable qty ÷ traded qty) — the accumulation-vs-churn signal
+Yahoo can't provide (it carries traded volume only) — is now surfaced on pick
+and position cards. A 3× volume spike at 30% delivery is churn; the same spike
+at 75% is real accumulation. **File-only** (manual NSE MTO drop into
+`data/delivery/`, the same offline pattern as OHLCV); **never fetches**.
+**Advisory only — no selection, sizing, or exit change.**
+
+**1. Loader — `backend/delivery.py`.** Parses the NSE "Security-wise Delivery
+Position" / MTO file (record-type-20 rows, 7 fields incl. the unlabeled Series
+column; keeps `EQ` only), matches `ABB` ↔ our `ABB.NS`, and reads the trade date
+from the filename (ISO / DDMMYYYY / DDMMYY / `MTO_*`) with a header-line
+fallback. `delivery_advisory(symbol)` returns latest %, 5-day & 20-day averages,
+trend (rising/flat/fading), absolute level (**strong ≥60 / moderate / weak
+<40**), and a human note. None-safe: no files on disk → `available:false` and the
+UI hides the line.
+
+**2. Picks.** Attached in `orchestrator` Phase 3 (the I/O layer — the pure
+stages stay I/O-free), so it persists in `picks_<date>.json`.
+
+**3. Positions.** Attached in `positions_view` alongside the gauge.
+
+**4. Frontend.** New `DeliveryPill.tsx` on `PickCard` + `PositionCard`, coloured
+by level (emerald/amber/rose), hidden when no data. Also fixed a stale
+`PickCard` drill-down hint (the exit schedule + price chart it referenced were
+removed earlier).
+
+**5. DTOs.** Optional `delivery` dict on the `Pick` and `Position` models
+(tolerant — older payloads still validate).
+
+**Retention (operational).** Keep ~180 trading days of files in `data/delivery/`,
+archive older — covers the 90-day pick trend and a position held to the day-180
+cap. Minimum 90.
+
+**Still parked** (`ideas.md` Follow-up A): feeding delivery into the composite
+**score** stays shadow/advisory until trace evidence shows it earns a weight —
+per the repo's "no scoring change without evidence" rule.
+
+**Verified offline.** 5 new tests (`backend/tests/test_delivery.py` — EQ filter +
+header-skip, symbol normalization, level bands, rising trend, DDMMYYYY filename,
+missing-dir) plus the 29 gauge tests all pass; `py_compile`, middleware import,
+and `tsc --noEmit` clean. Not run against real delivery files yet (awaiting your
+first `data/delivery/` drop).
+
 ## 2026-07-25 — 5-color accumulation-strength gauge + historical date replay
 
 A per-position **"how strong is the accumulation, and how much adversity can it
