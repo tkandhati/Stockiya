@@ -19,10 +19,13 @@ export function DeliveryPill({ delivery }: { delivery?: DeliveryInfo | null }) {
   const style = LEVEL_STYLE[delivery.level ?? 'moderate'] ?? LEVEL_STYLE.moderate
   const arrow =
     delivery.trend === 'rising' ? '↑' : delivery.trend === 'falling' ? '↓' : ''
+  // Accumulation ladder: today, week, 15d, 30d.
+  const longAvg = delivery.avg_30d ?? delivery.avg_20d
   const title = [
-    `Delivery ${delivery.latest_pct}% on ${delivery.latest_date}`,
-    delivery.avg_5d != null ? `5-day avg ${delivery.avg_5d}%` : '',
-    delivery.avg_20d != null ? `20-day avg ${delivery.avg_20d}%` : '',
+    `Delivery today ${delivery.latest_pct}% on ${delivery.latest_date}`,
+    delivery.avg_5d != null ? `week avg ${delivery.avg_5d}%` : '',
+    delivery.avg_15d != null ? `15-day avg ${delivery.avg_15d}%` : '',
+    delivery.avg_30d != null ? `30-day avg ${delivery.avg_30d}%` : '',
     `${delivery.days} day(s) on record`,
     'Deliverable qty ÷ traded qty — high = real accumulation, low = intraday churn',
   ]
@@ -37,6 +40,9 @@ export function DeliveryPill({ delivery }: { delivery?: DeliveryInfo | null }) {
       <span className="font-semibold">
         Delivery {delivery.latest_pct.toFixed(0)}%{arrow}
       </span>
+      {longAvg != null && (
+        <span className="font-normal opacity-80">· 30d {longAvg.toFixed(0)}%</span>
+      )}
       {delivery.level && <span className="opacity-75">{delivery.level}</span>}
     </span>
   )

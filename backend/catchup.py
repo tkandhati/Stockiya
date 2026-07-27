@@ -230,6 +230,40 @@ def run_catchup() -> dict:
         log.info("[Step 1/3]   skipped (DEMO_MODE=1)")
         summary["nse_deals"] = "skipped (DEMO_MODE)"
 
+    # ---- Step 1/3 (cont.): NSE delivery (MTO) refresh ----
+    # Mirrors the block/bulk refresh above so delivery % is fetched the SAME way
+    # on startup (previously it ran only in nightly.py — that asymmetry is why
+    # data/delivery/ stayed empty on start.bat launches). Behind a firewall this
+    # quietly no-ops; run where NSE is reachable and copy data/delivery/ across
+    # (same workflow as OHLCV/deals).
+    log.info("[Step 1/3] NSE delivery (MTO) refresh")
+    if _os.environ.get("DEMO_MODE", "0") != "1":
+        try:
+            from backend.delivery import fetch_and_cache_delivery, delivery_corpus_status
+            fetched = fetch_and_cache_delivery()
+            st = delivery_corpus_status()
+            if st.get("available"):
+                log.info(
+                    "[Step 1/3]   OK -- delivery %d day(s) on disk (latest %s, "
+                    "%d symbols); %d new file(s) this run.",
+                    st["days"], st["latest_date"], st["symbols_latest"], len(fetched),
+                )
+                summary["nse_delivery"] = "ok"
+            else:
+                log.warning(
+                    "[Step 1/3]   delivery: NO files on disk (data/delivery/ is "
+                    "empty). Fetch where NSE is reachable "
+                    "(python -m backend.delivery) and copy data/delivery/ across."
+                )
+                summary["nse_delivery"] = "empty"
+        except Exception as e:
+            log.exception("[Step 1/3]   delivery FAILED (continuing with cached data if present)")
+            summary["nse_delivery_error"] = str(e)
+            errors.append(f"nse_delivery: {e}")
+    else:
+        log.info("[Step 1/3]   delivery skipped (DEMO_MODE=1)")
+        summary["nse_delivery"] = "skipped (DEMO_MODE)"
+
     # ---- Step 2/3: Backfill missing trading days ----
     log.info("[Step 2/3] Backfill missing trading days")
     missing_days = list_missing_trading_days()

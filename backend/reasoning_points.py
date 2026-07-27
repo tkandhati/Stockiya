@@ -191,15 +191,14 @@ def _delivery_point(payload: dict) -> dict:
     level = d.get("level") or "moderate"
     trend = d.get("trend")
     days = d.get("days") or 0
-    avg5 = d.get("avg_5d")
-    avg20 = d.get("avg_20d")
     trend_txt = f", {trend}" if trend else ""
+    # Accumulation ladder: today, week, 15d, 30d (the windows the user asked for).
     roll = []
-    if avg5 is not None:
-        roll.append(f"5d {avg5}%")
-    if avg20 is not None:
-        roll.append(f"20d {avg20}%")
-    roll_txt = f" ({'; '.join(roll)}; {days}d on record)" if roll else f" ({days}d on record)"
+    for label, key in (("wk", "avg_5d"), ("15d", "avg_15d"), ("30d", "avg_30d")):
+        v = d.get(key)
+        if v is not None:
+            roll.append(f"{label} {v:.0f}%")
+    roll_txt = f" (today; {'; '.join(roll)}; {days}d on record)" if roll else f" ({days}d on record)"
     value = f"{latest:.0f}% {level}{trend_txt}{roll_txt}"
     state = "bullish" if level == "strong" else "bearish" if level == "weak" else "neutral"
     return _pt(
@@ -207,11 +206,11 @@ def _delivery_point(payload: dict) -> dict:
         value,
         state,
         "High delivery = shares actually taken to delivery and held (strong "
-        "hands); low delivery = intraday churn inflating raw volume. The "
-        "rolling 5d/20d means and their ratio capture whether real "
-        "accumulation is strengthening.",
-        "delivery_advisory() reads data/delivery/*.csv; 5d/20d are rolling "
-        "means; trend = 5d ÷ 20d.",
+        "hands); low delivery = intraday churn inflating raw volume. The rolling "
+        "means over today / week / 15d / 30d show whether real accumulation is "
+        "building or fading.",
+        "delivery_advisory() reads data/delivery/*.csv; week/15d/30d are rolling "
+        "means; trend = week ÷ 20d.",
     )
 
 

@@ -56,11 +56,19 @@ _DELIVERY_DIR = _PROJECT_ROOT / "data" / "delivery"
 STRONG_DELIV_PCT: float = 60.0
 WEAK_DELIV_PCT: float = 40.0
 
-# Trend windows (in available files) and ratio thresholds. Short vs long mean.
-SHORT_WIN: int = 5
-LONG_WIN: int = 20
+# Rolling-average windows, in available files (≈ trading days). The advisory
+# reports delivery accumulation over: today (latest), week (SHORT_WIN), 15, 30.
+SHORT_WIN: int = 5      # "week"
+WIN_15: int = 15        # 15-day rolling mean
+LONG_WIN: int = 20      # kept for the trend ratio + flow level (internal)
+WIN_30: int = 30        # 30-day rolling mean — the longest window shown
+MAX_WIN: int = 30       # files fetched/sliced so the 30-day mean is complete
 TREND_RISING: float = 1.10
 TREND_FALLING: float = 0.90
+
+# Rolling retention: keep enough MTO files that the 30-day (30-trading-day ≈ 42
+# calendar-day) rolling mean is always complete, plus a small buffer.
+RETENTION_DAYS: int = 45
 
 _MONTHS = {
     "JAN": 1, "FEB": 2, "MAR": 3, "APR": 4, "MAY": 5, "JUN": 6,
@@ -142,6 +150,30 @@ def available_dates() -> list[str]:
     return sorted({d for d, _ in _all_files()}, reverse=True)
 
 
+def prune_old_files(keep_days: int = RETENTION_DAYS) -> int:
+    """Delete MTO files with a trade date older than `keep_days` (rolling month).
+
+    Files are independent per day, so this just unlinks the stale ones. Returns
+    the count removed. Runs automatically at the end of every live fetch so the
+    drop-zone stays bounded to ~a month.
+    """
+    files = _all_files()                      # [(iso, path)] ascending
+    if not files:
+        return 0
+    cutoff = (date.today() - timedelta(days=keep_days)).isoformat()
+    removed = 0
+    for iso, p in files:
+        if iso < cutoff:
+            try:
+                p.unlink()
+                removed += 1
+            except OSError:
+                pass
+    if removed:
+        log.info("delivery: pruned %d file(s) older than %d days", removed, keep_days)
+    return removed
+
+
 # --------------------------------------------------------------------------- #
 # Live fetch — NSE MTO (delivery) files into the local drop-zone.
 #
@@ -168,7 +200,7 @@ _USER_AGENT = (
 _MIN_MTO_BYTES = 2000
 
 
-def fetch_and_cache_delivery(days_back: int = 40) -> list[str]:
+def fetch_and_cache_delivery(days_back: int = 55) -> list[str]:
     """Download recent NSE MTO delivery files into `data/delivery/`.
 
     Best-effort and idempotent: skips DEMO_MODE, skips dates already on disk,
@@ -218,6 +250,10 @@ def fetch_and_cache_delivery(days_back: int = 40) -> list[str]:
     if fetched:
         log.info("delivery: fetched %d new file(s): %s",
                  len(fetched), ", ".join(fetched))
+    try:
+        prune_old_files()          # keep the drop-zone to a rolling one-month window
+    except Exception:
+        log.warning("delivery prune failed (continuing)", exc_info=True)
     return fetched
 
 
@@ -281,14 +317,16 @@ def _advisory_from_series(series: list[tuple[str, float]]) -> dict:
     if not series:
         return {
             "available": False, "latest_pct": None, "latest_date": None,
-            "avg_5d": None, "avg_20d": None, "trend": None, "level": None,
-            "note": "", "days": 0,
+            "avg_5d": None, "avg_15d": None, "avg_20d": None, "avg_30d": None,
+            "trend": None, "level": None, "note": "", "days": 0,
         }
 
     pcts = [p for _, p in series]
     latest_date, latest_pct = series[-1]
-    avg_5d = _mean(pcts[-SHORT_WIN:])
-    avg_20d = _mean(pcts)
+    avg_5d = _mean(pcts[-SHORT_WIN:])       # week
+    avg_15d = _mean(pcts[-WIN_15:])
+    avg_20d = _mean(pcts[-LONG_WIN:])       # internal (trend + flow level)
+    avg_30d = _mean(pcts[-WIN_30:])
 
     trend: Optional[str] = None
     if avg_5d is not None and avg_20d and avg_20d > 0:
@@ -304,14 +342,24 @@ def _advisory_from_series(series: list[tuple[str, float]]) -> dict:
         "weak": "mostly intraday churn",
     }[level]
     trend_txt = {"rising": ", rising", "falling": ", fading", "flat": "", None: ""}[trend]
-    note = f"Delivery {latest_pct:.0f}% ({level_txt}){trend_txt}"
+    roll = []
+    if avg_5d is not None:
+        roll.append(f"wk {avg_5d:.0f}%")
+    if avg_15d is not None:
+        roll.append(f"15d {avg_15d:.0f}%")
+    if avg_30d is not None:
+        roll.append(f"30d {avg_30d:.0f}%")
+    roll_txt = f"; {', '.join(roll)}" if roll else ""
+    note = f"Delivery today {latest_pct:.0f}% ({level_txt}){roll_txt}{trend_txt}"
 
     return {
         "available": True,
         "latest_pct": latest_pct,
         "latest_date": latest_date,
-        "avg_5d": avg_5d,
-        "avg_20d": avg_20d,
+        "avg_5d": avg_5d,       # week
+        "avg_15d": avg_15d,
+        "avg_20d": avg_20d,     # internal (trend + flow level)
+        "avg_30d": avg_30d,
         "trend": trend,
         "level": level,
         "note": note,
@@ -326,7 +374,7 @@ def delivery_advisory(symbol: str) -> dict:
     note, days}. `available` is False (all fields None) when no files are on
     disk or the symbol never appears — the UI then simply hides the line.
     """
-    return _advisory_from_series(delivery_series(symbol, n=LONG_WIN))
+    return _advisory_from_series(delivery_series(symbol, n=MAX_WIN))
 
 
 def all_advisories() -> dict[str, dict]:
@@ -346,7 +394,7 @@ def all_advisories() -> dict[str, dict]:
         for sym, row in rows.items():
             series_by_sym.setdefault(sym, []).append((d, row["deliv_pct"]))
     return {
-        f"{sym}.NS": _advisory_from_series(series[-LONG_WIN:])
+        f"{sym}.NS": _advisory_from_series(series[-MAX_WIN:])
         for sym, series in series_by_sym.items()
     }
 

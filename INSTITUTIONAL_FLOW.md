@@ -40,7 +40,7 @@ individually visible (each on its own rolling average):
 | Leg | Source | Rolling average | Maps to |
 |---|---|---|---|
 | **Deals** | `block_deals.aggregate_30d` | 7d-vs-30d net-buy **trend** | rising 1.0 / flat 0.6 / falling 0.2, `+0.2` if a disclosed institution is on record; silent unless ≥2 deals **and** net buying |
-| **Delivery** | `delivery.delivery_advisory` | 20d mean, 5d-vs-20d trend | band 40%→0 … 60%→1, `±0.15` for rising/falling |
+| **Delivery** | `delivery.delivery_advisory` | today / week / 15d / 30d means (20d internal for trend+level), 5d-vs-20d trend | band 40%→0 … 60%→1, `±0.15` for rising/falling |
 
 Blend renormalizes over whichever legs are present ("if found"). Level bands:
 `strong ≥ 66`, `moderate ≥ 33`, else `low`. **"Strength against the normal"** =

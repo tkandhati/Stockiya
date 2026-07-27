@@ -104,6 +104,10 @@ _DEALS_DIR.mkdir(parents=True, exist_ok=True)
 # 30d is the full aggregation window; the short window is the "recent" lens.
 DEAL_LONG_WIN: int = 30
 DEAL_SHORT_WIN: int = 7
+# Rolling retention: keep ~a month of deal rows on disk. Deliberately a few days
+# LONGER than DEAL_LONG_WIN so the 30-day aggregate/average always has a complete
+# window at the boundary.
+DEALS_RETENTION_DAYS: int = 35
 # Fractional gap (short daily rate vs long daily rate) before we call it a
 # rising/falling trend rather than flat.
 DEAL_TREND_BAND: float = 0.10
@@ -208,6 +212,10 @@ def fetch_and_cache_nse_deals() -> tuple[Path, Path]:
             log.warning("NSE download failed for %s: %s", url, e)
 
     _merge_into_all_csv(block_path, bulk_path)
+    try:
+        prune_all_csv()          # keep all.csv to a rolling one-month window
+    except Exception:
+        log.warning("prune_all_csv failed (continuing)", exc_info=True)
     return block_path, bulk_path
 
 
@@ -435,6 +443,46 @@ def _aggregate_from_csv(
     agg.avg_daily_net_30d = round(agg.net_qty / DEAL_LONG_WIN, 2)
     agg.deal_trend = _deal_trend(agg.avg_daily_net_recent, agg.avg_daily_net_30d)
     return agg
+
+
+def prune_all_csv(keep_days: int = DEALS_RETENTION_DAYS) -> int:
+    """Trim data/deals/all.csv to a rolling `keep_days` window (a month).
+
+    Atomic rewrite (temp file + replace). Returns rows removed. No-op in DEMO or
+    when the file is absent. Rows with an unparseable date are KEPT (tolerant
+    reader). Runs automatically at the end of every live fetch.
+    """
+    if os.environ.get("DEMO_MODE", "0") == "1":
+        return 0
+    path = _DEALS_DIR / "all.csv"
+    if not path.exists():
+        return 0
+    cutoff = date.today() - timedelta(days=keep_days)
+    kept: list[dict] = []
+    removed = 0
+    with path.open("r", encoding="utf-8", newline="") as f:
+        for row in csv.DictReader(f):
+            try:
+                d = date.fromisoformat(row.get("date", ""))
+            except (TypeError, ValueError):
+                kept.append(row)          # keep unparseable rather than lose it
+                continue
+            if d < cutoff:
+                removed += 1
+            else:
+                kept.append(row)
+    if removed == 0:
+        return 0
+    tmp = path.with_suffix(".csv.tmp")
+    with tmp.open("w", encoding="utf-8", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=_ALL_FIELDS)
+        w.writeheader()
+        for r in kept:
+            w.writerow({k: r.get(k, "") for k in _ALL_FIELDS})
+    tmp.replace(path)                     # atomic swap
+    log.info("all.csv pruned: removed %d row(s) older than %d days (%d kept)",
+             removed, keep_days, len(kept))
+    return removed
 
 
 def deal_symbols() -> list[str]:

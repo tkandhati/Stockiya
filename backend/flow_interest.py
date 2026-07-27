@@ -103,7 +103,11 @@ def _deliv_component_from_advisory(d: Optional[dict]) -> Optional[dict]:
            else -DELIV_TREND_ADJ if trend == "falling" else 0.0)
     sub = max(0.0, min(1.0, level + adj))
     band = d.get("level") or "moderate"
-    reason = (f"delivery {float(d['avg_20d']):.0f}% ({band}"
+    latest = d.get("latest_pct")
+    today_txt = f"{float(latest):.0f}% today, " if latest is not None else ""
+    long_avg = d.get("avg_30d") if d.get("avg_30d") is not None else d.get("avg_20d")
+    long_label = "30d" if d.get("avg_30d") is not None else "20d"
+    reason = (f"delivery {today_txt}{long_label} avg {float(long_avg):.0f}% ({band}"
               + (f", {trend}" if trend else "") + ")")
     return {
         "sub": round(sub, 4),

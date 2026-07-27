@@ -128,9 +128,17 @@ def _closest_row(
     `pulled_down_by` already says which gate dropped it — together answering
     'what strength does it carry and why was it dropped'.
     """
+    # Fetch the delivery advisory ONCE and reuse it for flow (avoids a 2nd read),
+    # and attach it so the closest-to-firing panel can show the same delivery
+    # ladder (today / week / 15 / 30) the pick cards show.
+    try:
+        from .delivery import delivery_advisory
+        adv = delivery_advisory(r.symbol)
+    except Exception:
+        adv = None
     try:
         from .flow_interest import flow_interest
-        fi = flow_interest(r.symbol, market_pcts=market_pcts)
+        fi = flow_interest(r.symbol, delivery=adv, market_pcts=market_pcts)
     except Exception:
         fi = None
     return {
@@ -140,6 +148,7 @@ def _closest_row(
         "gap_to_tau": round(float(tau - (r.composite_score or 0.0)), 4),
         "pulled_down_by": _pulled_down_by(r),
         "flow_interest": fi,
+        "delivery": adv,
     }
 
 

@@ -92,6 +92,17 @@ class TestDeliveryLoader(unittest.TestCase):
         self.assertEqual(adv["latest_pct"], 90.0)
         self.assertEqual(adv["trend"], "rising")
 
+    def test_multi_window_averages(self):
+        # Ascending pcts 1..30 -> today=30, week(last5)=28, 15d=23, 20d=20.5, 30d=15.5
+        series = [(f"2026-06-{i:02d}", float(i)) for i in range(1, 31)]
+        adv = D._advisory_from_series(series)
+        self.assertEqual(adv["latest_pct"], 30.0)
+        self.assertEqual(adv["avg_5d"], 28.0)    # week
+        self.assertEqual(adv["avg_15d"], 23.0)
+        self.assertEqual(adv["avg_20d"], 20.5)   # internal
+        self.assertEqual(adv["avg_30d"], 15.5)
+        self.assertEqual(adv["days"], 30)
+
     def test_missing_dir_is_unavailable(self):
         with tempfile.TemporaryDirectory() as td:
             old = self._dir(Path(td) / "does_not_exist")

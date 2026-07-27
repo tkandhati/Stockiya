@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import type { ClosestRow, ClosestToFiring } from '../types'
+import { DeliveryPill } from './DeliveryPill'
 
 // Trader-UI rule: four columns, every one earns its place.
 //   S      = the number that decides selection
@@ -83,6 +84,7 @@ export function ClosestToFiringPanel({ data }: { data: ClosestToFiring }) {
               <th className="py-2 pr-3 font-medium">S</th>
               <th className="py-2 pr-3 font-medium">Gap</th>
               <th className="py-2 pr-3 font-medium">Held back by</th>
+              <th className="py-2 pr-3 font-medium">Delivery</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
@@ -106,6 +108,13 @@ export function ClosestToFiringPanel({ data }: { data: ClosestToFiring }) {
                        title={r.pulled_down_by.reason}>
                     {r.pulled_down_by.reason || '—'}
                   </div>
+                </td>
+                <td className="py-2 pr-3">
+                  {r.delivery && r.delivery.available ? (
+                    <DeliveryPill delivery={r.delivery} />
+                  ) : (
+                    <span className="text-[10px] text-slate-400">no delivery data</span>
+                  )}
                 </td>
               </tr>
             ))}

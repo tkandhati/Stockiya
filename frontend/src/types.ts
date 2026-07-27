@@ -304,11 +304,32 @@ export interface DeliveryInfo {
   latest_pct: number | null
   latest_date: string | null
   avg_5d: number | null
+  avg_15d?: number | null
   avg_20d: number | null
+  avg_30d?: number | null
   trend: 'rising' | 'falling' | 'flat' | null
   level: 'strong' | 'moderate' | 'weak' | null
   note: string
   days: number
+}
+
+// Scoring-neutral institutional-flow strength (bulk deals + delivery %).
+// Never affects selection/scoring — indicator + presentation only.
+export interface FlowInterest {
+  available: boolean
+  score: number
+  level: 'strong' | 'moderate' | 'low' | 'none'
+  label?: string
+  analyze?: boolean
+  suppressed?: boolean
+  reasons?: string[]
+  vs_normal?: {
+    delivery_percentile: number | null
+    delivery_band?: string | null
+    cohort_n?: number
+  } | null
+  picked_reason?: string
+  components?: { deal?: unknown; delivery?: unknown }
 }
 
 // GET /api/positions/{symbol}/as_of/{date}
@@ -367,6 +388,9 @@ export interface Position {
   accumulation_gauge?: AccumulationGauge | null
   // Advisory NSE delivery-% (accumulation vs churn)
   delivery?: DeliveryInfo | null
+  // Scoring-neutral institutional-flow interest (bulk deals + delivery %)
+  flow_interest?: FlowInterest | null
+  presentation_rank?: number
   // V1 — ownership + user-actual fill.
   // `entry_date` / `entry_price` / `shares_total` above are the *effective*
   // values (user's if given, scanner's otherwise); scanner_* fields carry
@@ -417,6 +441,8 @@ export interface ClosestRow {
   composite_score: number
   gap_to_tau: number
   pulled_down_by: PulledDownBy
+  delivery?: DeliveryInfo | null
+  flow_interest?: FlowInterest | null
 }
 
 export interface ClosestToFiring {

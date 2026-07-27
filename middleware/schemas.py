@@ -182,6 +182,9 @@ class ClosestRow(BaseModel):
     gap_to_tau: float
     pulled_down_by: PulledDownBy
     flow_interest: Optional[dict] = None
+    # Full delivery advisory (today + week/15d/30d ladder) so the panel shows the
+    # same delivery pill the pick cards do. Untyped dict → passes through.
+    delivery: Optional[dict] = None
 
 
 class ClosestToFiring(BaseModel):

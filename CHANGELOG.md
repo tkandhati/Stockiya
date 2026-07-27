@@ -1,5 +1,63 @@
 # Changelog
 
+## 2026-07-27 — Delivery accumulation ladder: today / week / 15 / 30, shown everywhere
+
+`delivery_advisory` now reports the delivery-% rolling mean over **four windows** —
+today (`latest_pct`), week (`avg_5d`), **`avg_15d`**, **`avg_30d`** (plus `avg_20d`
+kept internally for the trend/flow level). The advisory reads up to **30 files**
+(`MAX_WIN`), retention widened to **45 calendar days** and the fetch look-back to
+**55 days** so the 30-day mean is always complete. `delivery` is an `Optional[dict]`
+in the schema, so the new fields pass through with no schema change.
+
+**Shown wherever delivery is displayed** — today AND the averages, both:
+- `DeliveryPill` face: `Delivery 72%↑ · 30d 66% strong`; tooltip lists today / week
+  / 15d / 30d. Both pick and position cards use this shared pill.
+- Reasoning checklist: `72% strong, rising (today; wk 70%; 15d 68%; 30d 66%; N on record)`.
+- `delivery_advisory.note` and the `flow_interest` reason now carry today + the
+  30-day average.
+- `frontend/src/types.ts` `DeliveryInfo` gained `avg_15d?` / `avg_30d?`.
+- **Closest-to-firing panel now shows delivery too.** Each near-miss row carries
+  the full `delivery` advisory (fetched once, reused for its flow strength);
+  `ClosestRow` schema + TS type gained `delivery` (and `flow_interest`), and
+  `ClosestToFiringPanel.tsx` renders a **Delivery** column with the same pill the
+  pick cards use (falls back to "no delivery data"). Also defined the
+  `FlowInterest` TS type and added `flow_interest?` / `presentation_rank?` to `Pick`.
+
+Verified: 28 offline tests pass (added a multi-window average test: 1..30 → today 30,
+week 28, 15d 23, 20d 20.5, 30d 15.5).
+
+## 2026-07-27 — Delivery auto-loads with bulk + rolling one-month retention
+
+**1. Delivery now auto-fetches alongside bulk on startup — `backend/catchup.py`.**
+`catchup` (the `start.bat` boot refresh) fetched block/bulk in Step 1 but had **no
+delivery step** — while `nightly.py` had both. That asymmetry is why
+`data/delivery/` stayed empty on `start.bat` launches even though block/bulk
+appeared. Added the delivery (MTO) refresh to Step 1, mirroring the block/bulk
+call (DEMO-guarded, best-effort, logs corpus status). Delivery and bulk now load
+together, every startup and every nightly.
+
+*Firewall reality (unchanged):* the fetch only pulls files where **NSE is
+reachable** (your laptop). Behind the corporate firewall it quietly no-ops — run
+`python -m backend.delivery` where NSE is reachable and copy `data/delivery/`
+across (same workflow as OHLCV/deals). If files still don't appear there, the NSE
+`MTO_DDMMYYYY.DAT` archive URL may have changed (it's marked "subject to change"
+in `delivery.py`) — that's the thing to sanity-check.
+
+**2. Rolling one-month retention for both — `block_deals.py` + `delivery.py`.**
+`block_deals.prune_all_csv()` trims `data/deals/all.csv` to a rolling
+`DEALS_RETENTION_DAYS = 35` window (atomic rewrite; unparseable rows kept).
+`delivery.prune_old_files()` deletes MTO files older than `RETENTION_DAYS = 35`.
+Both run **automatically at the end of each live fetch** (DEMO no-op). 35 days
+(not 30) so the averaging windows stay complete at the boundary.
+
+*The monthly average already existed* — deals: `net_qty` / `avg_daily_net_30d` /
+7d-vs-30d `deal_trend` (30-day window); delivery: `avg_20d` (≈1 trading month) +
+`avg_5d`. This change bounds the **data** to a month; the averages were already
+monthly.
+
+Verified: 27 offline tests pass (added retention tests: `prune_all_csv` and
+`prune_old_files` each keep the last month, drop older); all changed files parse.
+
 ## 2026-07-27 — Bulk deals + delivery % as a scoring-neutral flow layer
 
 Bulk/block deals and NSE delivery % now feed a dedicated **institutional-flow**

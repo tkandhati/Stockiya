@@ -175,6 +175,49 @@ class TestBatchLoaders(unittest.TestCase):
         self.assertEqual(syms, ["XCO.NS"])
 
 
+class TestRetention(unittest.TestCase):
+    def test_prune_all_csv_keeps_one_month(self):
+        old = (date.today() - timedelta(days=40)).isoformat()   # outside 35d
+        recent = (date.today() - timedelta(days=2)).isoformat()  # inside 35d
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            saved = B._DEALS_DIR
+            B._DEALS_DIR = base
+            try:
+                _write_all_csv(base, [
+                    {"date": old, "symbol": "OLD.NS", "side": "BUY", "qty": "1000",
+                     "client": "X", "price": "10", "source": "bulk"},
+                    {"date": recent, "symbol": "NEW.NS", "side": "BUY", "qty": "1000",
+                     "client": "X", "price": "10", "source": "bulk"},
+                ])
+                removed = B.prune_all_csv(keep_days=35)
+                # re-read what survived
+                import csv as _csv
+                with (base / "all.csv").open() as f:
+                    rows = list(_csv.DictReader(f))
+            finally:
+                B._DEALS_DIR = saved
+        self.assertEqual(removed, 1)
+        self.assertEqual([r["symbol"] for r in rows], ["NEW.NS"])
+
+    def test_prune_delivery_keeps_one_month(self):
+        old = (date.today() - timedelta(days=40)).isoformat()
+        recent = (date.today() - timedelta(days=2)).isoformat()
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            saved = D._DELIVERY_DIR
+            D._DELIVERY_DIR = base
+            try:
+                (base / f"delivery_{old}.csv").write_text("20,1,ABB,EQ,1000,700,70.00\n")
+                (base / f"delivery_{recent}.csv").write_text("20,1,ABB,EQ,1200,900,75.00\n")
+                removed = D.prune_old_files(keep_days=35)
+                left = sorted(p.name for p in base.iterdir())
+            finally:
+                D._DELIVERY_DIR = saved
+        self.assertEqual(removed, 1)
+        self.assertEqual(left, [f"delivery_{recent}.csv"])
+
+
 class TestWatchlistAndVsNormal(unittest.TestCase):
     def test_watchlist_ranks_and_filters(self):
         with tempfile.TemporaryDirectory() as tdd, tempfile.TemporaryDirectory() as tdv:
