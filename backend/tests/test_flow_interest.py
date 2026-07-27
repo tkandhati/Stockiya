@@ -1,0 +1,237 @@
+"""Offline tests for the SCORING-NEUTRAL institutional-flow presentation layer.
+
+Verifies flow_interest never influences scores/selection and that
+presentation ranking is a non-destructive reordering that falls back to the
+confirmation order when no flow data exists. No network.
+
+Run:  python -m unittest backend.tests.test_flow_interest -v
+"""
+from __future__ import annotations
+
+import csv
+import tempfile
+import unittest
+from datetime import date, timedelta
+from pathlib import Path
+
+from backend import block_deals as B
+from backend import delivery as D
+from backend import flow_interest as F
+
+
+def _write_all_csv(base: Path, rows: list[dict]) -> None:
+    with (base / "all.csv").open("w", encoding="utf-8", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=B._ALL_FIELDS)
+        w.writeheader()
+        for r in rows:
+            w.writerow({k: r.get(k, "") for k in B._ALL_FIELDS})
+
+
+class TestFlowInterest(unittest.TestCase):
+    def test_none_when_no_data(self):
+        with tempfile.TemporaryDirectory() as tdd, tempfile.TemporaryDirectory() as tdv:
+            oldd, oldv = B._DEALS_DIR, D._DELIVERY_DIR
+            B._DEALS_DIR, D._DELIVERY_DIR = Path(tdd), Path(tdv)
+            try:
+                _write_all_csv(Path(tdd), [])
+                fi = F.flow_interest("NOTHING.NS")
+            finally:
+                B._DEALS_DIR, D._DELIVERY_DIR = oldd, oldv
+        self.assertFalse(fi["available"])
+        self.assertEqual(fi["level"], "none")
+        self.assertEqual(fi["score"], 0)
+        self.assertFalse(fi["analyze"])
+        self.assertTrue(fi["suppressed"])   # completely suppressed -> bottom of list
+
+    def test_strong_delivery_flags_analyze(self):
+        # Delivery advisory passed in directly (as the orchestrator does);
+        # deals silent (empty cache).
+        with tempfile.TemporaryDirectory() as tdd:
+            oldd = B._DEALS_DIR
+            B._DEALS_DIR = Path(tdd)
+            try:
+                _write_all_csv(Path(tdd), [])
+                advisory = {
+                    "available": True, "latest_pct": 74.0, "avg_5d": 72.0,
+                    "avg_20d": 70.0, "trend": "rising", "level": "strong", "days": 20,
+                }
+                fi = F.flow_interest("STRONGCO.NS", delivery=advisory)
+            finally:
+                B._DEALS_DIR = oldd
+        self.assertTrue(fi["available"])
+        self.assertEqual(fi["level"], "strong")     # avg_20d 70% >= strong band, rising
+        self.assertTrue(fi["analyze"])
+        self.assertFalse(fi["suppressed"])          # strong flow -> stays near the top
+        self.assertIsNotNone(fi["components"]["delivery"])
+        self.assertIsNone(fi["components"]["deal"])
+
+    def test_weak_delivery_low_interest(self):
+        with tempfile.TemporaryDirectory() as tdd:
+            oldd = B._DEALS_DIR
+            B._DEALS_DIR = Path(tdd)
+            try:
+                _write_all_csv(Path(tdd), [])
+                advisory = {
+                    "available": True, "latest_pct": 25.0, "avg_5d": 24.0,
+                    "avg_20d": 25.0, "trend": "flat", "level": "weak", "days": 20,
+                }
+                fi = F.flow_interest("WEAKCO.NS", delivery=advisory)
+            finally:
+                B._DEALS_DIR = oldd
+        self.assertTrue(fi["available"])          # data exists, just weak
+        self.assertEqual(fi["level"], "low")      # floors near 0
+        self.assertFalse(fi["analyze"])
+        self.assertTrue(fi["suppressed"])         # present but too weak -> bottom
+
+    def test_rising_deals_component(self):
+        today = date.today()
+        recent = (today - timedelta(days=2)).isoformat()
+        older = (today - timedelta(days=20)).isoformat()
+        with tempfile.TemporaryDirectory() as tdd, tempfile.TemporaryDirectory() as tdv:
+            oldd, oldv = B._DEALS_DIR, D._DELIVERY_DIR
+            B._DEALS_DIR, D._DELIVERY_DIR = Path(tdd), Path(tdv)
+            try:
+                _write_all_csv(Path(tdd), [
+                    {"date": older, "symbol": "XCO.NS", "side": "BUY",
+                     "qty": "1000", "client": "SOME HNI", "price": "10", "source": "bulk"},
+                    {"date": recent, "symbol": "XCO.NS", "side": "BUY",
+                     "qty": "1000", "client": "SOME HNI", "price": "10", "source": "bulk"},
+                ])
+                fi = F.flow_interest("XCO.NS")   # no delivery files -> deal leg only
+            finally:
+                B._DEALS_DIR, D._DELIVERY_DIR = oldd, oldv
+        self.assertTrue(fi["available"])
+        self.assertIsNotNone(fi["components"]["deal"])
+        self.assertEqual(fi["components"]["deal"]["trend"], "rising")
+        self.assertIsNone(fi["components"]["delivery"])
+
+
+class TestPresentationRanks(unittest.TestCase):
+    def test_reorders_by_interest_without_touching_scores(self):
+        picks = [
+            {"symbol": "A.NS", "rank": 1, "confirmation_score": 2.0,
+             "flow_interest": {"available": True, "score": 20}},
+            {"symbol": "B.NS", "rank": 2, "confirmation_score": 1.8,
+             "flow_interest": {"available": True, "score": 90}},
+            {"symbol": "C.NS", "rank": 3, "confirmation_score": 1.5,
+             "flow_interest": {"available": True, "score": 55}},
+        ]
+        F.assign_presentation_ranks(picks)
+        pr = {p["symbol"]: p["presentation_rank"] for p in picks}
+        # Highest interest (B) presents first, then C, then A.
+        self.assertEqual(pr, {"B.NS": 1, "C.NS": 2, "A.NS": 3})
+        # Canonical confirmation rank + score are untouched.
+        self.assertEqual([p["rank"] for p in picks], [1, 2, 3])
+        self.assertEqual([p["confirmation_score"] for p in picks], [2.0, 1.8, 1.5])
+        # List order itself is not mutated.
+        self.assertEqual([p["symbol"] for p in picks], ["A.NS", "B.NS", "C.NS"])
+
+    def test_falls_back_to_confirmation_order_without_flow(self):
+        picks = [
+            {"symbol": "A.NS", "rank": 1, "flow_interest": {"available": False, "score": 0}},
+            {"symbol": "B.NS", "rank": 2, "flow_interest": {"available": False, "score": 0}},
+            {"symbol": "C.NS", "rank": 3},   # no flow_interest key at all
+        ]
+        F.assign_presentation_ranks(picks)
+        # No flow signal anywhere -> presentation rank mirrors confirmation rank.
+        self.assertEqual([p["presentation_rank"] for p in picks], [1, 2, 3])
+
+    def test_empty_is_safe(self):
+        F.assign_presentation_ranks([])   # must not raise
+
+
+class TestBatchLoaders(unittest.TestCase):
+    def test_all_advisories_one_load(self):
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            old = D._DELIVERY_DIR
+            D._DELIVERY_DIR = base
+            try:
+                (base / "delivery_2026-07-23.csv").write_text("20,1,ABB,EQ,1000,700,70.00\n")
+                (base / "delivery_2026-07-24.csv").write_text("20,1,ABB,EQ,1200,900,75.00\n")
+                adv = D.all_advisories()
+                mkt = D.latest_market_pcts()
+            finally:
+                D._DELIVERY_DIR = old
+        self.assertIn("ABB.NS", adv)                 # keyed with .NS suffix
+        self.assertTrue(adv["ABB.NS"]["available"])
+        self.assertEqual(adv["ABB.NS"]["days"], 2)
+        self.assertEqual(mkt, [75.0])                # latest file's cross-section
+
+    def test_deal_symbols_one_read(self):
+        recent = (date.today() - timedelta(days=2)).isoformat()
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            old = B._DEALS_DIR
+            B._DEALS_DIR = base
+            try:
+                _write_all_csv(base, [
+                    {"date": recent, "symbol": "XCO.NS", "side": "BUY",
+                     "qty": "1000", "client": "SOME HNI", "price": "10", "source": "bulk"},
+                ])
+                syms = B.deal_symbols()
+            finally:
+                B._DEALS_DIR = old
+        self.assertEqual(syms, ["XCO.NS"])
+
+
+class TestWatchlistAndVsNormal(unittest.TestCase):
+    def test_watchlist_ranks_and_filters(self):
+        with tempfile.TemporaryDirectory() as tdd, tempfile.TemporaryDirectory() as tdv:
+            oldd, oldv = B._DEALS_DIR, D._DELIVERY_DIR
+            B._DEALS_DIR, D._DELIVERY_DIR = Path(tdd), Path(tdv)
+            try:
+                _write_all_csv(Path(tdd), [])   # no deals -> delivery-only watchlist
+                (Path(tdv) / "delivery_2026-07-24.csv").write_text(
+                    "20,1,STRONGCO,EQ,1000,780,78.00\n"   # strong -> included
+                    "20,2,WEAKCO,EQ,1000,220,22.00\n"     # weak -> excluded
+                )
+                wl = F.build_watchlist()
+            finally:
+                B._DEALS_DIR, D._DELIVERY_DIR = oldd, oldv
+        syms = [r["symbol"] for r in wl]
+        self.assertIn("STRONGCO.NS", syms)
+        self.assertNotIn("WEAKCO.NS", syms)          # weak flow is filtered out
+        self.assertEqual(wl[0]["flow_interest"]["level"], "strong")
+
+    def test_vs_normal_percentile(self):
+        advisory = {
+            "available": True, "latest_pct": 72.0, "avg_5d": 70.0,
+            "avg_20d": 70.0, "trend": "rising", "level": "strong", "days": 20,
+        }
+        market = [10.0, 20.0, 30.0, 72.0]   # 72 is top of a 4-name cohort
+        with tempfile.TemporaryDirectory() as tdd:
+            oldd = B._DEALS_DIR
+            B._DEALS_DIR = Path(tdd)
+            try:
+                _write_all_csv(Path(tdd), [])
+                fi = F.flow_interest("STRONGCO.NS", delivery=advisory, market_pcts=market)
+            finally:
+                B._DEALS_DIR = oldd
+        self.assertIsNotNone(fi["vs_normal"])
+        self.assertEqual(fi["vs_normal"]["delivery_percentile"], 100.0)
+        self.assertEqual(fi["vs_normal"]["cohort_n"], 4)
+
+
+class TestWhyPicked(unittest.TestCase):
+    def test_summarizes_price_volume_basis(self):
+        payload = {
+            "gate_confirmation_status": {"passed": ["CS", "VD", "BR"]},
+            "confirmation": {"score": 1.85, "bonuses_fired": ["MA stack 50>150>200",
+                                                              "OBV-90d +7%"]},
+            "entry_stage": "BREAKOUT_CONFIRMED_TODAY",
+        }
+        txt = F.why_picked(payload)
+        self.assertIn("cleared CS/VD/BR", txt)
+        self.assertIn("confirmation 1.85", txt)
+        self.assertIn("2 bonus", txt)
+        self.assertIn("breakout confirmed today", txt)
+
+    def test_tolerates_float_confirmation_and_missing_fields(self):
+        self.assertIn("confirmation 1.20", F.why_picked({"confirmation": 1.2}))
+        # No usable fields -> still returns a sane sentence, never raises.
+        self.assertTrue(F.why_picked({}).startswith("Picked on price/volume"))
+
+
+if __name__ == "__main__":
+    unittest.main()

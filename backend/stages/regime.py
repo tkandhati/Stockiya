@@ -4,7 +4,11 @@ Runs ONCE per day at the start of the orchestrator — NOT per ticker. Halts
 all per-ticker work if the configured index benchmark closes below its
 50-day moving average. The master switch from PRINCIPLES Section 2.
 
-Default: NIFTY 100 (^CNX100) — aligned with our Nifty 100 trading universe.
+Default: NIFTY 100 index (^CNX100) — a broad large-cap market-direction proxy.
+This is the regime INDEX and is deliberately independent of (and typically
+smaller than) the scan universe: the market's direction is read off the
+large-cap benchmark regardless of how many stocks we screen. Kept at ^CNX100
+even though the scan universe is now larger (nifty300 default).
 
 Fix points:
     REGIME_TICKERS : indices that gate the day (tuple, all must pass)
@@ -27,7 +31,7 @@ from ..indicators import sma
 # Tunable constants
 # --------------------------------------------------------------------------- #
 
-REGIME_TICKERS: tuple[str, ...] = ("^CNX100",)  # tunable — match Nifty 100 universe
+REGIME_TICKERS: tuple[str, ...] = ("^CNX100",)  # tunable — large-cap market-direction proxy (regime index, NOT the scan universe)
 MA_PERIOD: int = 50                                       # tunable
 
 

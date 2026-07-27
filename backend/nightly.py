@@ -35,7 +35,7 @@ log = logging.getLogger("nightly")
 
 
 def run_nightly() -> dict:
-    """Refresh NSE deals, then run the volume-only pipeline over Nifty 100.
+    """Refresh NSE deals, then run the volume-only pipeline over the scan universe.
 
     Persists outcome to `data/.last_run.json` so the /api/health/data probe
     can surface failures in the UI (replaces silent-log-only behavior).
@@ -52,6 +52,34 @@ def run_nightly() -> dict:
     except Exception as e:
         log.exception("NSE deal refresh failed (continuing with cached data)")
         errors.append(f"nse_deals: {e}")
+
+    # Delivery (MTO) refresh — same best-effort pattern as the deals refresh
+    # above. Behind a firewall this quietly no-ops; run where NSE is reachable
+    # and copy data/delivery/ across. Load status is logged either way (this
+    # was previously invisible in the logs).
+    log.info("Refreshing NSE delivery (MTO) files...")
+    delivery_status: dict = {}
+    try:
+        from backend.delivery import fetch_and_cache_delivery, delivery_corpus_status
+        fetched = fetch_and_cache_delivery()
+        delivery_status = delivery_corpus_status()
+        if delivery_status.get("available"):
+            log.info(
+                "Delivery: %d day(s) on disk (latest %s, %d symbols); "
+                "%d new file(s) this run.",
+                delivery_status["days"], delivery_status["latest_date"],
+                delivery_status["symbols_latest"], len(fetched),
+            )
+        else:
+            log.warning(
+                "Delivery: NO files on disk (data/delivery/ is empty). Delivery "
+                "advisory will be UNAVAILABLE on every pick. Fetch where NSE is "
+                "reachable (python -m backend.delivery) and copy data/delivery/ "
+                "across."
+            )
+    except Exception as e:
+        log.exception("delivery refresh failed (continuing without delivery)")
+        errors.append(f"delivery: {e}")
 
     log.info("Running pipeline...")
     try:
@@ -130,7 +158,11 @@ def run_nightly() -> dict:
             error="; ".join(errors),
             started_at=started,
             finished_at=finished,
-            extras={"picks": len(response.get("picks", []))},
+            extras={
+                "picks": len(response.get("picks", [])),
+                "delivery_days": delivery_status.get("days", 0),
+                "delivery_latest": delivery_status.get("latest_date"),
+            },
         )
     except Exception:
         log.exception("data_health.record_run failed (non-fatal)")

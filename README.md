@@ -2,7 +2,7 @@
 
 > **Don't invent. Follow the institutions. Enter early, exit early — on volume alone.**
 
-Local web app that surfaces up to **3 Indian (Nifty 100) stock picks per day** for a **swing hold — 3 weeks to 3 months typical, up to 6 months for runners**. Pure volume strategy: picks are stocks where **institutions are visibly building a Wyckoff accumulation base and today's tape confirms it**. Deterministic, no LLM, RL-ready.
+Local web app that surfaces up to **3 Indian (Nifty 300) stock picks per day** for a **swing hold — 3 weeks to 3 months typical, up to 6 months for runners**. Pure volume strategy: picks are stocks where **institutions are visibly building a Wyckoff accumulation base and today's tape confirms it**. Deterministic, no LLM, RL-ready.
 
 > **Honest holding-time expectation.** T1 (+8%) is expected around day 21 (~3 weeks) for a working setup. Median full lifecycle is 3-5 weeks to T1, then 1-3 more months to T2 or exit. Day-180 is the outer hard cap (not a target). Losers exit inside 1-15 sessions on stop or trajectory flip.
 
@@ -12,7 +12,7 @@ Local web app that surfaces up to **3 Indian (Nifty 100) stock picks per day** f
 
 ## What it does
 
-1. **Screens Nifty 100** every day for Wyckoff Phase-C or Phase-D accumulation footprints — institutional buying *before* price runs.
+1. **Screens the Nifty 300 universe** every day for Wyckoff Phase-C or Phase-D accumulation footprints — institutional buying *before* price runs.
 2. **Waits for a Volume-Spread-Analysis trigger bar** — Sign-of-Strength, pocket pivot, or no-supply test. Any one fires the entry.
 3. **Requires anchored-VWAP hold** — price above the institutional cost-basis line from the base low.
 4. **Picks 0–3 setups** that clear all three checks. Quality over quantity — if nothing qualifies, you see *"nothing actionable today"*, plus a "closer-to-passing" watchlist and near-misses so you can see what the chain is doing.
@@ -105,7 +105,7 @@ All math is pure and lives in `backend/indicators.py` (primitive functions) with
 - Chaikin Money Flow (60d) ≥ +0.15
 - NSE block + bulk deal 30d net-buy ratio
 - Sector-relative volume today vs sector median
-- Top-30 relative-strength rank vs Nifty 100
+- Top-30 relative-strength rank vs the scan universe
 
 ### Exit-watch inputs ([EX])
 - OBV-20d negative divergence at fresh price high
@@ -123,7 +123,7 @@ backend/
 ├── pipeline.py             ← StageResult contract + run_pipeline()
 ├── orchestrator.py         ← run_universe() — entry point
 ├── stages/                 ← one file per stage (the swap points)
-│   ├── universe.py    [U]      gate — Nifty 100 membership
+│   ├── universe.py    [U]      gate — scan-universe membership
 │   ├── ingest.py      [I]      gate — 180 bars + as-of slice
 │   ├── hard_rejects.py [HR]    gate — parabolic / extended / SEBI / pledge
 │   ├── wyckoff.py     [WY]     scored — Phase C / Phase D confidence  *(new, in-progress)*
@@ -145,8 +145,10 @@ backend/
 │   ├── lt_flow.py, consolidation.py, volume.py, breakout.py
 ├── signals/                ← facade over volume_signals.py
 ├── volume_signals.py       ← all indicator math (1100 lines, one engine)
-├── block_deals.py          ← NSE block/bulk CSV downloader + 30d aggregator
-├── universe.py             ← Nifty 100 list
+├── block_deals.py          ← NSE block/bulk CSV downloader + 30d aggregator (+ rolling 7d-vs-30d trend)
+├── delivery.py             ← NSE MTO delivery-% best-effort fetcher + file-only reader + rolling 5d/20d   *(fetch 2026-07-26)*
+├── reasoning_points.py     ← builds the pick "reasoning checklist" steps (incl. always-visible delivery load status)  *(new 2026-07-26)*
+├── universe.py             ← scan universe (Nifty 50/100/200/300/500 + custom; default Nifty 300)
 ├── yahoo.py, fetch.py      ← data source adapters
 ├── demo_data.py            ← DEMO_MODE=1 synthetic OHLCV
 ├── nightly.py, weekly.py   ← cron entry points
@@ -168,6 +170,7 @@ data/
 │   ├── run_<date>_<ticker>.jsonl
 │   └── outcomes.jsonl      ← T+90 / T+180 realized returns
 ├── deals/                  ← cached NSE block + bulk deal CSVs
+├── delivery/               ← NSE MTO delivery-% files (auto-fetch best-effort + manual drop)
 ├── portfolio.csv           ← every pick the engine ever surfaced
 └── portfolio_weekly.csv    ← Friday closes for open picks
 
@@ -212,6 +215,7 @@ See [WEEKLY_TRACKING.md](./WEEKLY_TRACKING.md) — what to monitor weekly, bi-we
 | ✅ done | Pipeline of swappable stages |
 | ✅ done | Per-ticker JSONL traces (RL dataset) |
 | ✅ done | NSE block + bulk deals downloader |
+| ✅ done | NSE delivery-% (MTO) best-effort auto-fetch (`fetch_and_cache_delivery`, no-op behind firewall) + load-status logging / Data Health probe + rolling 5d/20d, surfaced as a reasoning-checklist step with always-visible load status (2026-07-26) |
 | ✅ done | Outcome tracker — auto-generated, wired into `nightly.py` + standalone `python -m backend.stages.outcome`. Records **every pick's own target date** *and* standard T+90/T+180; catch-up firing, as-of-target pricing, idempotent. (2026-07-24: was dead code — never called — until wired; see CHANGELOG + `backend/tests/`.) |
 | ✅ done | Wyckoff-VPA spec documented (PRINCIPLES.md, ARCHITECTURE.md §0-§0.3) |
 | ✅ done | v3 soft-gate composite spine (ACS + AC wired, composite `S ≥ τ`) |

@@ -139,12 +139,16 @@ def render_picks_response(
     regime: Optional[dict] = None,
     message: Optional[str] = None,
     closest_to_firing: Optional[dict] = None,
+    watchlist: Optional[list] = None,
 ) -> dict:
     """Return a PicksResponse-shaped dict. Caller is responsible for writing.
 
     `closest_to_firing` is `{accumulation, breakout, overall}` — three
-    already-ranked lists of up to 5 rows each with 4 fields per row. Only
-    populated on zero-pick days; the UI shows it as a tabbed panel.
+    already-ranked lists of up to 5 rows each. Populated on EVERY run (not just
+    zero-pick days) so the near-misses are always visible alongside the picks.
+
+    `watchlist` is the scoring-neutral institutional-accumulation list (Use 1) —
+    rows of {symbol, flow_interest}. Attached only when non-empty.
     """
     response: dict = {
         "date": today_iso,
@@ -160,6 +164,8 @@ def render_picks_response(
         response["message"] = message
     if closest_to_firing and any(closest_to_firing.get(k) for k in ("accumulation", "breakout", "overall")):
         response["closest_to_firing"] = closest_to_firing
+    if watchlist:
+        response["watchlist"] = watchlist
     return response
 
 

@@ -1,14 +1,22 @@
-"""Stock universes — Nifty 50 / 100 / 200 / 500, plus a `custom` file loader.
+"""Stock universes — Nifty 50 / 100 / 200 / 300 / 500, plus a `custom` file loader.
 
 The pipeline scans whichever universe is selected by `STOCKYA_UNIVERSE`:
 
     STOCKYA_UNIVERSE=nifty50    — Nifty 50 (fast smoke tests)
-    STOCKYA_UNIVERSE=nifty100   (default) — Nifty 50 + Nifty Next 50
+    STOCKYA_UNIVERSE=nifty100   — Nifty 50 + Nifty Next 50
     STOCKYA_UNIVERSE=nifty200   — Nifty 100 + Nifty Midcap 100
+    STOCKYA_UNIVERSE=nifty300   (default) — top-300 slice of the curated 500 set
     STOCKYA_UNIVERSE=nifty500   — Broad NSE-500 style coverage (small + mid + large)
     STOCKYA_UNIVERSE=custom     — read tickers from config/universe_custom.txt
                                   (one per line, `.NS` suffix optional but recommended;
                                   blank lines and `#` comments are ignored)
+
+NOTE: "Nifty 300" is NOT an official NSE index (the official broad indices are
+Nifty 200 and Nifty 500; the top-300-by-cap set is closest to "Nifty
+LargeMidcap 250" + 50). `NIFTY_300` here is a pragmatic top-300 slice of the
+curated `NIFTY_500` list. For the *exact* official constituents of any index at
+a point in time, paste them into `config/universe_custom.txt` and set
+`STOCKYA_UNIVERSE=custom` — that overrides everything.
 
 NSE rebalances these indices ~twice a year. Bump the lists below when the
 rebalance lands, and confirm symbols via `python -m backend.check_universe`.
@@ -204,6 +212,16 @@ NIFTY_SMALLCAP_300 = _dedupe(NIFTY_SMALLCAP_300)
 
 NIFTY_500 = _dedupe(NIFTY_200 + [t for t in NIFTY_SMALLCAP_300 if t not in NIFTY_200])
 
+# --------------------------------------------------------------------------- #
+# Nifty 300 — pragmatic broad universe (NOT an official index).
+#
+# Top-300 slice of the curated 500 set: Nifty 200 (large + upper-mid) followed
+# by the most-liquid small/mid names. Deterministic and offline — no fabricated
+# tickers beyond what's already curated above. For the exact official
+# constituents of any index, use STOCKYA_UNIVERSE=custom.
+# --------------------------------------------------------------------------- #
+NIFTY_300 = NIFTY_500[:300]
+
 
 # --------------------------------------------------------------------------- #
 # Custom-file universe — the escape hatch
@@ -243,17 +261,29 @@ UNIVERSES = {
     "nifty50":  NIFTY_50,
     "nifty100": NIFTY_100,
     "nifty200": NIFTY_200,
+    "nifty300": NIFTY_300,
     "nifty500": NIFTY_500,
 }
 
+# Human-readable labels for logs / UI / trace. Keeps user-facing text in sync
+# with the selected universe instead of hardcoding "Nifty 100" in a dozen files.
+_UNIVERSE_LABELS = {
+    "nifty50": "Nifty 50", "nifty100": "Nifty 100", "nifty200": "Nifty 200",
+    "nifty300": "Nifty 300", "nifty500": "Nifty 500", "custom": "custom universe",
+}
+
+# Default universe (2026-07-27): nifty300. Was nifty100.
+_DEFAULT_UNIVERSE = "nifty300"
+
 
 def _selected_universe_name() -> str:
-    name = os.environ.get("STOCKYA_UNIVERSE", "nifty100").lower().strip()
+    name = os.environ.get("STOCKYA_UNIVERSE", _DEFAULT_UNIVERSE).lower().strip()
     if name == "custom":
         return "custom"
     if name not in UNIVERSES:
-        log.warning("Unknown STOCKYA_UNIVERSE=%r; falling back to nifty100", name)
-        return "nifty100"
+        log.warning("Unknown STOCKYA_UNIVERSE=%r; falling back to %s",
+                    name, _DEFAULT_UNIVERSE)
+        return _DEFAULT_UNIVERSE
     return name
 
 
@@ -263,12 +293,14 @@ def _resolve_universe(name: str) -> list[str]:
         if not picks:
             log.warning(
                 "STOCKYA_UNIVERSE=custom but config/universe_custom.txt is missing "
-                "or empty; falling back to nifty100"
+                "or empty; falling back to %s", _DEFAULT_UNIVERSE
             )
-            return NIFTY_100
+            return UNIVERSES[_DEFAULT_UNIVERSE]
         return picks
     return UNIVERSES[name]
 
 
 UNIVERSE_NAME = _selected_universe_name()
 UNIVERSE = _resolve_universe(UNIVERSE_NAME)
+# Pretty label for the selected universe — import this instead of hardcoding.
+UNIVERSE_LABEL = _UNIVERSE_LABELS.get(UNIVERSE_NAME, UNIVERSE_NAME)

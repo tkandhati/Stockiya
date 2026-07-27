@@ -17,7 +17,7 @@
 
 ## 0. One-sentence summary — current spine
 
-Stockiya fetches 180 daily bars of OHLCV for every Nifty 100 stock, detects a
+Stockiya fetches 180 daily bars of OHLCV for every stock in the scan universe (default Nifty 300), detects a
 Wyckoff-Phase-C-or-D accumulation base using pure volume math, waits for a
 Volume-Spread-Analysis trigger bar (Sign-of-Strength, pocket pivot, or no-supply
 test), verifies price is holding its anchored VWAP from the base low, and
@@ -32,7 +32,7 @@ file you can open. Same OHLCV in → byte-identical trace out.**
 ## 0.1. Big picture — Wyckoff-VPA spine
 
 ```
-                    ┌── UNIVERSE (Nifty 100) ──┐
+                    ┌── UNIVERSE (Nifty 300) ──┐
                     │                           │
                     ▼ (parallel per ticker)     │
         ┌──────────── PER-TICKER PIPELINE ────────┐
@@ -243,7 +243,7 @@ PRINCIPLES.md and §0.1 above.**
 
 ## 0.4. One-sentence summary (retired spine)
 
-Stockiya fetches a year of daily OHLCV data for every Nifty 100 stock, runs it
+Stockiya fetches a year of daily OHLCV data for every stock in the scan universe, runs it
 through a deterministic scoring pipeline that measures institutional-volume
 accumulation over multiple time horizons, and surfaces the top 0–3 picks each
 day — each with a full entry/target/stop plan and auditable reasoning.
@@ -308,7 +308,7 @@ file you can open.**
 
 ### Stage [U] Universe — `backend/stages/universe.py`
 
-**What it does:** Gate. Checks if the ticker is in the Nifty 100 list.
+**What it does:** Gate. Checks if the ticker is in the scan universe (default Nifty 300).
 
 ```
 Input:  ticker symbol (e.g. "HDFCBANK.NS")

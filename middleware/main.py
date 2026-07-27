@@ -4,7 +4,7 @@ Run from the project root:
     uvicorn middleware.main:app --reload --port 8000
 
 This service serves the day's precomputed picks (from `data/picks_<date>.json`)
-and the volume-strategy detail panel for any Nifty 100 ticker. The pipeline
+and the volume-strategy detail panel for any in-universe ticker. The pipeline
 itself lives in `backend/orchestrator.py` and `backend/stages/*`.
 """
 
@@ -25,7 +25,7 @@ load_dotenv(_PROJECT_ROOT / "backend" / ".env")
 
 from backend.cache import detail_cache  # noqa: E402
 from backend.signals import compute as compute_accumulation  # noqa: E402
-from backend.universe import UNIVERSE  # noqa: E402
+from backend.universe import UNIVERSE, UNIVERSE_LABEL  # noqa: E402
 from backend.yahoo import history_6m, history_ohlcv, snapshot  # noqa: E402
 
 from backend.positions_view import list_active_positions  # noqa: E402
@@ -272,7 +272,7 @@ def _todays_pick_for(symbol: str) -> Pick | None:
 def stock_detail(symbol: str) -> StockDetail:
     symbol = symbol.upper()
     if symbol not in UNIVERSE:
-        raise HTTPException(status_code=404, detail=f"{symbol} not in Nifty 100 universe")
+        raise HTTPException(status_code=404, detail=f"{symbol} not in {UNIVERSE_LABEL} universe")
 
     cached = detail_cache.get(symbol)
     if cached is not None:

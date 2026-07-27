@@ -35,7 +35,7 @@ import type {
  *                          Single-date edge → Mode B (one-day funnel).
  *                          Range            → Mode C universe (full history).
  *   - "Symbol check"     — one symbol over a date range, any Yahoo ticker
- *                          (not just Nifty 100). Single-date edge → Mode A
+ *                          (not just the scan universe). Single-date edge → Mode A
  *                          (gate explanation for one day). Range → Mode C
  *                          symbol (timeline + pass-list + forward walks).
  *
@@ -219,7 +219,7 @@ function DeviationBanner({
 function OutsideUniverseBanner({ symbol }: { symbol: string }) {
   return (
     <div className="mt-4 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-xs text-amber-900">
-      <strong>{symbol}</strong> isn't in the tuned Nifty 100 universe. The
+      <strong>{symbol}</strong> isn't in the tuned scan universe. The
       gate thresholds (OBV slope, ATR%, breakout volume) were calibrated
       against large-cap institutional patterns. Mid/small caps and non-NSE
       tickers may legitimately show different volume/divergence dynamics —
@@ -358,7 +358,7 @@ export function BacktestPage() {
       >
         {tab === 'symbol' && (
           <div className="mb-4 rounded-md border border-violet-200 bg-violet-50 px-3 py-2 text-xs text-violet-900">
-            <strong>Symbol check.</strong> Enter any ticker (Nifty 100 or not).
+            <strong>Symbol check.</strong> Enter any ticker (in-universe or not).
             We'll walk every trading day in your window and show which gates
             fired, on which days, and what the forward outcome was. Useful for
             "was this a right pick for our strategy?" research.
@@ -367,7 +367,7 @@ export function BacktestPage() {
         {tab === 'historical' && (
           <div className="mb-4 rounded-md border border-violet-200 bg-violet-50 px-3 py-2 text-xs text-violet-900">
             <strong>Historical scan.</strong> Pick a window (year, quarter,
-            etc.) and we walk every trading day across the Nifty 100, listing
+            etc.) and we walk every trading day across the scan universe, listing
             every pick the strategy would have alerted plus its forward outcome.
             Leave symbols blank for the full universe, or list a few to filter.
           </div>
@@ -414,7 +414,7 @@ export function BacktestPage() {
               placeholder={
                 tab === 'symbol'
                   ? 'Any Yahoo ticker. e.g. BAJAJ-AUTO.NS, TANLA.NS, AAPL'
-                  : 'Blank = full Nifty 100. Or list a few to filter.'
+                  : 'Blank = full scan universe. Or list a few to filter.'
               }
               value={symbolsRaw}
               onChange={(e) => setSymbolsRaw(e.target.value)}
@@ -434,7 +434,7 @@ export function BacktestPage() {
               {tab === 'symbol' && symbols.length === 1 && `Will check: ${symbols[0]}`}
               {tab === 'historical' &&
                 (symbols.length === 0
-                  ? 'Scanning full Nifty 100'
+                  ? 'Scanning full scan universe'
                   : `Filtering to ${symbols.length} symbol${symbols.length === 1 ? '' : 's'}`)}
             </span>
           </label>
@@ -1693,7 +1693,7 @@ function ModeCUniverse({ resp }: { resp: BacktestResponse }) {
       {/* Header */}
       <div className="rounded-xl border border-violet-200 bg-violet-50 p-5">
         <h2 className="text-sm font-semibold text-violet-900">
-          Historical picks · Nifty 100 ({resp.universe_size} symbols)
+          Historical picks · scan universe ({resp.universe_size} symbols)
         </h2>
         <p className="mt-1 text-xs text-violet-900/80">
           {resp.start} → {resp.end} · Every trading day was scanned. Below

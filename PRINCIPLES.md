@@ -16,7 +16,7 @@ Volume is the only signal that cannot be faked. Institutions cannot enter or exi
 
 ## 1. The strategy in one paragraph
 
-We scan **Nifty 100** daily after market close. We require the **market regime** to be on — NIFTY 100 above its 50-day moving average — before any buy alert. For each ticker we apply the **Wyckoff-VPA spine**: detect an accumulation base (Phases A–D), require today's bar to fire a Volume-Spread-Analysis confirmation (Sign-of-Strength, no-supply test, or pocket pivot), and verify price is holding its **anchored VWAP** from the base low. Structural preconditions are **scored, not hard-gated**, so a strong setup with one slightly-loose sub-check still qualifies; only the trigger bar and hard rejects are binary. Survivors are ranked by **confirmation strength** — the pick with the most independent corroborating signals is #1. Held picks are re-scanned daily for **early volume-based exit signals** (OBV divergence, churning, distribution-day count, anchored-VWAP break) so we drop as early as we entered.
+We scan the **Nifty 300** universe daily after market close. We require the **market regime** to be on — the NIFTY 100 index above its 50-day moving average — before any buy alert. For each ticker we apply the **Wyckoff-VPA spine**: detect an accumulation base (Phases A–D), require today's bar to fire a Volume-Spread-Analysis confirmation (Sign-of-Strength, no-supply test, or pocket pivot), and verify price is holding its **anchored VWAP** from the base low. Structural preconditions are **scored, not hard-gated**, so a strong setup with one slightly-loose sub-check still qualifies; only the trigger bar and hard rejects are binary. Survivors are ranked by **confirmation strength** — the pick with the most independent corroborating signals is #1. Held picks are re-scanned daily for **early volume-based exit signals** (OBV divergence, churning, distribution-day count, anchored-VWAP break) so we drop as early as we entered.
 
 The intended holding pattern is a **swing hold — 3 weeks to 3 months typical, up to 6 months for runners**. T1 (+8%) is expected around day 21 (~3 weeks) for a working setup. Median winner takes 3-5 weeks to T1 and another 1-3 months to T2 or exit; losers exit inside 1-15 sessions on stop or trajectory flip. Day-180 is the **outer hard cap** (not a target). T+90 and T+180 outcome horizons in the trace are payoff-measurement points for label maturity, not intended hold durations.
 
@@ -25,7 +25,7 @@ The intended holding pattern is a **swing hold — 3 weeks to 3 months typical, 
 ## 2. The spine — two gates, one score, one trigger
 
 ```
-[U]  Universe          gate       In Nifty 100
+[U]  Universe          gate       In the scan universe (nifty300 default)
 [I]  Ingest            gate       180 daily bars on file
 [HR] Hard rejects      gate       Parabolic 30d / extended above 50d / SEBI flag
 [WY] Wyckoff phase     SCORED     Phase-C spring or Phase-D SOS detected on daily bars
@@ -246,7 +246,7 @@ confirmation = wy_score + avwap_score + vsa_margin + 0.5 × bonus_signal_count
 - Chaikin Money Flow (60d) ≥ +0.15
 - NSE block-/bulk-deal net-buying in last 30 days
 - Sector-relative volume: today's vol / sector median vol ≥ 1.5
-- Top-30 relative-strength rank vs Nifty 100
+- Top-30 relative-strength rank vs the scan universe
 
 More bonuses = more independent confirmations = less-likely false trigger.
 
@@ -267,7 +267,7 @@ More bonuses = more independent confirmations = less-likely false trigger.
 - Day-trade or look at intraday charts. Cadence is once-daily, EOD only.
 - Override the volume signal with fundamentals.
 - Move the stop down or "double down" on a broken hypothesis.
-- Trade outside Nifty 100.
+- Trade outside the scan universe.
 - Use leverage, options, or shorts.
 - Hide outcomes — every pick is logged with realised return at T+90 and T+180.
 

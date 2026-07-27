@@ -150,13 +150,14 @@ def _ingest(sr: StageResult) -> str:
 
 
 def _universe(sr: StageResult) -> str:
+    from .universe import UNIVERSE_LABEL
     if sr.passed:
-        return "Ticker is in the Nifty 100 universe — eligible for the strategy."
+        return f"Ticker is in the {UNIVERSE_LABEL} scan universe — eligible for the strategy."
     return (
-        "Ticker isn't in the Nifty 100 universe. The strategy is intentionally "
-        "scoped to high-liquidity large-caps where the institutional volume "
-        "signature is reliable. Mid- and small-caps will be added later, once "
-        "the strategy has 6+ months of live outcomes."
+        f"Ticker isn't in the {UNIVERSE_LABEL} scan universe. The strategy is "
+        "intentionally scoped to a curated liquid universe where the "
+        "institutional volume signature is reliable; less-liquid names are "
+        "excluded because delivery/deal/volume evidence gets noisy there."
     )
 
 

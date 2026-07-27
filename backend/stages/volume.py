@@ -1,6 +1,6 @@
 """[VD] Volume + Divergence gate.
 
-Two checks; at least ONE must pass (relaxed for Nifty 100, where genuine
+Two checks; at least ONE must pass (relaxed for large-caps, where genuine
 volume dry-up below 50% of ADV50 is rare on always-liquid large-caps):
 
   1. Volume Dry-Up (Minervini):   adv(5) / adv(50) < 0.70

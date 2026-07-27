@@ -407,7 +407,8 @@ have been analyzed and moved to `WISHLIST.md`.
 
 ## Current Architecture Truth
 
-Stockiya is a deterministic, volume-only Nifty 100 screener for a
+Stockiya is a deterministic, volume-only swing screener (default scan universe
+`nifty300` — a curated top-300 set; configurable via `STOCKYA_UNIVERSE`) for a
 **swing hold — 3 weeks to 3 months typical, up to 6 months for runners**.
 Day-180 is the outer hard cap, not a target; the median winner hits T1
 around day 21 and finishes T2 or exits inside 1-3 months from entry.

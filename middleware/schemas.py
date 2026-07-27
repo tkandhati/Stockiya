@@ -169,12 +169,19 @@ class PulledDownBy(BaseModel):
 
 
 class ClosestRow(BaseModel):
-    """One row in the Closest-to-Firing panel. Four fields, deliberately."""
+    """One row in the Closest-to-Firing panel.
+
+    `flow_interest` is the scoring-neutral institutional-flow strength (bulk
+    deals + delivery %) for this dropped candidate — strength vs the normal plus
+    the reason it was dropped is already in `pulled_down_by`. Untyped dict so its
+    inner keys pass through untouched; None when no flow data is on disk.
+    """
     symbol: str
     company: str
     composite_score: float
     gap_to_tau: float
     pulled_down_by: PulledDownBy
+    flow_interest: Optional[dict] = None
 
 
 class ClosestToFiring(BaseModel):
@@ -193,6 +200,10 @@ class PicksResponse(BaseModel):
     message: Optional[str] = None
     picks: list[Pick] = []
     closest_to_firing: Optional[ClosestToFiring] = None
+    # Scoring-neutral institutional-accumulation watchlist (Use 1 — guidance on
+    # which stocks to analyze). Each row: {symbol, flow_interest}. Untyped dicts
+    # so inner keys pass through; None/absent when no flow data is on disk.
+    watchlist: Optional[list[dict]] = None
 
 
 # --------------------------------------------------------------------------- #

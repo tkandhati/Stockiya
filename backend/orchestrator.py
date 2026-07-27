@@ -2,9 +2,9 @@
 
 Gates-based flow (PRINCIPLES Section 2):
 
-    Phase 0  [RG]  Market regime gate (one shot, NIFTY 100).
+    Phase 0  [RG]  Market regime gate (one shot, NIFTY 100 index proxy).
                    FAIL -> write empty picks file with regime info, return.
-    Phase 1  per-ticker pipeline (parallel) over Nifty 100.
+    Phase 1  per-ticker pipeline (parallel) over the scan universe.
     Phase 2  [RK]  Confirmation-strength ranking; select top N.
     Phase 3  [PS] + [H]  Build pick payloads for the selected.
     Phase 4  [R]   Render to disk + append final trace rows.
@@ -117,14 +117,29 @@ def _pulled_down_by(r: PipelineResult) -> dict:
     }
 
 
-def _closest_row(r: PipelineResult, tau: float) -> dict:
-    """One compact row for the empty-state tabbed panel."""
+def _closest_row(
+    r: PipelineResult, tau: float, market_pcts: Optional[list] = None
+) -> dict:
+    """One compact row for the closest-to-firing panel.
+
+    Enriched (2026-07-27) with the SCORING-NEUTRAL institutional-flow strength
+    for this dropped candidate: `flow_interest` shows how strong bulk-deal +
+    delivery accumulation is (and how it ranks vs the normal), while
+    `pulled_down_by` already says which gate dropped it — together answering
+    'what strength does it carry and why was it dropped'.
+    """
+    try:
+        from .flow_interest import flow_interest
+        fi = flow_interest(r.symbol, market_pcts=market_pcts)
+    except Exception:
+        fi = None
     return {
         "symbol": r.symbol,
         "company": (r.snapshot or {}).get("company") or r.symbol,
         "composite_score": round(float(r.composite_score or 0.0), 4),
         "gap_to_tau": round(float(tau - (r.composite_score or 0.0)), 4),
         "pulled_down_by": _pulled_down_by(r),
+        "flow_interest": fi,
     }
 
 
@@ -164,12 +179,20 @@ def _collect_closest_to_firing(
         eligible, key=lambda r: -(r.composite_score or 0.0)
     )
 
+    # Market delivery cross-section loaded ONCE for the 'strength vs normal'
+    # percentile on every flow-enriched row below.
+    try:
+        from .delivery import latest_market_pcts
+        market_pcts = latest_market_pcts()
+    except Exception:
+        market_pcts = []
+
     return {
-        "accumulation": [_closest_row(r, tau) for r in acc_ranked[:n_per_tab]
+        "accumulation": [_closest_row(r, tau, market_pcts) for r in acc_ranked[:n_per_tab]
                          if _weighted_margin(r, _ACCUM_STAGES) > 0],
-        "breakout":     [_closest_row(r, tau) for r in br_ranked[:n_per_tab]
+        "breakout":     [_closest_row(r, tau, market_pcts) for r in br_ranked[:n_per_tab]
                          if _weighted_margin(r, _BREAKOUT_STAGES) > 0],
-        "overall":      [_closest_row(r, tau) for r in all_ranked[:n_per_tab]
+        "overall":      [_closest_row(r, tau, market_pcts) for r in all_ranked[:n_per_tab]
                          if (r.composite_score or 0.0) > 0],
     }
 
@@ -224,7 +247,7 @@ def run_universe(
     max_workers: int = 10,
     **_kwargs,   # absorb legacy `min_composite` arg silently
 ) -> dict:
-    """Run the gates-based pipeline over Nifty 100. Returns the
+    """Run the gates-based pipeline over the scan universe. Returns the
     PicksResponse-shaped dict that's also written to disk.
     """
     today_iso = today_iso or datetime.now(IST).date().isoformat()
@@ -409,9 +432,43 @@ def run_universe(
                 payload["delivery"] = delivery_advisory(res.symbol)
             except Exception:
                 payload["delivery"] = None
+            # Institutional-flow INTEREST — bulk deals + delivery %, SCORING-NEUTRAL.
+            # A display-only indicator (does NOT touch selection or any score):
+            # flags picks worth a closer look and drives presentation_rank below.
+            # Reuses the delivery advisory just attached (no second disk read).
+            try:
+                from .flow_interest import flow_interest, why_picked
+                fi = flow_interest(res.symbol, payload.get("delivery"))
+                # Always record WHY the pick was chosen (price/volume basis) so a
+                # flow-suppressed pick at the bottom of the list still explains
+                # itself. Cheap; reads fields already on the payload.
+                fi["picked_reason"] = why_picked(payload)
+                payload["flow_interest"] = fi
+            except Exception:
+                payload["flow_interest"] = None
+            # Reasoning checklist "steps" — built AFTER delivery is attached so
+            # the delivery-load-status step reflects the same advisory. Purely
+            # additive: activates the (previously dormant) frontend checklist
+            # and never gates selection.
+            try:
+                from .reasoning_points import build_reasoning
+                payload["reasoning"] = build_reasoning(payload)
+            except Exception:
+                log.exception("build_reasoning failed for %s", res.symbol)
+                payload["reasoning"] = []
             pick_payloads.append(payload)
         except Exception:
             log.exception("build_pick_payload failed for %s", res.symbol)
+
+    # Presentation ordering — bulk deals + delivery % rank the ALREADY-SELECTED
+    # picks for display (attaches `presentation_rank`). Scoring-neutral: it never
+    # changes selection or the canonical confirmation `rank`. Falls back to the
+    # confirmation order when no flow data is on disk.
+    try:
+        from .flow_interest import assign_presentation_ranks
+        assign_presentation_ranks(pick_payloads)
+    except Exception:
+        log.exception("assign_presentation_ranks failed")
 
     # Append FINAL trace rows for every ticker so the RL replay buffer
     # captures the ranking decision (selected and not).
@@ -424,7 +481,11 @@ def run_universe(
     # ---- Phase 4: render to disk ----
     log.info("  [Phase 4/4] Rendering picks_%s.json ...", today_iso)
     message: Optional[str] = None
-    closest_to_firing: dict = {"accumulation": [], "breakout": [], "overall": []}
+    # Closest-to-firing is now computed EVERY run (not just on zero-pick days)
+    # so the near-misses are always visible alongside the picks.
+    closest_to_firing: dict = _collect_closest_to_firing(
+        results, tau=COMPOSITE_TAU, n_per_tab=5
+    )
     if not pick_payloads:
         if data_misconfigured:
             # Don't lie to the user with "nothing actionable" when the real
@@ -440,21 +501,18 @@ def run_universe(
                 "Quality over quantity — capital preserved is capital available "
                 "for the next real signal."
             )
-        closest_to_firing = _collect_closest_to_firing(
-            results, tau=COMPOSITE_TAU, n_per_tab=5
+    n_close = (
+        len(closest_to_firing["accumulation"])
+        + len(closest_to_firing["breakout"])
+        + len(closest_to_firing["overall"])
+    )
+    if n_close:
+        log.info(
+            "  [Phase 4/4] Closest-to-firing: %d accum, %d breakout, %d overall",
+            len(closest_to_firing["accumulation"]),
+            len(closest_to_firing["breakout"]),
+            len(closest_to_firing["overall"]),
         )
-        n_close = (
-            len(closest_to_firing["accumulation"])
-            + len(closest_to_firing["breakout"])
-            + len(closest_to_firing["overall"])
-        )
-        if n_close:
-            log.info(
-                "  [Phase 4/4] Closest-to-firing: %d accum, %d breakout, %d overall",
-                len(closest_to_firing["accumulation"]),
-                len(closest_to_firing["breakout"]),
-                len(closest_to_firing["overall"]),
-            )
     # Attach volume-based holding horizon to every pick BEFORE reconcile,
     # so record_picks (and the UI) sees the same value.
     for _p in pick_payloads:
@@ -490,12 +548,25 @@ def run_universe(
     # suggested rows alongside the taken position with the exit signal.
     visible_picks, suppressed_picks = split_visible_from_suppressed(pick_payloads)
 
+    # Institutional-accumulation WATCHLIST (Use 1 — scoring-neutral guidance on
+    # which stocks to analyze). Built from the deals/delivery corpora, never
+    # enters the scan. Empty when no flow data is on disk.
+    try:
+        from .flow_interest import build_watchlist
+        watchlist = build_watchlist()
+        if watchlist:
+            log.info("  [Phase 4/4] Accumulation watchlist: %d name(s)", len(watchlist))
+    except Exception:
+        log.exception("build_watchlist failed")
+        watchlist = []
+
     response = render_picks_response(
         visible_picks, today_iso,
         demo_mode=demo_mode,
         regime=regime.as_dict(),
         message=message,
         closest_to_firing=closest_to_firing,
+        watchlist=watchlist,
     )
     path = write_picks_file(response)
     log.info(

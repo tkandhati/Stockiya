@@ -1,4 +1,4 @@
-"""Universe sanity check — find dead / stale tickers in the Nifty 100 list.
+"""Universe sanity check — find dead / stale tickers in the selected universe.
 
 Run:
     python -m backend.check_universe

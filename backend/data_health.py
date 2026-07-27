@@ -37,6 +37,7 @@ IST = ZoneInfo("Asia/Kolkata")
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _DATA_DIR = _PROJECT_ROOT / "data"
 _DEALS_DIR = _DATA_DIR / "deals"
+_DELIVERY_DIR = _DATA_DIR / "delivery"
 _TRACES_DIR = _DATA_DIR / "traces"
 _LAST_RUN_FILE = _DATA_DIR / ".last_run.json"
 
@@ -123,24 +124,27 @@ def _most_recent_trading_day(today: Optional[date] = None) -> date:
 def _check_universe() -> HealthItem:
     """Universe is in-code; verify import + count."""
     try:
-        from .universe import UNIVERSE
+        from .universe import UNIVERSE, UNIVERSE_LABEL
         n = len(UNIVERSE)
+        label = f"{UNIVERSE_LABEL} universe list"
     except Exception as e:
         return HealthItem(
-            id="universe", label="Nifty 100 universe list",
+            id="universe", label="Scan universe list",
             path="backend/universe.py",
             status="error", detail=f"import failed: {e}",
             fix="Check backend/universe.py exists and is syntactically valid.",
         )
-    if n < 90:
+    # Universe-agnostic floor: anything under ~40 means a broken/empty list
+    # (nifty50 is the smallest valid preset). Not tied to any one preset size.
+    if n < 40:
         return HealthItem(
-            id="universe", label="Nifty 100 universe list",
+            id="universe", label=label,
             path="backend/universe.py",
-            status="warn", detail=f"only {n} symbols (expected ~100)",
-            fix="Refresh backend/universe.py UNIVERSE list.",
+            status="warn", detail=f"only {n} symbols — list looks truncated",
+            fix="Check STOCKYA_UNIVERSE / refresh backend/universe.py UNIVERSE list.",
         )
     return HealthItem(
-        id="universe", label="Nifty 100 universe list",
+        id="universe", label=label,
         path="backend/universe.py",
         status="ok", detail=f"{n} symbols",
     )
@@ -329,6 +333,49 @@ def _check_deals_merged() -> HealthItem:
     )
 
 
+def _check_delivery() -> HealthItem:
+    """NSE delivery-% (MTO) drop-zone. ADVISORY — missing files never block a
+    pick, so 'no files' is a warn (not error). This is the load-status surface
+    the picks pipeline never exposed before.
+    """
+    rel = "data/delivery/"
+    try:
+        from .delivery import delivery_corpus_status
+        st = delivery_corpus_status()
+    except Exception as e:  # noqa: BLE001
+        return HealthItem(
+            id="delivery", label="NSE delivery-% files (advisory)",
+            path=rel, status="warn",
+            detail=f"probe failed: {e}",
+            fix="python -m backend.delivery",
+        )
+
+    fix = ("python -m backend.delivery  (fetches recent MTO files where NSE is "
+           "reachable), or drop MTO_*.DAT / delivery_*.csv into data/delivery/")
+    if not st.get("available"):
+        return HealthItem(
+            id="delivery", label="NSE delivery-% files (advisory)",
+            path=rel, status="warn",
+            detail="no files on disk — delivery advisory unavailable on every pick",
+            fix=fix,
+        )
+
+    latest = st.get("latest_date")
+    try:
+        age_days = (_ist_today() - date.fromisoformat(latest)).days if latest else 999
+    except ValueError:
+        age_days = 999
+    # Delivery is EOD; allow a couple of trading days of lag before warning.
+    status: Status = "ok" if age_days <= 4 else "warn"
+    return HealthItem(
+        id="delivery", label="NSE delivery-% files (advisory)",
+        path=rel, status=status,
+        detail=(f"{st.get('days', 0)} day(s) on disk · latest {latest} "
+                f"({age_days}d old) · {st.get('symbols_latest', 0)} symbols"),
+        fix=None if status == "ok" else fix,
+    )
+
+
 def _check_traces_today() -> HealthItem:
     today_iso = _ist_today().isoformat()
     pattern = f"run_{today_iso}_*.jsonl"
@@ -509,6 +556,7 @@ def probe() -> DataHealthReport:
     daily.items.append(_check_deal_csv("block.csv", "NSE block deals", "nse_block"))
     daily.items.append(_check_deal_csv("bulk.csv", "NSE bulk deals", "nse_bulk"))
     daily.items.append(_check_deals_merged())
+    daily.items.append(_check_delivery())
     daily.items.append(_check_traces_today())
 
     weekly = HealthGroup(name="Weekly")

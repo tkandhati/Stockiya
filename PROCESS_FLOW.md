@@ -33,7 +33,7 @@
 │  16:30–35   [RG] Regime gate. NIFTY 100 50d-MA + ATR20% vol clock.     │
 │             FAIL → write empty picks file. End run.                    │
 │  16:35–17:10  Per-ticker pipeline (U → I → HR → WY → VSA → AVWAP),     │
-│               parallel by thread, over Nifty 100.                      │
+│               parallel by thread, over the scan universe.              │
 ├────────────────────────────────────────────────────────────────────────┤
 │  POST-INGEST GUARD (holiday_no_data)                                   │
 │  If 100 % of tickers failed [I] Ingest → log no_fire_days.jsonl        │
@@ -82,10 +82,10 @@ integration points are `backend/orchestrator.py::run_universe`,
 | Source | Cached at | Why |
 |---|---|---|
 | Yahoo Finance — 1y daily OHLCV per ticker | in-memory per run | Price + volume tape |
-| Yahoo Finance — `^CNX100` 1y | in-memory per run | Regime index (matches Nifty 100 universe) |
+| Yahoo Finance — `^CNX100` 1y | in-memory per run | Regime index — large-cap market-direction proxy (independent of the scan universe) |
 | NSE block-deal CSV (`archives.nseindia.com/.../block.csv`) | `data/deals/block_<date>.csv` | Bonus rank signal |
 | NSE bulk-deal CSV | `data/deals/bulk_<date>.csv` | Bonus rank signal |
-| NSE delivery / MTO ("Security-wise Delivery Position") — **manual offline drop** | `data/delivery/` | Advisory delivery % (accumulation vs churn) on picks + positions; not in scoring (parked) |
+| NSE delivery / MTO ("Security-wise Delivery Position") — **best-effort auto-fetch** (`fetch_and_cache_delivery`, wired into `nightly.py`; no-op behind firewall) **+ manual offline drop** fallback | `data/delivery/delivery_<date>.csv` | Advisory delivery % + rolling 5d/20d (accumulation vs churn) on picks + positions; surfaced as a reasoning step with **always-visible load status**; not in scoring (parked) |
 | `backend/universe.py:UNIVERSE` | code-tracked | The 100 tickers |
 | `data/portfolio.csv` | persistent CSV | Open picks tracked for outcome |
 | `data/picks_<prior_date>.json` | persistent JSON | Self-heal on middleware boot |
@@ -101,7 +101,7 @@ Each stage is one file in `backend/stages/` with signature `run(ctx) -> StageRes
 | Stage | File | Algorithm | Math summary |
 |---|---|---|---|
 | **[RG] Regime** | `stages/regime.py` | Index trend + vol clock | `close(^CNX100) > sma(^CNX100, 50)`; ATR20% sets per-day volatility multiplier for downstream thresholds |
-| **[U] Universe** | `stages/universe.py` | Membership check | `symbol ∈ NIFTY100` |
+| **[U] Universe** | `stages/universe.py` | Membership check | `symbol ∈ SCAN_UNIVERSE` (default Nifty 300) |
 | **[I] Ingest** | `stages/ingest.py` | Fetch 180 daily bars + as-of slice + finalized-bar hygiene | Pulls 180d daily; if `ctx.today_iso` is a past date, slices bars to that date (no lookahead) and overrides snapshot.current with the as-of close. **2026-07-17 hygiene** — drops NaN OHLC rows, non-positive-volume rows, and (live only) the last bar if IST-time is before 15:35 (partial session). Trace records `dropped_malformed`, `dropped_partial_session`, `has_full_lookback` (≥ 260 bars). |
 | **[HR] Hard rejects** | `stages/hard_rejects.py` | Safety gate | `ret_30d ≤ +25 %` **AND** `close ≤ 1.15 × sma(50)` **AND** no auditor-exit / SEBI flag / promoter-pledge > 50 % |
 | **[WY] Wyckoff phase** | `stages/wyckoff.py` *(new)* | Phase A→D classifier, scored | Detects Phase C (spring: narrow-range low-vol undercut of Phase-A low) or Phase D (SOS: wide-range up-close ≥ 1.5×ADV50, above 150d MA). Score = phase confidence × phase-preference weight (C=1.0, D=0.9). Replaces the retired [LT]+[CS]+[VD] AND-chain. |
@@ -131,7 +131,8 @@ All raw indicator math lives in `backend/indicators.py` as pure functions (no I/
 | `data/portfolio.csv` | `[H] Hypothesis` | Append-only ledger: `trace_id, entry_date, entry, stop, T1, T2, shares` |
 | `data/portfolio_weekly.csv` | `weekly.py` | Friday close prices for each open pick |
 | `data/traces/no_fire_days.jsonl` | `trading_day.log_no_fire` | One row per non-trading-day skip. `reason ∈ {weekend, holiday_no_data, data_missing_error}`. Lets `weekly-learn` distinguish intentional skips from fetch bugs. Append-only JSONL. |
-| `data/deals/*.csv` | `block_deals.py` | Cached NSE block + bulk deal CSVs. Aggregator now emits classified fields (`institutional_*`, `has_disclosed_large_client`) alongside legacy totals — tolerant readers preserved. |
+| `data/deals/*.csv` | `block_deals.py` | Cached NSE block + bulk deal CSVs. Aggregator now emits classified fields (`institutional_*`, `has_disclosed_large_client`) **plus additive rolling-trend fields** (`net_qty_recent`, `deal_trend` = 7d-vs-30d daily net-buy rate) alongside legacy totals — tolerant readers preserved. |
+| `data/delivery/delivery_<date>.csv` | `fetch_and_cache_delivery` (best-effort) or manual drop | NSE MTO delivery-% files. Load status logged nightly (`Delivery: N days on disk…`), added to `.last_run.json`, and shown on the Data Health page (`_check_delivery`). |
 | `test_data/<SYMBOL>.csv` *(manual drop-zone)* | user | Raw NSE historical CSVs (`DATE, SERIES, OPEN, HIGH, LOW, PREV. CLOSE, LTP, CLOSE, VWAP, 52W H, 52W L, VOLUME, VALUE, NO. OF TRADES`) used for offline pipeline testing when the firewall blocks live fetches. See `test_data/README.md`. |
 
 Trace `schema_version: 2` (new gates spine). Old `schema_version: 1` rows are still readable; the `outcome` reward column is unchanged so prior outcomes still feed the RL dataset.

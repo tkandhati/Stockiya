@@ -116,7 +116,7 @@ def _normalize_symbol(raw: str) -> Optional[str]:
 
 def _resolve_symbol_loose(raw: str) -> tuple[Optional[str], bool]:
     """Like _normalize_symbol, but accepts any plausible Yahoo ticker even
-    when it is not in the strict Nifty 100 universe.
+    when it is not in the strict scan universe.
 
     Returns (canonical_symbol_or_None, in_universe_bool).
 
@@ -766,7 +766,7 @@ def _assumptions(
         "t1_pct": int(T1_PCT * 100),
         "t2_pct": int(T2_PCT * 100),
         "costs_modeled": False,
-        "survivorship_note": "Universe = today's Nifty 100; historical drift not corrected",
+        "survivorship_note": "Universe = today's scan universe (nifty300 default); historical drift not corrected",
         "thresholds": eff,
         "thresholds_deviated": deviated,
     }
@@ -777,7 +777,7 @@ def _assumptions(
 # --------------------------------------------------------------------------- #
 #
 # Why this exists: the [VD] gate (and [BR]) fire on roughly 2-5 % of days for
-# any single Nifty 100 symbol, so a one-day sample almost always shows a
+# any single symbol, so a one-day sample almost always shows a
 # rejection. The scan walks every trading day in a window and surfaces the
 # rare days where each gate fires — turning "I never see VD pass" into
 # "VD passed on these 11 days; here's the trace and forward outcome."
@@ -830,7 +830,7 @@ def scan_symbol(
     """Walk every trading day in [start, end] and record each gate's verdict.
 
     `in_universe` lets the caller signal whether the symbol is in the tuned
-    Nifty 100 universe; the response echoes it so the UI can show an advisory
+    scan universe; the response echoes it so the UI can show an advisory
     banner. If None, we figure it out via loose resolution.
 
     Returns:

@@ -100,6 +100,33 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _DEALS_DIR = _PROJECT_ROOT / "data" / "deals"
 _DEALS_DIR.mkdir(parents=True, exist_ok=True)
 
+# Rolling-trend windows for the accumulation trend (added 2026-07-26).
+# 30d is the full aggregation window; the short window is the "recent" lens.
+DEAL_LONG_WIN: int = 30
+DEAL_SHORT_WIN: int = 7
+# Fractional gap (short daily rate vs long daily rate) before we call it a
+# rising/falling trend rather than flat.
+DEAL_TREND_BAND: float = 0.10
+
+
+def _deal_trend(short_rate: float, long_rate: float) -> Optional[str]:
+    """Classify recent accumulation vs the 30-day baseline.
+
+    Sign-aware: more-positive recent net buying than the baseline reads
+    "rising"; more-negative reads "falling". Normalized by the larger
+    magnitude so a tiny baseline doesn't produce spurious huge ratios.
+    Returns None when there is simply no flow to trend.
+    """
+    if short_rate == 0.0 and long_rate == 0.0:
+        return None
+    scale = max(abs(short_rate), abs(long_rate), 1.0)
+    diff = (short_rate - long_rate) / scale
+    if diff >= DEAL_TREND_BAND:
+        return "rising"
+    if diff <= -DEAL_TREND_BAND:
+        return "falling"
+    return "flat"
+
 
 @dataclass
 class DealAggregate:
@@ -129,6 +156,16 @@ class DealAggregate:
     institutional_client_count: int = 0  # distinct classified clients seen
     has_disclosed_large_client: bool = False
     client_class_counts: dict[str, int] = field(default_factory=dict)
+    # ---- Rolling accumulation trend (added 2026-07-26) — additive; defaults
+    # leave existing readers untouched. Compares a short recent window's daily
+    # net-buy rate against the full 30-day daily rate, so a ticker where
+    # institutions are ACCELERATING their accumulation reads "rising" even when
+    # the 30-day net is only mildly positive. `deal_trend` is None when there
+    # are no deals to trend.
+    net_qty_recent: int = 0            # net (buy-sell) qty within the short window
+    avg_daily_net_recent: float = 0.0  # net_qty_recent / DEAL_SHORT_WIN
+    avg_daily_net_30d: float = 0.0     # net_qty / days_used
+    deal_trend: Optional[str] = None   # "rising" | "falling" | "flat" | None
 
 
 # --------------------------------------------------------------------------- #
@@ -329,14 +366,20 @@ def aggregate_30d(symbol: str) -> DealAggregate:
     if not deals_csv.exists():
         return DealAggregate(symbol=symbol, days_used=0)
 
-    cutoff = date.today() - timedelta(days=30)
-    return _aggregate_from_csv(deals_csv, symbol, cutoff)
+    today = date.today()
+    cutoff = today - timedelta(days=DEAL_LONG_WIN)
+    recent_cutoff = today - timedelta(days=DEAL_SHORT_WIN)
+    return _aggregate_from_csv(deals_csv, symbol, cutoff, recent_cutoff)
 
 
-def _aggregate_from_csv(path: Path, symbol: str, cutoff: date) -> DealAggregate:
-    agg = DealAggregate(symbol=symbol, days_used=30)
+def _aggregate_from_csv(
+    path: Path, symbol: str, cutoff: date, recent_cutoff: Optional[date] = None
+) -> DealAggregate:
+    agg = DealAggregate(symbol=symbol, days_used=DEAL_LONG_WIN)
     class_counts: dict[str, int] = {}
     classified_clients: set[str] = set()
+    recent_buy_qty = 0
+    recent_sell_qty = 0
 
     with path.open("r", encoding="utf-8", newline="") as f:
         reader = csv.DictReader(f)
@@ -353,17 +396,22 @@ def _aggregate_from_csv(path: Path, symbol: str, cutoff: date) -> DealAggregate:
             side = (row.get("side") or "").upper()
             client = row.get("client") or ""
             cls = classify_client(client)
+            is_recent = recent_cutoff is not None and d >= recent_cutoff
 
             if side == "BUY":
                 agg.buy_count += 1
                 agg.buy_qty += qty
                 agg.last_buy_date = row["date"]
+                if is_recent:
+                    recent_buy_qty += qty
                 if cls in _DISCLOSED_INSTITUTIONAL:
                     agg.institutional_buy_qty += qty
             elif side == "SELL":
                 agg.sell_count += 1
                 agg.sell_qty += qty
                 agg.last_sell_date = row["date"]
+                if is_recent:
+                    recent_sell_qty += qty
                 if cls in _DISCLOSED_INSTITUTIONAL:
                     agg.institutional_sell_qty += qty
 
@@ -380,7 +428,41 @@ def _aggregate_from_csv(path: Path, symbol: str, cutoff: date) -> DealAggregate:
     agg.institutional_client_count = len(classified_clients)
     agg.has_disclosed_large_client = agg.institutional_client_count > 0
     agg.client_class_counts = class_counts
+
+    # ---- Rolling accumulation trend (short recent window vs full 30d) ----
+    agg.net_qty_recent = recent_buy_qty - recent_sell_qty
+    agg.avg_daily_net_recent = round(agg.net_qty_recent / DEAL_SHORT_WIN, 2)
+    agg.avg_daily_net_30d = round(agg.net_qty / DEAL_LONG_WIN, 2)
+    agg.deal_trend = _deal_trend(agg.avg_daily_net_recent, agg.avg_daily_net_30d)
     return agg
+
+
+def deal_symbols() -> list[str]:
+    """Distinct symbols with at least one deal inside the 30-day window.
+
+    One pass over all.csv (or the demo set) — used by the presentation layer to
+    bound which tickers get a per-symbol aggregate, so we never scan the file
+    once per universe name. Returns `.NS`-suffixed symbols, sorted.
+    """
+    if os.environ.get("DEMO_MODE", "0") == "1":
+        return sorted(_DEMO_DEALS.keys())
+    path = _DEALS_DIR / "all.csv"
+    if not path.exists():
+        return []
+    cutoff = date.today() - timedelta(days=DEAL_LONG_WIN)
+    syms: set[str] = set()
+    with path.open("r", encoding="utf-8", newline="") as f:
+        for row in csv.DictReader(f):
+            try:
+                d = date.fromisoformat(row["date"])
+            except (KeyError, ValueError):
+                continue
+            if d < cutoff:
+                continue
+            s = row.get("symbol")
+            if s:
+                syms.add(s)
+    return sorted(syms)
 
 
 # --------------------------------------------------------------------------- #

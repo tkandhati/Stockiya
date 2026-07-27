@@ -1,5 +1,167 @@
 # Changelog
 
+## 2026-07-27 — Bulk deals + delivery % as a scoring-neutral flow layer
+
+Bulk/block deals and NSE delivery % now feed a dedicated **institutional-flow**
+layer that is **scoring-neutral by design** — it never touches composite `S`, the
+confirmation ranker, gate survival, or which stocks are picked. It serves two
+roles only: (1) **guide** which stocks to analyze (a watchlist), and (2) **explain**
+dropped candidates (strength vs the normal + why they were dropped). See
+`INSTITUTIONAL_FLOW.md` for the full design. Rationale: these are the
+least-fakeable but flakiest-to-obtain signals (firewalled, hand-copied, often
+absent); letting them move scores would disturb working picks and could zero out
+dataless days.
+
+**1. Removed all deal/delivery weight from scoring — `backend/stages/rank.py`.**
+Dropped the legacy binary block-deal bonus (`_block_deal_net_buy`, `+0.5` when 30d
+net-buy ratio ≥ 0.30) and its constants. The confirmation score is now **pure
+price/volume**. A short-lived weighted "flow leg" explored earlier the same day
+was reverted for the same reason. (Delivery % was never in scoring.)
+
+**2. New presentation module — `backend/flow_interest.py` (scoring-neutral).**
+Combines the two signals into ONE strength (0–100) while keeping each leg visible:
+deal leg = bulk/block rolling 7d-vs-30d net-buy **trend** + disclosed-institution
+boost; delivery leg = 20d rolling delivery-% mean through the NSE weak/strong bands
+± the 5d-vs-20d trend. Also computes `vs_normal.delivery_percentile` ("strength
+against the normal" = percentile vs today's market cross-section), a `suppressed`
+flag (no/weak flow), `why_picked()` (the price/volume basis to show beside a
+suppressed pick), `build_watchlist()` (Use 1), and `assign_presentation_ranks()`
+(orders picks for display without touching the canonical confirmation `rank`).
+Nothing here is imported by a scoring stage.
+
+**3. Use 1 — accumulation watchlist.** `build_watchlist()` ranks the names that
+carry real flow (deal symbols ∪ delivery symbols), filtered to moderate+ interest,
+as guidance for what to analyze. Attached to the picks response as `watchlist`.
+Never enters the scan or changes a gate. Empty when no flow data is on disk.
+
+**4. Use 2 — dropped candidates always shown, enriched.** `closest_to_firing` is
+now computed on **every** run (was zero-pick days only), and each row carries
+`flow_interest` (strength + `vs_normal` percentile) alongside the existing
+`pulled_down_by` (the exact gate that dropped it). So a name institutions are
+accumulating that the pipeline dropped is visible with both its strength and the
+reason. `orchestrator._closest_row` / `_collect_closest_to_firing` enriched;
+`render.py` always attaches the panel.
+
+**5. Performance — batch loaders.** `delivery.all_advisories()` (one corpus load →
+`{SYM.NS: advisory}`) + `delivery.latest_market_pcts()` (market baseline) +
+`block_deals.deal_symbols()` (one all.csv pass). The watchlist pulls a per-symbol
+deal aggregate only for the bounded deal-symbol set — no per-universe-name file
+re-reads.
+
+**6. Schema — `middleware/schemas.py`.** Added `ClosestRow.flow_interest`
+(`Optional[dict]`) and `PicksResponse.watchlist` (`Optional[list[dict]]`) so the
+new fields survive validation when the middleware serves the file. Untyped dicts —
+inner keys pass through unchanged.
+
+**Frontend follow-up (not done here).** Backend always emits `closest_to_firing`
+and `watchlist`; the UI (`PickCard.tsx` is mid-edit) still needs to render the
+closest panel in the **non-empty** state, plus a flow-strength badge and the
+watchlist section. Fields to read: `pick.presentation_rank`,
+`pick.flow_interest.{level,score,vs_normal,picked_reason}`, `closest_to_firing.*[].flow_interest`,
+`watchlist[].flow_interest`.
+
+Verified: 25 offline tests pass (`test_flow_interest`, `test_delivery_fetch_and_reasoning`,
+`test_delivery`); `PicksResponse` round-trips both new fields; `build_watchlist()`
+and `render_picks_response(watchlist=…)` run and degrade to empty with no data;
+DEMO scoring is byte-identical (flow is scoring-neutral).
+
+## 2026-07-27 — Default scan universe: Nifty 100 → Nifty 300
+
+Broadened the daily scan universe from ~100 to 300 names, and made all
+user-facing "Nifty 100" wording track the selected universe instead of being
+hardcoded.
+
+**1. New universe — `backend/universe.py`.** Added `NIFTY_300` = the top-300
+slice of the already-curated `NIFTY_500` list (`NIFTY_500[:300]`, exactly 300
+names) — deterministic, offline, **no fabricated tickers**. Registered as
+`"nifty300"` and made the **default** (`STOCKYA_UNIVERSE` unset → nifty300; was
+nifty100). Added `UNIVERSE_LABEL` (pretty name for logs/UI) and a
+`_DEFAULT_UNIVERSE` constant so the default lives in one place. Existing presets
+(nifty50/100/200/500/custom) unchanged; override anytime via `STOCKYA_UNIVERSE`.
+
+*Honesty note:* **"Nifty 300" is NOT an official NSE index** (the official broad
+indices are Nifty 200 and Nifty 500). `NIFTY_300` is a pragmatic top-300 set.
+For the *exact* official constituents of any index, paste them into
+`config/universe_custom.txt` and set `STOCKYA_UNIVERSE=custom`.
+
+**2. Regime index is unchanged and intentionally decoupled.** `[RG]` still uses
+the **`^CNX100` (Nifty 100) index** as the market-direction proxy — it reads the
+market's trend off the large-cap benchmark regardless of how many stocks we
+scan. All regime-facing "NIFTY 100" text (RegimeBanner, PicksPage regime
+message, regime.py) is left as-is because it correctly refers to that index, not
+the scan universe.
+
+**3. De-hardcoded the universe label.** `[U]` gate, `explain.py`, `data_health`
+(count check is now universe-agnostic: warns only below ~40, the nifty50 floor),
+orchestrator/nightly, backtest, and the middleware 404 now derive the label from
+`UNIVERSE_LABEL` / the selected universe. Frontend backtest copy updated to
+"scan universe"; docs (README, ARCHITECTURE, PRINCIPLES, PROCESS_FLOW, INSTALL,
+AGENT_HANDOFF, `.env.example`) updated to Nifty 300 / universe-agnostic wording.
+
+**Implications to watch.** ~3× more tickers scanned per run (more compute; the
+per-ticker chain is already thread-parallel). Stage thresholds and the composite
+`τ` were tuned on large-caps — the newly-admitted mid/small names are less
+liquid, so delivery/deal/volume evidence is sparser there; the champion-
+challenger tuner should be allowed to re-settle on the wider set. Nothing about
+selection/sizing/exit logic changed — only which stocks are eligible to be
+scored.
+
+Verified: default resolves to `nifty300` (300 symbols); `STOCKYA_UNIVERSE=nifty100`
+still yields 98; unknown values fall back to nifty300; 53 offline tests pass;
+`tsc --noEmit` clean; touched backend modules import clean.
+
+## 2026-07-26 — Delivery auto-fetch + load-status logging + reasoning-checklist activation
+
+Closes the asymmetry between the deal feeds and the delivery feed, and makes the
+delivery feed's **load status** visible (it was invisible before — no log line,
+and the UI silently hid the pill when no files were on disk). **Advisory only —
+no selection, sizing, or exit change.** All offline.
+
+**1. Delivery fetcher — `backend/delivery.py:fetch_and_cache_delivery()`.**
+Block + bulk deals were auto-refreshed nightly (`fetch_and_cache_nse_deals`)
+while delivery was **file-only** — the module explicitly *never fetched*. Delivery
+is now fetched with the **same best-effort pattern** as deals: per-day
+`MTO_DDMMYYYY.DAT` from the NSE archive, backfilling ~40 recent weekdays,
+idempotent (skips dates already on disk), `DEMO_MODE`-skipped, and guarded so a
+404 / holiday / tiny body is a quiet skip, not an error. Each file lands as
+`data/delivery/delivery_<ISO>.csv`, which the existing file-only reader parses
+with **no parser change**. Standalone entry: `python -m backend.delivery`.
+*Firewall reality:* like the deals fetch, this **no-ops behind the corporate
+firewall** — run it on a machine where NSE is reachable and hand-copy
+`data/delivery/` across (same workflow as OHLCV/deals).
+
+**2. Load-status visibility.** `backend/nightly.py` now logs delivery corpus
+status every run — `Delivery: N day(s) on disk (latest <date>, M symbols); K new
+file(s)` — or a loud WARNING when the drop-zone is empty. `delivery_days` /
+`delivery_latest` are added to `.last_run.json` extras, and a new **Data Health
+probe** (`_check_delivery`, advisory → `warn` not `error` when absent) surfaces it
+on the health page. New helper `delivery_corpus_status()`.
+
+**3. Rolling accumulation trend.** Delivery already exposed 5d/20d rolling means;
+`DealAggregate` now also carries **additive** rolling fields
+(`net_qty_recent`, `avg_daily_net_recent`, `avg_daily_net_30d`, `deal_trend`) that
+compare the last 7 days' daily net-buy rate against the 30-day rate → `rising` /
+`falling` / `flat`. Existing readers untouched (defaults). Deals and delivery are
+kept as **separate** rolling signals (different calculations), not blended.
+
+**4. Reasoning checklist activated — `backend/reasoning_points.py` (new).** The
+gates spine had stopped emitting the legacy `reasoning` array, so the front-end
+`ReasoningChecklist` was dormant (never populated). `build_reasoning(payload)`
+now emits ~9 staged steps from fields the payload already carries — CS/VD/BR,
+confirmation, **bulk/block deals (with rolling trend)**, **delivery % (load
+status — ALWAYS a visible step, even when no files are loaded)**, participant
+evidence, entry stage, holding horizon. Wired in `orchestrator.py` Phase 3 *after*
+`payload["delivery"]` is attached; None-safe (never raises). Front end: `PickCard`
+now renders a compact checklist; `StockDetailPage` already rendered it and now
+populates.
+
+Verified: **53 offline tests pass** (5 new in
+`backend/tests/test_delivery_fetch_and_reasoning.py` — DEMO no-op fetch, corpus
+status, deals rolling trend, delivery step present-when-unavailable /
+reflects-loaded-advisory / never-raises); `tsc --noEmit` clean; all touched
+modules import clean; DEMO reasoning smoke shows the delivery load-status step
+rendering.
+
 ## 2026-07-26 — Cleanup: prune dead code + dedup filename-date parsing
 
 Keep-only-what's-used pass over this session's work:

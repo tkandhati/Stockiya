@@ -14,6 +14,7 @@ import {
 import type { Pick } from '../types'
 import { fmtINR, fmtPct } from '../api'
 import { DeliveryPill } from './DeliveryPill'
+import { ReasoningChecklist } from './ReasoningChecklist'
 
 /**
  * Pick card — gates-based spine.
@@ -389,6 +390,15 @@ export function PickCard({ pick }: { pick: Pick }) {
           )
         })}
       </ul>
+
+      {/* 5b. Reasoning checklist — staged "steps" incl. delivery load status
+             and bulk/block rolling trend. Collapsed + compact on the card;
+             the button stops propagation so it doesn't navigate. */}
+      {pick.reasoning && pick.reasoning.length > 0 && (
+        <div className="mt-3">
+          <ReasoningChecklist points={pick.reasoning} compact />
+        </div>
+      )}
 
       {/* 6. Drill-down hint */}
       <div className="mt-4 text-[11px] text-slate-400">

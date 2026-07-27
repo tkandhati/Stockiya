@@ -36,7 +36,7 @@ stage_id = "CS"
 # Tunable thresholds
 # --------------------------------------------------------------------------- #
 
-ATR_PCT_MAX: float = 5.5                  # tunable; Nifty 100 names typically run 4-5% ATR
+ATR_PCT_MAX: float = 5.5                  # tunable; large-cap names typically run 4-5% ATR
 MIN_DAYS_IN_BAND: int = 15                # tunable (~3 weeks; relaxed for liquid large-caps)
 BAND_PCT: float = 0.12                    # tunable; ±12% accommodates large-cap oscillation
 MA_PERIOD: int = 150                      # tunable

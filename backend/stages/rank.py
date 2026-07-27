@@ -9,21 +9,22 @@ Computes a confirmation score for each survivor:
     bonus signals  (each +1):
       - 50d MA > 150d MA > 200d MA aligned
       - OBV-90d slope >= +5 %
-      - NSE block/bulk deals net-buy ratio >= 0.30 (last 30d, >=2 deals)
       - Pocket-pivot fires today (up day, vol > prior-10 max down-day vol,
         AND VSA effort-vs-result: bar spread > trailing avg, upper-half close)
-      - Top RS rank vs other survivors  (proxy; full Nifty 100 RS later)
+      - Top RS rank vs other survivors  (proxy; full-universe RS later)
 
 The pick with the highest confirmation score is rank #1. Top N selected
 (default 3). Less-likely-false setups bubble to the top.
 
 Fix points:
     BONUS_OBV_90D_MIN       : OBV-90d slope threshold (default 5.0)
-    BONUS_BLOCK_DEAL_MIN    : net qty ratio threshold (default 0.30)
-    BONUS_BLOCK_DEAL_MIN_COUNT : minimum number of deal events to qualify
     BONUS_RS_RANK_TOP_PCT   : top fraction of survivors for RS bonus
     BONUS_WEIGHT            : weight on bonus signals (default 0.5)
     TOP_N                   : how many picks per day (default 3)
+
+Note: bulk/block deals were removed from confirmation scoring on 2026-07-27 —
+they are optional/flaky data and now feed only the scoring-neutral presentation
+layer (backend/flow_interest.py). Do NOT re-add a deal term to the score.
 """
 
 from __future__ import annotations
@@ -47,8 +48,6 @@ from ..pipeline import COMPOSITE_WEIGHTS, PipelineResult
 # --------------------------------------------------------------------------- #
 
 BONUS_OBV_90D_MIN: float = 5.0          # tunable
-BONUS_BLOCK_DEAL_MIN: float = 0.30      # tunable
-BONUS_BLOCK_DEAL_MIN_COUNT: int = 2     # tunable
 BONUS_RS_RANK_TOP_PCT: float = 0.30     # tunable
 BONUS_WEIGHT: float = 0.5               # tunable
 TOP_N: int = 3                           # tunable
@@ -76,21 +75,6 @@ def _check_pocket_pivot_today(df: Optional[pd.DataFrame]) -> bool:
     if float(vols.iloc[-1]) <= float(prev_down_vols.max()):
         return False
     return effort_vs_result_ok(df)
-
-
-def _block_deal_net_buy(symbol: str) -> Optional[float]:
-    """Return net_qty_ratio if >= BONUS_BLOCK_DEAL_MIN_COUNT deals exist in 30d.
-
-    None means insufficient block/bulk activity (neutral signal, not negative).
-    """
-    try:
-        from ..block_deals import aggregate_30d
-        deals = aggregate_30d(symbol)
-        if (deals.buy_count + deals.sell_count) < BONUS_BLOCK_DEAL_MIN_COUNT:
-            return None
-        return deals.net_qty_ratio
-    except Exception:
-        return None
 
 
 def _ret_90d(df: Optional[pd.DataFrame]) -> Optional[float]:
@@ -163,20 +147,15 @@ def rank_survivors(
             if slope is not None and slope >= BONUS_OBV_90D_MIN:
                 bonuses_fired.append(f"OBV-90d {slope:+.1f}% >= {BONUS_OBV_90D_MIN}%")
 
-        # 3. Block / bulk deal net-buy
-        deal_ratio = _block_deal_net_buy(r.symbol)
-        if deal_ratio is not None and deal_ratio >= BONUS_BLOCK_DEAL_MIN:
-            bonuses_fired.append(f"Block-deal net-buy {deal_ratio:+.2f}")
-
-        # 4. Pocket-pivot today (effort-vs-result confirmed)
+        # 3. Pocket-pivot today (effort-vs-result confirmed)
         if _check_pocket_pivot_today(df):
             bonuses_fired.append("Pocket-pivot today (effort-vs-result)")
 
-        # 5. Top RS rank (proxy: vs other survivors)
+        # 4. Top RS rank (proxy: vs other survivors)
         if idx in top_rs_indices:
             bonuses_fired.append("Top RS-rank vs survivors")
 
-        # 6. Contextual volume ignition / early accumulation.
+        # 5. Contextual volume ignition / early accumulation.
         # Survivors already cleared the breakout gate; this bonus separates
         # ordinary breakouts from the sudden volume-regime shifts the user
         # wants surfaced earlier and more visibly.
