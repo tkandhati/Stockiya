@@ -207,6 +207,15 @@ export interface Pick {
   weinstein_stage?: WeinsteinStage
   target_window?: TargetWindow
   reasoning?: ReasoningPoint[]
+  // "Genuine early breakout, slowly accumulating" advisory label. Populated by
+  // backend/early_accumulation.py; used to badge the card and float the pick up.
+  early_accumulation?: {
+    is_match: boolean
+    tier: 'early' | 'mid' | null
+    score: number
+    reasons: string[]
+    features?: Record<string, unknown>
+  }
   composite_score?: number
 }
 

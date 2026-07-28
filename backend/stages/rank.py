@@ -12,6 +12,11 @@ Computes a confirmation score for each survivor:
       - Pocket-pivot fires today (up day, vol > prior-10 max down-day vol,
         AND VSA effort-vs-result: bar spread > trailing avg, upper-half close)
       - Top RS rank vs other survivors  (proxy; full-universe RS later)
+      - Volume ignition / early-accumulation regime shift
+      - Slow+durable accumulation (OBV positive over BOTH 90d and 180d, steady
+        net buying, quiet dry-up/divergence footprint)   [early or mid tier]
+      - Genuine early entry — not extended (near launch pad, 180d return < 30%,
+        within +12% of the 50d MA, mature base)           [early tier only]
 
 The pick with the highest confirmation score is rank #1. Top N selected
 (default 3). Less-likely-false setups bubble to the top.
@@ -33,6 +38,7 @@ from typing import Optional
 
 import pandas as pd
 
+from ..early_accumulation import assess_early_accumulation
 from ..indicators import (
     effort_vs_result_ok,
     ma_stack_aligned,
@@ -164,6 +170,19 @@ def rank_survivors(
             if event.kind in ("bullish_ignition", "early_accumulation"):
                 bonuses_fired.append(f"{event.label} ({event.vol_ratio_50:.2f}x ADV50)")
 
+        # 6. Early + slowly-accumulating preference (2026-07-28).
+        # The profile the user wants to own: still near the launch pad AND
+        # quietly, durably accumulating (OBV positive over BOTH 90d and 180d,
+        # steady net buying, dry-up/divergence footprint — a slow build, not a
+        # fast blow-off). Two additive bonuses so a genuine early accumulation
+        # floats above an already-extended or spike-driven breakout. Nothing is
+        # excluded; this only reorders. See backend/early_accumulation.py.
+        early_accum = assess_early_accumulation(df, stages)
+        if early_accum["tier"] in ("early", "mid"):
+            bonuses_fired.append("Slow+durable accumulation (OBV 90d & 180d positive)")
+        if early_accum["tier"] == "early":
+            bonuses_fired.append("Genuine early entry — not extended")
+
         bonus_count = len(bonuses_fired)
         confirmation = margin + BONUS_WEIGHT * bonus_count
 
@@ -173,6 +192,7 @@ def rank_survivors(
             "bonus_count": bonus_count,
             "bonus_weight": BONUS_WEIGHT,
             "bonuses_fired": bonuses_fired,
+            "early_accumulation": early_accum,
         }
 
     # ---- Sort + select ----

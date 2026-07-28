@@ -876,6 +876,14 @@ def _pocket_pivot_count(window: pd.DataFrame) -> int:
     return int(count)
 
 
+# Long-term distribution threshold for the entry-timing label. Kept in lockstep
+# with backend/stages/lt_distribution_veto.py:OBV_90D_DISTRIBUTION_MAX so the
+# "breakout in progress" label and the [LTV] pick veto fire on the same signal.
+# Below this OBV-90d slope, flow contradicts price and the setup is not a
+# confirmed accumulation breakout.
+OBV_90D_DISTRIBUTION_MAX: float = 0.0   # tunable — mirror of the [LTV] gate
+
+
 def _classify_entry_timing(
     *,
     raw_score: float,
@@ -913,6 +921,32 @@ def _classify_entry_timing(
             "missed",
             "Stage 4 / distribution — institutions are leaving. Exit zone, not entry.",
             -0.20,
+        )
+
+    # Distribution-into-strength override — the false-breakout tape.
+    # Price structure can read as a clean Stage-2 advance (above 150/200d MAs,
+    # tight base, Minervini YES) while *cumulative* 3-month flow is negative —
+    # institutions selling into the rally. The `long_term_bullish` OR below
+    # would otherwise green-light this on Weinstein/Minervini alone (both are
+    # price-vs-MA facts) and mislabel it "early/mid · breakout in progress".
+    #
+    # Gated on stage_2_advance ON PURPOSE — the demotion is "price ALREADY
+    # advanced but OBV falling" (the 'into strength' part). An EARLY base
+    # (stage_1_base / stage_1_to_2) can carry a negative OBV-90d simply because
+    # the window straddles the prior downtrend; that is not distribution and
+    # must NOT be demoted here — it falls through to the early/mid logic. This
+    # mirrors the [LTV] gate's pre-breakout carve-out so label and pick agree.
+    if (
+        obv_slope_90d is not None
+        and obv_slope_90d < OBV_90D_DISTRIBUTION_MAX
+        and weinstein_stage == "stage_2_advance"
+    ):
+        return (
+            "late",
+            f"Price looks like a Stage-2 advance, but 3-month OBV is falling "
+            f"({obv_slope_90d:+.0f}%) — institutions are distributing into the "
+            f"rally, not accumulating. Not a confirmed breakout; wait or pass.",
+            -0.15,
         )
 
     # Bullish long-term confirmation gate

@@ -239,6 +239,44 @@ def _participant_point(payload: dict) -> dict:
     )
 
 
+def _early_accumulation_point(payload: dict) -> Optional[dict]:
+    """Highlight a genuine early + slowly-accumulating setup.
+
+    Only emitted when the profile matches (tier early/mid) so the checklist
+    stays clean; a non-match simply omits the step. Advisory only — the ranker
+    already used this to float the pick up. See backend/early_accumulation.py.
+    """
+    ea = payload.get("early_accumulation")
+    if not ea or not ea.get("is_match"):
+        return None
+    tier = ea.get("tier")
+    reasons = ea.get("reasons") or []
+    score = ea.get("score")
+    if tier == "early":
+        value = "genuine early entry · slow+durable accumulation"
+        state = "bullish"
+    else:  # "mid"
+        value = "slow+durable accumulation (early Stage 2)"
+        state = "bullish"
+    if score is not None:
+        value += f" · quality {float(score):.2f}"
+    why = (
+        "The profile you want to own: still near the launch pad while volume "
+        "quietly accumulates over BOTH the last quarter and half-year (OBV-90d "
+        "and OBV-180d positive), with steady net buying and a dry-up / "
+        "divergence footprint — a slow institutional build, not a fast blow-off. "
+        + ("; ".join(reasons) if reasons else "")
+    )
+    return _pt(
+        "Early accumulation",
+        value,
+        state,
+        why.strip(),
+        "backend/early_accumulation.py — advisory; floats the pick up in rank.py, "
+        "does not gate selection.",
+    )
+
+
 def _entry_stage_point(payload: dict) -> Optional[dict]:
     label = payload.get("entry_stage")
     if not label:
@@ -288,6 +326,7 @@ def build_reasoning(payload: dict) -> list[dict]:
         pass
     for builder in (
         lambda: _confirmation_point(payload),
+        lambda: _early_accumulation_point(payload),
         lambda: _deals_point(symbol),
         lambda: _delivery_point(payload),
         lambda: _participant_point(payload),

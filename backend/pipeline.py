@@ -79,10 +79,17 @@ assert abs(sum(STAGE_WEIGHTS.values()) - 1.0) < 1e-9, "weights must sum to 1.0"
 
 _CONFIG_PATH = _PROJECT_ROOT / "config" / "stage_weights.json"
 
-# Hard gates short-circuit the chain on failure (safety + data availability).
-# Everything else is a soft gate: if it fails, its margin contributes 0 to the
-# composite, but the chain continues and downstream stages still run.
-_DEFAULT_HARD_GATES: frozenset[str] = frozenset({"U", "I", "HR"})
+# Hard gates short-circuit the chain on failure (safety + data availability +
+# the long-term-distribution veto). Everything else is a soft gate: if it fails,
+# its margin contributes 0 to the composite, but the chain continues and
+# downstream stages still run.
+#   U / I / HR : universe / data-availability / dump-safety.
+#   LTV        : long-term distribution veto — reject if OBV-90d slope < 0
+#                (institutions net-selling 3mo). The anti-false-breakout guard;
+#                see backend/stages/lt_distribution_veto.py. Kept in the seed
+#                default so a missing/unreadable stage_weights.json still blocks
+#                distribution — the veto must not silently vanish on config error.
+_DEFAULT_HARD_GATES: frozenset[str] = frozenset({"U", "I", "HR", "LTV"})
 
 # Seed defaults — mirror config/stage_weights.json so behaviour is identical
 # when the JSON is unreadable. Adjust the JSON, not this dict, for live tuning.

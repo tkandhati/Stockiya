@@ -57,6 +57,20 @@ export function PickCard({ pick }: { pick: Pick }) {
             <h2 className="text-xl font-semibold leading-tight text-slate-900">
               {pick.company || pick.symbol}
             </h2>
+            {pick.early_accumulation?.is_match && (
+              <span
+                className={`rounded-full px-2 py-0.5 text-xs font-semibold ${
+                  pick.early_accumulation.tier === 'early'
+                    ? 'bg-emerald-600 text-white'
+                    : 'bg-emerald-100 text-emerald-800'
+                }`}
+                title={(pick.early_accumulation.reasons || []).join(' · ')}
+              >
+                🌱 {pick.early_accumulation.tier === 'early'
+                  ? 'Early Accumulation'
+                  : 'Slow Accumulation'}
+              </span>
+            )}
           </div>
           <div className="mt-1 flex flex-wrap items-center gap-1.5 font-mono text-xs text-slate-500">
             <span>{pick.symbol}</span>

@@ -39,9 +39,12 @@ import pandas as pd
 from .fetch import fetch_ohlcv
 from .pipeline import PipelineContext, PipelineResult, StageResult, run_pipeline
 from .stages import PER_TICKER_CHAIN
+from .stages import accum_screen as _acs
+from .stages import accumulation as _ac
 from .stages import breakout as _br
 from .stages import consolidation as _cs
 from .stages import hard_rejects as _hr
+from .stages import lt_distribution_veto as _ltv
 from .stages import lt_flow as _lt
 from .stages import volume as _vd
 from .stages.hypothesis import build_pick_payload
@@ -554,9 +557,11 @@ def run_backtest(
 # Response assembly
 # --------------------------------------------------------------------------- #
 
-_GATE_ORDER = ["U", "I", "HR", "LT", "CS", "VD", "BR"]
+_GATE_ORDER = ["U", "I", "HR", "ACS", "AC", "LTV", "LT", "CS", "VD", "BR"]
 _GATE_LABEL = {
     "U": "Universe", "I": "Ingest", "HR": "Hard rejects",
+    "ACS": "Accum-Screen", "AC": "Accumulation",
+    "LTV": "LT-distribution veto",
     "LT": "Long-term flow", "CS": "Consolidation",
     "VD": "Volume/Divergence", "BR": "Breakout",
 }
@@ -787,8 +792,10 @@ def _assumptions(
 # the in-memory frame. That skips ~N yfinance round-trips and brings a
 # 1-year scan from minutes down to ~15 seconds.
 
-_SCAN_CHAIN: list = [_hr.run, _lt.run, _cs.run, _vd.run, _br.run]
-_SCAN_GATE_IDS: list[str] = ["HR", "LT", "CS", "VD", "BR"]
+# ACS/AC precede LTV so the veto's pre-breakout carve-out can read the AC coil
+# score in this diagnostic chain exactly as it does in the live PER_TICKER_CHAIN.
+_SCAN_CHAIN: list = [_hr.run, _acs.run, _ac.run, _ltv.run, _lt.run, _cs.run, _vd.run, _br.run]
+_SCAN_GATE_IDS: list[str] = ["HR", "ACS", "AC", "LTV", "LT", "CS", "VD", "BR"]
 
 
 def _build_ctx_for_scan(

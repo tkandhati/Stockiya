@@ -126,6 +126,26 @@ class Pick(BaseModel):
     # validates. Frontend has the DeliveryInfo TypeScript type.
     delivery: Optional[dict] = None
 
+    # ---- Schema v8 additions (2026-07-28) — advisory pass-through metadata.
+    # These are all produced by build_pick_payload / the orchestrator but were
+    # NOT declared here, so response_model=PicksResponse (Pydantic v2 drops
+    # unknown fields) was silently stripping them from /api/picks — most
+    # visibly `reasoning`, which left the PickCard ReasoningChecklist empty even
+    # though the frontend type (types.ts) already expected it. Declared as loose
+    # Optional so older picks_<date>.json files still validate.
+    #
+    # reasoning            — the staged reasoning checklist (backend/reasoning_points.py)
+    # early_accumulation   — "genuine early breakout, slowly accumulating" label
+    #                        {is_match, tier, score, reasons, features}
+    #                        (backend/early_accumulation.py)
+    # entry_stage(+_features) — pre/at/post-breakout ladder (advisory)
+    # date_labels          — next_review / expected_breakout / hard_time_stop
+    reasoning: Optional[list] = None
+    early_accumulation: Optional[dict] = None
+    entry_stage: Optional[str] = None
+    entry_stage_features: Optional[dict] = None
+    date_labels: Optional[dict] = None
+
     # Legacy aliases — populated by build_pick_payload for transition-period
     # frontends that still expect the old field names.
     best_buy_at: Optional[float] = None

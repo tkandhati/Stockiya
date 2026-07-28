@@ -1,5 +1,141 @@
 # Changelog
 
+## 2026-07-28 — [LTV] pre-breakout carve-out + zero-crossing-safe OBV (don't amputate early bases)
+
+Follow-up to the `[LTV]` veto and the early-accumulation preference below, after
+the question "are we compromising any pre-breakout data points / strategies?"
+Answer: we were, in two ways — both now fixed.
+
+**1. The sign-flip bug (the real one).** The veto and the early-accum detector
+used `indicators.obv_slope_pct` = the ratio `(obv[-1]/obv[-91]-1)`. Its own
+docstring warns it "blows up or flips sign when the base bar is near zero" —
+exactly the pre-breakout case: a base recovering off a decline has OBV that is
+**negative-but-rising**, so the ratio returns a spurious NEGATIVE and the veto
+read genuine accumulation as distribution. Demonstrated: for one synthetic early
+coil, ratio-90d = **−59.7%** (→ would veto) while the correct normalized slope =
+**+86%** (→ passes). Switched the `[LTV]` decision and the `early_accumulation`
+durability checks to `indicators.obv_norm_slope_pct` (regression slope
+normalized by magnitude — correct sign even across zero). The legacy ratio is
+retained in the trace (`obv_90d_slope_pct_ratio`) only to cross-reference the
+card's "OBV (90d)" number.
+
+**2. Explicit pre-breakout carve-out.** `[AC]` detects a SHORT-window (~20-60
+bar) ADI accumulation divergence, so a genuine Stage 1→2 base can pass `[AC]`
+while its 90-day OBV is still net-negative (window straddles the prior
+downtrend). The veto now EXEMPTS a candidate with negative long-term OBV when
+ALL of: `[AC]` passed with score ≥ 0.6 (a real coil, not marginal — mirrors
+`pipeline.TRIGGER_AC_MIN_SCORE`), close ≤ +5% vs the 200d MA (NOT extended — so
+it cannot be distribution-into-strength), and OBV-30d normalized slope > 0
+(recent flow turned up). Marico fails the extension test (+14% vs 200d MA) and
+stays vetoed; a real early coil is preserved. `[LTV]` now runs AFTER `[ACS]/[AC]`
+in the chain so it can read the coil score (verified: Marico-style distribution
+vetoed, early coil passes, extended coil refused the exemption).
+
+**3. Label consistency.** The "distribution-into-strength" demotion in
+`_classify_entry_timing` is now gated on `weinstein_stage == "stage_2_advance"`,
+so an EARLY base (stage_1_base / stage_1_to_2) with a transiently negative
+OBV-90d is no longer mislabeled "distributing"; it flows to the early/mid logic.
+
+Net: the false-breakout guard is intact (Marico still rejected) while genuine
+early / slowly-accumulating pre-breakouts are protected — the profile the user
+explicitly wants. All tunable: `PREBREAKOUT_EXEMPT_ENABLED`, `AC_STRONG_MIN`,
+`EXT_ABOVE_SMA200_MAX`, `OBV_RECENT_WINDOW` in lt_distribution_veto.py.
+
+## 2026-07-28 — "Genuine early breakout, slowly accumulating" preference + label
+
+The positive counterpart to the `[LTV]` veto below: the veto removes stocks
+being *distributed*; this **prefers** the profile the user wants to own — still
+near the launch pad AND quietly, durably accumulating.
+
+**New detector** `backend/early_accumulation.py` — `assess_early_accumulation
+(ohlcv, stage_results)` returns `{is_match, tier: early|mid, score, reasons,
+features}`. Deterministic and self-contained (reads OHLCV + already-computed
+VD/AC/CS stage results; it does NOT need the `AccumulationSignals` object, which
+the pipeline doesn't compute per-ticker). Profile:
+- **Durable slow accumulation** — OBV slope positive over BOTH 90d and 180d,
+  up/down-vol-90d ≥ 1.05, and a quiet footprint (VD dry-up / bullish OBV
+  divergence, or a genuine AC accumulation score ≥ 0.5). A single-day volume
+  ignition spike does NOT qualify — a blow-off is fast, not slow.
+- **Early / not extended** (for the `early` tier) — within +12% of the 50d MA,
+  180d return ≤ +30%, mature base (CS passed).
+Tier `early` = durable-slow AND not-extended; `mid` = durable-slow only.
+
+**Ranker preference** (`backend/stages/rank.py`) — two additive bonuses using
+the existing `bonuses_fired` mechanism: +1 for durable-slow accumulation
+(early/mid), +1 more for a genuine early (not-extended) entry. A genuine early
+accumulation therefore floats above an already-extended or spike-driven breakout
+by up to `2 × BONUS_WEIGHT`. **Nothing is excluded** — this only reorders the
+top-N (honors the "add, don't rebuild selection" principle). Reversible by
+removing the two `bonuses_fired.append(...)` lines.
+
+**Label surfaced** — `early_accumulation` attached to the pick payload
+(`hypothesis.py`, reusing the ranker's computation), a new "Early accumulation"
+step in the reasoning checklist (`reasoning_points.py`), a 🌱 badge on the pick
+card (`frontend/.../PickCard.tsx` + `types.ts`).
+
+**Latent bug fixed along the way.** `PickCard.tsx` renders `pick.reasoning` and
+`types.ts` declared it, but the `Pick` Pydantic model did NOT — so
+`response_model=PicksResponse` (Pydantic v2 drops undeclared fields) was
+silently stripping the **entire reasoning checklist** (plus `entry_stage`,
+`entry_stage_features`, `date_labels`) from `/api/picks`. Declared them
+(schema v8) so the checklist — including the new Early-accumulation step —
+finally reaches the picks page.
+
+Verified: all changed files byte-compile; import + wiring smoke test passes;
+synthetic unit check confirms an early+slow setup scores tier `early` (both
+bonuses) while an extended-but-durable setup scores tier `mid` (one bonus).
+
+## 2026-07-28 — [LTV] Long-Term Distribution Veto: close the false-breakout hole
+
+**Problem.** Under the v3 soft-gate composite spine only `{U, I, HR}` were hard
+gates; `LT`, `CS`, `VD`, `BR` were all *soft* — a failing leg contributed 0 to
+the composite but could not drop a ticker. A stock with a tight base + strong
+short-term accumulation could therefore clear `S ≥ τ` while its **3-month flow
+was negative** (institutions net-selling into the rally). Marico (2026-07) is
+the canonical case: Stage-2 advance, 60-day base, Minervini YES — but OBV-90d
+`-208%`, CMF-60d `-0.03`, BR volume `1.19× < 1.3×` (BR failed) — and it was
+still surfaced as a "breakout in progress / Best buy" pick. The pipeline had
+already computed the disqualifying signal (`[LT]` fails on OBV-90d ≥ +3%) and
+merely zeroed its margin instead of blocking.
+
+**Fix — a new hard gate.** `backend/stages/lt_distribution_veto.py` (`stage_id
+"LTV"`): reject any ticker whose **OBV-90d slope < 0**. Narrowest possible cut —
+it fires only when flow is genuinely negative, so flat / consolidating names
+(OBV-90d ≥ 0) pass through to the composite unchanged. Symmetric with the exit
+rule in `hypothesis.py` (which already exits a held position when "OBV-90d rolls
+into a downslope") — entry and exit now key on the same institutional-flow
+signal. Runs right after `[HR]` so distributing names short-circuit before the
+expensive accumulation / consolidation / breakout legs.
+- Wired into `PER_TICKER_CHAIN` (`backend/stages/__init__.py`).
+- Added `"LTV"` to `config/stage_weights.json:hard_gate_stage_ids` (the live
+  control surface) **and** `pipeline._DEFAULT_HARD_GATES` (so the veto survives
+  an unreadable config). Remove `"LTV"` from the config list to disable.
+- Threshold `OBV_90D_DISTRIBUTION_MAX = 0.0` is the fix point (backtest override
+  key `ltv_obv_90d_distribution_max`). Raise toward +3.0 to demand genuinely
+  positive flow (≡ promoting `[LT]` to a hard gate); lower toward -2.0 to
+  tolerate near-flat noise.
+- Complements the existing `[DV]` veto: `LTV` catches SLOW 3-month distribution
+  (cumulative OBV); `DV` catches ACUTE distribution (weak-close spikes, gap-up
+  traps, dist-day clusters) on the recent tape.
+
+**Fix — honest labelling.** `backend/volume_signals.py:_classify_entry_timing`
+gained a distribution-into-strength override: the `long_term_bullish` OR could
+green-light a name on Weinstein-Stage-2 / Minervini alone (both price-vs-MA
+facts) and mislabel it "early/mid · breakout in progress" even with falling
+OBV-90d. Now, if OBV-90d slope < `OBV_90D_DISTRIBUTION_MAX` the label demotes to
+`late` — *"Price looks like a Stage-2 advance, but 3-month OBV is falling … not
+a confirmed breakout; wait or pass."* Kept in lockstep with the `[LTV]` gate.
+
+**Scoring untouched.** `LTV` is a pure hard gate (no composite weight); it is
+not added to `SCORED_STAGE_IDS`, so the tuner ratchet is unaffected. Delivery %
+and bulk-deal flow signals remain scoring-neutral (audited clean 2026-07-28).
+
+Also wired `LTV` into the gate-order/label maps in `orchestrator.py`,
+`validate.py`, and `backtest.py` (incl. the `_SCAN_CHAIN` diagnostic) for
+visibility. Verified: all changed files byte-compile; synthetic unit check
+confirms Gland-like (OBV-90d +) → KEEP, Marico-like (OBV-90d −) → VETOED, and
+the entry-timing label flips from "mid" to "late/distributing" on sign change.
+
 ## 2026-07-27 — Delivery accumulation ladder: today / week / 15 / 30, shown everywhere
 
 `delivery_advisory` now reports the delivery-% rolling mean over **four windows** —

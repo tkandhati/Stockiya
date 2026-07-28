@@ -23,6 +23,7 @@ from __future__ import annotations
 
 from typing import Optional
 
+from ..early_accumulation import assess_early_accumulation
 from ..entry_stage_label import entry_stage_label
 from ..indicators import sma, volume_spike_event
 from ..pipeline import PipelineResult, classify_trigger
@@ -314,6 +315,15 @@ def build_pick_payload(
         "br_passed_today": br_passed_today_flag,
     }
 
+    # ---- Early-accumulation label — advisory metadata for "genuine early
+    # breakout, slowly accumulating". Reuse the ranker's computation when
+    # present (identical inputs), else recompute so the label is available even
+    # when the payload is built outside the ranking path. Never gates; the
+    # ranker already floated it. See backend/early_accumulation.py.
+    early_accum = (result.confirmation_components or {}).get("early_accumulation")
+    if not early_accum:
+        early_accum = assess_early_accumulation(result.ohlcv, result.stage_results)
+
     # ---- Split-date labels (2026-07-17) — advisory metadata that separates
     # the three orthogonal clocks the user reads. Enforcement still lives in
     # positions_view._action_for; these are honest labels for the human/UI.
@@ -366,6 +376,7 @@ def build_pick_payload(
         "accumulation_assessment": assessment,
         "entry_stage": entry_stage,
         "entry_stage_features": entry_stage_features,
+        "early_accumulation": early_accum,
         "date_labels": date_labels,
 
         # ---- Legacy aliases (so existing frontend keeps rendering) ----

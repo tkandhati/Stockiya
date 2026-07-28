@@ -54,9 +54,10 @@ from .trading_day import (
 from .universe import UNIVERSE
 
 # Stages in canonical order — used for the per-gate breakdown log.
-_GATE_ORDER = ["U", "I", "HR", "ACS", "AC", "LT", "CS", "VD", "BR"]
+_GATE_ORDER = ["U", "I", "HR", "ACS", "AC", "LTV", "LT", "CS", "VD", "BR"]
 _GATE_LABEL = {
     "U": "Universe", "I": "Ingest", "HR": "Hard rejects",
+    "LTV": "LT-distribution veto",
     "ACS": "Accum-Screen", "AC": "Accumulation",
     "LT": "Long-term flow", "CS": "Consolidation",
     "VD": "Volume/Divergence", "BR": "Breakout",

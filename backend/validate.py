@@ -215,7 +215,7 @@ def dump_gates(symbol: str, as_of: str) -> bool:
     _section(f"[5] Gate feature dump  ({symbol} as of {as_of})")
     result = run_pipeline(symbol, PER_TICKER_CHAIN, as_of)
     print(f"  passed_all_gates = {result.passed_gates}")
-    for sid in ["U", "I", "HR", "LT", "CS", "VD", "BR"]:
+    for sid in ["U", "I", "HR", "LTV", "LT", "CS", "VD", "BR"]:
         sr = result.stage_results.get(sid)
         if sr is None:
             print(f"  [{sid}] NOT REACHED")
