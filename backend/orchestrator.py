@@ -309,6 +309,20 @@ def run_universe(
         )
         path = write_picks_file(response)
         log.info("  ABORT: regime halted -> wrote empty %s", path.name)
+        # Still emit a per-day summary so every trading day has one; nothing
+        # was screened, so the funnel is empty and it just records regime OFF.
+        try:
+            from .run_summary import build_summary_md, write_summary
+            md = build_summary_md(
+                date=today_iso,
+                generated_at=response.get("generated_at"),
+                regime=regime.as_dict(),
+                funnel={"selected": 0},
+                picks=[],
+            )
+            write_summary(today_iso, md)
+        except Exception:
+            log.exception("run_summary (regime-off) write failed (non-fatal)")
         log.info("=" * 76)
         return response
 
@@ -456,6 +470,23 @@ def run_universe(
                 payload["flow_interest"] = fi
             except Exception:
                 payload["flow_interest"] = None
+            # OBV-vs-delivery divergence — SCORING-NEUTRAL advisory. When the
+            # tape reads accumulation but delivery is weak & falling, record it
+            # on the assessment envelope so "distribution-into-strength" is
+            # visible. Annotation only: never gates selection, never scores.
+            try:
+                from .flow_interest import obv_delivery_divergence
+                _div = obv_delivery_divergence(
+                    payload.get("early_accumulation"), payload.get("delivery")
+                )
+                if _div:
+                    assess = payload.get("accumulation_assessment")
+                    if isinstance(assess, dict):
+                        contras = assess.setdefault("contradictions", [])
+                        if _div not in contras:
+                            contras.append(_div)
+            except Exception:
+                log.exception("obv_delivery_divergence failed for %s", res.symbol)
             # Reasoning checklist "steps" — built AFTER delivery is attached so
             # the delivery-load-status step reflects the same advisory. Purely
             # additive: activates the (previously dormant) frontend checklist
@@ -621,6 +652,27 @@ def run_universe(
         write_daily_diagnostic(today_iso, orchestrator_summary, run_errors)
     except Exception:
         log.exception("daily_diagnostic write failed (non-fatal)")
+
+    # ---- Phase 7: per-day selection summary (very-high-level, ~1-2 KB) ----
+    # A human-readable story of how the universe narrowed to the picks. Purely
+    # additive and READ-ONLY: does not touch selection, scoring, or the picks
+    # JSON. Non-fatal — a summary failure must never break a run.
+    try:
+        from .run_summary import summarize_live
+        summary_path = summarize_live(
+            today_iso=today_iso,
+            generated_at=response.get("generated_at"),
+            regime=regime.as_dict(),
+            results=results,
+            hard_survivors=hard_survivors,
+            survivors=survivors,
+            visible_picks=visible_picks,
+            tau=COMPOSITE_TAU,
+            closest=closest_to_firing,
+        )
+        log.info("  [Phase 7] Wrote selection summary %s", summary_path.name)
+    except Exception:
+        log.exception("run_summary write failed (non-fatal)")
 
     return response
 

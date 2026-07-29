@@ -306,6 +306,61 @@ def why_picked(payload: dict) -> str:
     return "Picked on price/volume: " + "; ".join(bits) + "."
 
 
+# --------------------------------------------------------------------------- #
+# OBV-vs-delivery divergence  (SCORING-NEUTRAL advisory annotation)
+# --------------------------------------------------------------------------- #
+# When the tape (OBV) reads as durable accumulation BUT NSE delivery % is weak
+# AND falling, the two independent accumulation reads disagree — the classic
+# "distribution-into-strength" footprint the target profile says to reject.
+# This surfaces it as an advisory `contradiction` on the accumulation-assessment
+# envelope. Annotation ONLY: it never gates selection and never touches any
+# score — delivery stays scoring-neutral (see module docstring). The orchestrator
+# appends the returned string to accumulation_assessment.contradictions.
+DIVERGENCE_OBV_90D_MIN_PCT: float = 20.0   # tunable: "strong tape" floor
+
+
+def obv_delivery_divergence(
+    early_accumulation: Optional[dict],
+    delivery: Optional[dict],
+) -> Optional[str]:
+    """Advisory contradiction string when OBV says accumulate but delivery is
+    weak AND falling; else None. Pure, None-safe, never raises.
+
+    Fires only when BOTH sides are unambiguous:
+      * tape  — the pick is an early/mid accumulation match with a strong
+        90-day OBV slope (>= DIVERGENCE_OBV_90D_MIN_PCT), and
+      * flow  — delivery band is `weak` AND its trend is `falling`
+        (real deterioration, not a merely low-delivery name sitting flat).
+    """
+    ea = early_accumulation or {}
+    dv = delivery or {}
+    if not dv.get("available"):
+        return None
+    # Tape side: presented as accumulation with a strong OBV slope.
+    feats = ea.get("features") or {}
+    obv90 = feats.get("obv_90d_norm_slope_pct")
+    tape_accum = (
+        bool(ea.get("is_match"))
+        and ea.get("tier") in ("early", "mid")
+        and isinstance(obv90, (int, float))
+        and obv90 >= DIVERGENCE_OBV_90D_MIN_PCT
+    )
+    if not tape_accum:
+        return None
+    # Flow side: weak band AND falling trend = genuine deterioration.
+    if dv.get("level") != "weak" or dv.get("trend") != "falling":
+        return None
+    latest = dv.get("latest_pct")
+    avg30 = dv.get("avg_30d")
+    detail = ""
+    if isinstance(latest, (int, float)) and isinstance(avg30, (int, float)):
+        detail = f" (delivery {latest:.0f}% today vs 30d avg {avg30:.0f}%)"
+    return (
+        "delivery-divergence: OBV accumulation not confirmed by delivery "
+        f"— weak & falling{detail}"
+    )
+
+
 def assign_presentation_ranks(picks: list[dict]) -> None:
     """Attach `presentation_rank` (1..N) to each pick payload, in place.
 
