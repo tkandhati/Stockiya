@@ -14,8 +14,15 @@ That tension drives the core rule:
 > is frequently missing must not be able to move a score (it would disturb
 > working picks and could zero out dataless days).
 
-It is used in exactly two ways: **guide** what to analyze, and **explain**
-dropped candidates.
+It is used in three ways, all scoring-neutral: **guide** what to analyze,
+**explain** dropped candidates, and — added 2026-07-29 — **flag** an
+OBV-vs-delivery contradiction on a *selected* pick. The third
+(`flow_interest.obv_delivery_divergence`) fires when the tape reads accumulation
+but delivery is **weak and falling**, and writes an advisory string to
+`accumulation_assessment.contradictions` only. Like the other two it never
+touches composite `S`, the confirmation ranker, gate survival, or which stocks
+are picked — it can annotate, never gate. (The USE 1 / USE 2 diagram below shows
+the two original roles; USE 3 is annotation-only on picks already chosen.)
 
 ```
    deals + delivery corpora

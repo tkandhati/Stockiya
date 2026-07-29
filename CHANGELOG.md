@@ -1,5 +1,66 @@
 # Changelog
 
+## 2026-07-29 — OBV-vs-delivery divergence flag + per-day selection summary (both additive, scoring-neutral)
+
+Two additive features from reviewing the 2026-07-28 picks (GLAND #1, ADANIENT #2,
+TITAN #3). Neither touches selection, scoring, sizing, or exits — they add
+**visibility only**, so working picks are undisturbed.
+
+**1. OBV-vs-delivery divergence — advisory contradiction (scoring-neutral).**
+On the 28th, ADANIENT scored rank #2 on strong OBV accumulation (+98% / +84%)
+while its NSE delivery was **weak and falling** (26% today vs 37% 30d-avg,
+`flow_interest` suppressed). That OBV↑/delivery↓ split is the classic
+*distribution-into-strength* footprint the target profile says to reject — but
+nothing flagged it, because `contradictions` (in `stages/render.py:
+build_accumulation_assessment`) is populated **only** from the acute
+distribution-veto `[DV]` (tape-only), and delivery is deliberately walled off
+from the pure stages to stay scoring-neutral.
+- New pure helper `flow_interest.obv_delivery_divergence(early_accumulation,
+  delivery)` → returns an advisory string when BOTH sides are unambiguous:
+  tape reads accumulation (`is_match`, tier `early`/`mid`, OBV-90d normalized
+  slope ≥ `DIVERGENCE_OBV_90D_MIN_PCT`) **and** delivery band is `weak` **and**
+  its trend is `falling` (real deterioration, not a merely-low name sitting
+  flat). Pure, None-safe, never raises.
+- The orchestrator's Phase-3 I/O layer appends the string to
+  `accumulation_assessment.contradictions` (annotation only, wrapped non-fatal).
+  It keeps delivery out of every score — the `[DV]`/pure stages are untouched —
+  and needs **no schema bump** (reuses the v7 `contradictions` list the UI
+  already renders).
+- Validated on the real 28th traces: **fires on ADANIENT, silent on GLAND**
+  (delivery strong+flat) **and TITAN** (delivery strong+flat).
+- Tests: `backend/tests/test_flow_interest.py::TestObvDeliveryDivergence` (+7,
+  covering the three real shapes, the weak-but-flat / low-tape non-fires, and
+  None-safety). Full flow suite: 22/22.
+- Fix-point: `DIVERGENCE_OBV_90D_MIN_PCT` (default 20.0) — the "strong tape" floor.
+
+**2. Per-day selection summary — one ~1 KB file per trading day.** A high-level
+narration of how the universe narrowed to the picks. Read-only; never touches
+selection, scoring, the portfolio, or `picks_<date>.json`.
+- New module `backend/run_summary.py`: pure `build_summary_md()`; atomic
+  `write_summary()` (`.md.tmp`→`replace`) to `data/summaries/summary_<date>.md`;
+  `summarize_live()` (computes the **rich** per-gate funnel — screened →
+  data-clean → composite S≥τ → picked, plus per-screen pass-rates for
+  `AC/CS/VD/BR` — from the in-scope `results`); `summarize_from_picks_file()`
+  (**coarse** backfill from a persisted picks JSON); CLI
+  `python -m backend.run_summary --all|--date <d>`.
+- Wired into the orchestrator: **Phase 7** writes the file each run (non-fatal),
+  and the regime-OFF early return writes a minimal "regime OFF" summary so every
+  trading day gets one.
+- Also lists the 3 picks (confirmation, gate status, flow, headline), a
+  "just missed" line from `closest_to_firing`, and a ⚠ caution line whenever a
+  pick carries a `contradictions` entry (surfaces feature #1 in the summary).
+- **Determinism:** embeds the pick file's own `generated_at` (never a wall
+  clock), so regenerating a day is byte-identical. Backfilled the 41 existing
+  `picks_*.json` days. Per-gate funnel counts were never persisted historically,
+  so backfill is coarse (regime + picks + near-misses); every future live run
+  gets the rich funnel.
+- Fix-points: `SUMMARY_DIR`, `_GATE_LABEL`, `_FUNNEL_GATES`, `NEAR_MISS_MAX`.
+
+Net: the false-accumulation guard now covers the OBV-vs-delivery case the acute
+`[DV]` veto structurally can't see (delivery is scoring-neutral, so it can only
+*annotate*, never gate), and every trading day leaves a compact, auditable record
+of the funnel. Both are reversible and additive — no pick, score, or rank moved.
+
 ## 2026-07-28 — [LTV] pre-breakout carve-out + zero-crossing-safe OBV (don't amputate early bases)
 
 Follow-up to the `[LTV]` veto and the early-accumulation preference below, after

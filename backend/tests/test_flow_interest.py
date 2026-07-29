@@ -256,6 +256,60 @@ class TestWatchlistAndVsNormal(unittest.TestCase):
         self.assertEqual(fi["vs_normal"]["cohort_n"], 4)
 
 
+class TestObvDeliveryDivergence(unittest.TestCase):
+    """SCORING-NEUTRAL advisory: fire only on strong-tape / weak-&-falling-flow.
+    Cases mirror the real 2026-07-28 picks (ADANIENT diverges; GLAND/TITAN agree)."""
+
+    @staticmethod
+    def _ea(obv90, *, is_match=True, tier="early"):
+        return {"is_match": is_match, "tier": tier,
+                "features": {"obv_90d_norm_slope_pct": obv90}}
+
+    @staticmethod
+    def _dv(level, trend, *, available=True, latest=26.0, avg30=37.0):
+        return {"available": available, "level": level, "trend": trend,
+                "latest_pct": latest, "avg_30d": avg30}
+
+    def test_fires_on_adanient_shape(self):
+        # OBV +98% strong, delivery weak & falling -> contradiction surfaces.
+        msg = F.obv_delivery_divergence(self._ea(98.42), self._dv("weak", "falling"))
+        self.assertIsNotNone(msg)
+        self.assertIn("delivery-divergence", msg)
+        self.assertIn("26% today", msg)              # detail rendered from the numbers
+
+    def test_silent_on_gland_shape(self):
+        # OBV +116% strong but delivery strong & flat -> reads agree, no flag.
+        self.assertIsNone(
+            F.obv_delivery_divergence(self._ea(115.74), self._dv("strong", "flat")))
+
+    def test_silent_on_titan_shape(self):
+        # OBV +28%, delivery strong & flat -> consistent, no flag.
+        self.assertIsNone(
+            F.obv_delivery_divergence(self._ea(27.55), self._dv("strong", "flat")))
+
+    def test_weak_but_flat_does_not_fire(self):
+        # Low-delivery name sitting flat is not deterioration -> no flag.
+        self.assertIsNone(
+            F.obv_delivery_divergence(self._ea(98.0), self._dv("weak", "flat")))
+
+    def test_weak_falling_but_tape_not_strong_does_not_fire(self):
+        # No divergence when the tape itself is below the strong-OBV floor.
+        self.assertIsNone(
+            F.obv_delivery_divergence(self._ea(5.0), self._dv("weak", "falling")))
+
+    def test_not_an_accumulation_match_does_not_fire(self):
+        self.assertIsNone(
+            F.obv_delivery_divergence(self._ea(98.0, is_match=False),
+                                      self._dv("weak", "falling")))
+
+    def test_none_safe(self):
+        self.assertIsNone(F.obv_delivery_divergence(None, None))
+        self.assertIsNone(F.obv_delivery_divergence(self._ea(98.0), None))
+        self.assertIsNone(
+            F.obv_delivery_divergence(self._ea(98.0), self._dv("weak", "falling",
+                                                               available=False)))
+
+
 class TestWhyPicked(unittest.TestCase):
     def test_summarizes_price_volume_basis(self):
         payload = {
