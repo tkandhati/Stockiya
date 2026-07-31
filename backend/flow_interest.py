@@ -7,9 +7,12 @@ ranker). Per the design decision on 2026-07-27 they serve two non-scoring roles:
   1. INDICATOR  — flag which picks carry an institutional-flow tailwind worth a
      closer look (the `analyze` priority + `label`), and corroborate the
      hypothesis the price/volume flow already formed.
-  2. PRESENTATION RANK — order the ALREADY-SELECTED picks for display, WITHOUT
-     touching selection, composite_score, confirmation_score, or the canonical
-     confirmation `rank`.
+  2. PRESENTATION RANK — a TIEBREAK on the display order of the ALREADY-SELECTED
+     picks, WITHOUT touching selection, composite_score, confirmation_score, or
+     the canonical confirmation `rank`. As of 2026-07-31 the display follows the
+     confirmation rank first (which already prefers genuine-early setups); flow
+     only breaks an exact tie, so a mature high-delivery name can no longer jump
+     ahead of an earlier pick. See assign_presentation_ranks for the rationale.
 
 Design guarantees:
   - Nothing here is imported by a scoring stage. It is called only from the
@@ -364,20 +367,36 @@ def obv_delivery_divergence(
 def assign_presentation_ranks(picks: list[dict]) -> None:
     """Attach `presentation_rank` (1..N) to each pick payload, in place.
 
-    Ordered by (flow interest DESC, confirmation rank ASC). NON-DESTRUCTIVE:
-    does not reorder the `picks` list and does not touch `rank`, `selected`,
-    `composite_score`, or `confirmation_score`. Picks with no flow data sort
-    last on interest and therefore fall back to their confirmation order — so an
-    offline run yields presentation_rank == confirmation rank.
+    Ordered by (confirmation rank ASC, flow interest DESC) — the confirmation
+    rank LEADS; flow interest only breaks an exact tie. This is the 2026-07-31
+    correction. Flow interest (delivery % + deals) used to be the PRIMARY sort
+    key, which floated mature, already-accumulated high-delivery names to the top
+    of the display and buried the genuine-early / pre-breakout picks the ranker
+    had deliberately put first (rank.py bonus #6 gives an early setup two bonuses
+    vs a mid setup's one). High delivery % is inherently a *maturity* tell, so
+    sorting by it fought the north-star objective — "enter early" (PRINCIPLES.md
+    §1). The display now follows the price/volume confirmation order, which
+    already prefers genuine-early setups.
+
+    Delivery stays a fully visible INDICATOR — the pill, `flow_interest`,
+    `vs_normal` percentile, and the OBV-vs-delivery divergence flag are all
+    unchanged. It simply no longer re-orders which pick you see first.
+
+    NON-DESTRUCTIVE: does not reorder the `picks` list and does not touch `rank`,
+    `selected`, `composite_score`, or `confirmation_score`. Confirmation ranks
+    are unique per selected pick, so in practice presentation_rank == the
+    confirmation `rank`; the flow-interest tiebreak only bites in the degenerate
+    case where `rank` is missing on every pick. Offline runs (no flow data) are
+    unchanged: presentation_rank == confirmation rank.
     """
     if not picks:
         return
 
     def _key(p: dict) -> tuple[int, int]:
+        conf_rank = p.get("rank") or 10_000
         fi = p.get("flow_interest") or {}
         interest = fi.get("score", 0) if fi.get("available") else -1
-        conf_rank = p.get("rank") or 10_000
-        return (-interest, conf_rank)
+        return (conf_rank, -interest)
 
     order = sorted(range(len(picks)), key=lambda i: _key(picks[i]))
     for position, idx in enumerate(order, start=1):

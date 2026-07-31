@@ -90,10 +90,12 @@ Attached in orchestrator Phase 3 (after selection, scoring-neutral):
 - `pick.flow_interest` — strength block, incl. `suppressed` (no/weak flow) and
   `picked_reason` (`why_picked()` — the price/volume basis, shown beside a
   suppressed pick that got in on technicals alone).
-- `pick.presentation_rank` — orders picks for display by flow strength; the
-  canonical confirmation `rank` is untouched. Falls back to confirmation order
-  when no flow data exists, so offline runs present picks exactly as the flow
-  chose them. Suppressed/no-flow picks sort to the bottom.
+- `pick.presentation_rank` — display order. As of **2026-07-31** it follows the
+  confirmation `rank` (which already prefers genuine-early setups); flow strength
+  only **breaks an exact tie**, so a mature high-delivery name can no longer jump
+  ahead of an earlier, higher-confirmation pick — that fought the "enter early"
+  objective. The canonical confirmation `rank` is untouched, and offline runs
+  (no flow data) are unchanged: presentation_rank == confirmation rank.
 
 ## Data dependencies & degradation
 

@@ -501,10 +501,11 @@ def run_universe(
         except Exception:
             log.exception("build_pick_payload failed for %s", res.symbol)
 
-    # Presentation ordering — bulk deals + delivery % rank the ALREADY-SELECTED
-    # picks for display (attaches `presentation_rank`). Scoring-neutral: it never
-    # changes selection or the canonical confirmation `rank`. Falls back to the
-    # confirmation order when no flow data is on disk.
+    # Presentation ordering — attaches `presentation_rank` to the ALREADY-SELECTED
+    # picks. As of 2026-07-31 the display follows the confirmation `rank` (which
+    # already prefers genuine-early setups); bulk deals + delivery % only break an
+    # exact tie, so a mature high-delivery name can't jump ahead of an earlier
+    # pick. Scoring-neutral: never changes selection or the canonical `rank`.
     try:
         from .flow_interest import assign_presentation_ranks
         assign_presentation_ranks(pick_payloads)

@@ -1,5 +1,37 @@
 # Changelog
 
+## 2026-07-31 — Presentation order follows confirmation rank, not flow strength (scoring-neutral fix)
+
+Corrects a **presentation-layer** misalignment surfaced by the user: after the
+delivery-% work the picks *felt* post-breakout / mature rather than pre-breakout.
+Audit confirmed selection was never affected — delivery % is fully scoring-neutral
+(absent from `config/stage_weights.json` and `stages/rank.py`; every
+`delivery`/`flow_interest` call lives in the orchestrator's Phase-3 I/O layer,
+the closest-to-firing panel, or the watchlist). The felt shift came from the
+**display order**: `assign_presentation_ranks` sorted by *flow interest DESC*
+first, and high delivery % is inherently a *maturity* tell, so mature
+already-accumulated names floated to the top and buried the genuine-early /
+pre-breakout picks the ranker had deliberately put first (rank.py bonus #6 gives
+an early setup two bonuses vs a mid setup's one) — fighting the "enter early"
+north star (PRINCIPLES.md §1).
+
+- `flow_interest.assign_presentation_ranks` sort key flipped from
+  `(-interest, conf_rank)` to `(conf_rank, -interest)`: the confirmation rank now
+  LEADS and flow interest only breaks an **exact tie**. Since confirmation ranks
+  are unique per selected pick, in practice `presentation_rank == rank`; the
+  tiebreak only bites in the degenerate no-`rank` case. One-line, fully reversible.
+- **Delivery stays a fully visible indicator** — the `DeliveryPill`,
+  `flow_interest`, `vs_normal` percentile, and the 2026-07-29 OBV-vs-delivery
+  divergence flag are all unchanged. It simply no longer re-orders which pick you
+  see first.
+- Scoring, selection, sizing, exits, and offline behaviour are untouched
+  (offline still yields `presentation_rank == confirmation rank`).
+- Docs synced: `flow_interest.py` (module + function docstrings),
+  `orchestrator.py` Phase-3 comment, `INSTITUTIONAL_FLOW.md`.
+- Tests: `test_flow_interest.py::TestPresentationRanks` rewritten —
+  `test_follows_confirmation_rank_not_flow_interest` (was
+  `test_reorders_by_interest_...`) + new `test_flow_interest_only_breaks_exact_ties`.
+
 ## 2026-07-29 — OBV-vs-delivery divergence flag + per-day selection summary (both additive, scoring-neutral)
 
 Two additive features from reviewing the 2026-07-28 picks (GLAND #1, ADANIENT #2,

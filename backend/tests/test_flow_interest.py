@@ -107,7 +107,11 @@ class TestFlowInterest(unittest.TestCase):
 
 
 class TestPresentationRanks(unittest.TestCase):
-    def test_reorders_by_interest_without_touching_scores(self):
+    def test_follows_confirmation_rank_not_flow_interest(self):
+        # 2026-07-31: flow interest is NO LONGER the primary sort key. Even
+        # though B carries the strongest flow, the display must follow the
+        # confirmation rank so a mature high-delivery name can't jump ahead of
+        # an earlier, higher-confirmation pick (the pre-breakout objective).
         picks = [
             {"symbol": "A.NS", "rank": 1, "confirmation_score": 2.0,
              "flow_interest": {"available": True, "score": 20}},
@@ -118,13 +122,27 @@ class TestPresentationRanks(unittest.TestCase):
         ]
         F.assign_presentation_ranks(picks)
         pr = {p["symbol"]: p["presentation_rank"] for p in picks}
-        # Highest interest (B) presents first, then C, then A.
-        self.assertEqual(pr, {"B.NS": 1, "C.NS": 2, "A.NS": 3})
+        # Presentation mirrors the confirmation rank; flow strength is ignored
+        # for ordering (it remains a visible indicator).
+        self.assertEqual(pr, {"A.NS": 1, "B.NS": 2, "C.NS": 3})
         # Canonical confirmation rank + score are untouched.
         self.assertEqual([p["rank"] for p in picks], [1, 2, 3])
         self.assertEqual([p["confirmation_score"] for p in picks], [2.0, 1.8, 1.5])
         # List order itself is not mutated.
         self.assertEqual([p["symbol"] for p in picks], ["A.NS", "B.NS", "C.NS"])
+
+    def test_flow_interest_only_breaks_exact_ties(self):
+        # Degenerate case: no confirmation rank on any pick -> all tie on the
+        # primary key, so flow interest DESC decides. This is the only path on
+        # which flow can influence order.
+        picks = [
+            {"symbol": "A.NS", "flow_interest": {"available": True, "score": 20}},
+            {"symbol": "B.NS", "flow_interest": {"available": True, "score": 90}},
+            {"symbol": "C.NS", "flow_interest": {"available": True, "score": 55}},
+        ]
+        F.assign_presentation_ranks(picks)
+        pr = {p["symbol"]: p["presentation_rank"] for p in picks}
+        self.assertEqual(pr, {"B.NS": 1, "C.NS": 2, "A.NS": 3})
 
     def test_falls_back_to_confirmation_order_without_flow(self):
         picks = [
