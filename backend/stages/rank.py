@@ -36,6 +36,7 @@ layer (backend/flow_interest.py). Do NOT re-add a deal term to the score.
 
 from __future__ import annotations
 
+import logging
 from typing import Optional
 
 import pandas as pd
@@ -50,6 +51,9 @@ from ..indicators import (
     volume_spike_event,
 )
 from ..pipeline import COMPOSITE_WEIGHTS, PipelineResult
+from ..volume_signals import compute as compute_volume_signals
+
+log = logging.getLogger("rank")
 
 
 # --------------------------------------------------------------------------- #
@@ -61,6 +65,12 @@ BONUS_RS_RANK_TOP_PCT: float = 0.30     # tunable
 BONUS_WEIGHT: float = 0.5               # tunable
 TOP_N: int = 3                           # tunable
 STEALTH_DEMAND_BONUS_MIN: float = 1.5   # tunable — right-edge up/down floor (in dry-up)
+
+# Self-Veto Override (2026-08-03): keep setups our own volume-signature lens
+# classifies as entry_timing == "missed" (Stage 4 / distribution — "exit zone,
+# not entry", backend/volume_signals.py) OUT of the top-N picks. They may clear
+# the composite, but we refuse to present distribution as a buy. Reversible.
+EXCLUDE_MISSED_ENTRY: bool = True       # tunable
 
 
 # --------------------------------------------------------------------------- #
@@ -210,6 +220,20 @@ def rank_survivors(
         bonus_count = len(bonuses_fired)
         confirmation = margin + BONUS_WEIGHT * bonus_count
 
+        # Self-Veto Override input: our own Weinstein/Wyckoff volume lens rates
+        # the entry timing. "missed" == Stage 4 / distribution ("exit zone, not
+        # entry"). Recorded here (once) so selection can drop it and the trace /
+        # card can show why. Fail-open to "unknown" — never over-exclude on an
+        # analysis error or short history.
+        entry_timing = "unknown"
+        weinstein_stage = ""
+        try:
+            _vs = compute_volume_signals(df, r.symbol)
+            entry_timing = getattr(_vs, "entry_timing", "unknown") or "unknown"
+            weinstein_stage = getattr(_vs, "weinstein_stage", "") or ""
+        except Exception:
+            log.exception("rank: volume-signature timing failed for %s", r.symbol)
+
         r.confirmation_score = round(confirmation, 4)
         r.confirmation_components = {
             "gate_margin_sum": round(margin, 4),
@@ -217,13 +241,45 @@ def rank_survivors(
             "bonus_weight": BONUS_WEIGHT,
             "bonuses_fired": bonuses_fired,
             "early_accumulation": early_accum,
+            "entry_timing": entry_timing,
+            "weinstein_stage": weinstein_stage,
         }
 
     # ---- Sort + select ----
     survivors.sort(key=lambda x: x.confirmation_score, reverse=True)
-    selected = survivors[:top_n]
+
+    # Self-Veto Override: never surface a "missed" (Stage 4 / distribution) setup
+    # in the top-N — our own volume lens calls it "exit zone, not entry". If the
+    # veto leaves fewer than top_n actionable setups we present FEWER (honest),
+    # never backfilling with a distribution name. Reversible via EXCLUDE_MISSED_ENTRY.
+    if EXCLUDE_MISSED_ENTRY:
+        pool, missed = _partition_missed(survivors)
+        if missed:
+            log.info(
+                "rank: excluded %d 'missed' (Stage 4/distribution) setup(s) from "
+                "top-%d: %s", len(missed), top_n, ", ".join(r.symbol for r in missed),
+            )
+    else:
+        pool = list(survivors)
+
+    selected = pool[:top_n]
     for rank, r in enumerate(selected, start=1):
         r.selected = True
         r.rank = rank
 
     return selected
+
+
+def _partition_missed(
+    survivors: list[PipelineResult],
+) -> tuple[list[PipelineResult], list[PipelineResult]]:
+    """Split survivors into (actionable, missed) by the volume-signature
+    entry-timing recorded on confirmation_components. Pure — unit-testable
+    without OHLCV. A missing/unknown timing is treated as actionable (fail-open).
+    """
+    actionable: list[PipelineResult] = []
+    missed: list[PipelineResult] = []
+    for r in survivors:
+        et = (getattr(r, "confirmation_components", None) or {}).get("entry_timing")
+        (missed if et == "missed" else actionable).append(r)
+    return actionable, missed

@@ -1,5 +1,36 @@
 # Changelog
 
+## 2026-08-03 — Self-Veto Override at selection: "missed" (Stage 4 / distribution) setups can't reach top-N
+
+User report: picks labelled **"MISSED · exit zone, not entry"** were appearing in
+the top-3. Root cause: that label is `entry_timing == "missed"` from the
+Weinstein/Wyckoff lens (`volume_signals._classify_entry_timing` — fires on
+`stage_4_decline`, wyckoff `distribution`/`markdown`, or `raw_score < -0.10`), but
+the composite pipeline **never consulted it** (`indicators.py` deliberately didn't
+carry the narrative engine forward, and `[LTV]`'s single OBV-90d gate ≠ the
+Stage-4/distribution classification). So a distribution name could clear the
+composite and rank into the picks while our own volume lens said "exit zone".
+
+Fix — the Self-Veto Override applied at selection (`backend/stages/rank.py`):
+- `rank_survivors` now computes `volume_signals.compute(...).entry_timing` for each
+  survivor (recorded on `confirmation_components.entry_timing` / `.weinstein_stage`
+  for the trace + card), and **excludes `entry_timing == "missed"` from the top-N**
+  via the pure, unit-tested `_partition_missed` helper.
+- If the veto leaves fewer than `TOP_N` actionable setups, we present **fewer**
+  (honest) — never backfill with a distribution name. Excluded symbols are logged.
+- Fail-open: a compute error or short history → "unknown" → NOT excluded (never
+  over-exclude). Reversible via `EXCLUDE_MISSED_ENTRY` (default True).
+- Scope: only `"missed"` is dropped. `early` / `mid` / `late` / `unknown` still
+  select normally (the user asked specifically for the "exit zone, not entry"
+  case). `late` demotion is available later if wanted.
+
+This is a genuine SELECTION change (changes which stocks land in top-N), made on
+explicit user request; it does not touch scoring weights or the composite gate.
+Tests: `backend/tests/test_missed_exclusion.py` (4) — partition logic (only
+"missed" dropped, fail-open on missing verdict, all-missed → empty pool) and a
+real-frame check that a sustained downtrend is classified "missed". Full backend
+package 113/113.
+
 ## 2026-08-03 — Exit upgrades: ATR-adaptive stop/ladder (§3) + §5 exit-watch signals
 
 Two exit-side improvements the user approved after the exit-layer audit. Both
