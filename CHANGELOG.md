@@ -1,5 +1,142 @@
 # Changelog
 
+## 2026-08-03 — Exit upgrades: ATR-adaptive stop/ladder (§3) + §5 exit-watch signals
+
+Two exit-side improvements the user approved after the exit-layer audit. Both
+bring the live code into line with PRINCIPLES; the audit confirmed the rest of
+the exit stack (B1 flips, fast-distribution, healing override, time-stops,
+`_action_for` priority) was already sound.
+
+**A. Volatility-adaptive stop + R-based ladder (PRINCIPLES §3).** The live sizer
+hardcoded an 8% stop with +8/+16% targets; a volatile name could be stopped out
+on normal noise. `position_sizer.size_position` now accepts `atr_pct` (a
+fraction): `stop = max(STOP_PCT, ATR_STOP_MULT × atr_pct)` and the ladder becomes
+R-based (`T1 = entry + T1_R_MULT·R`, `T2 = entry + T2_R_MULT·R`, `R = entry −
+stop`). `hypothesis.build_pick_payload` feeds the [CS] stage's ATR20, so picks
+now get volatility-scaled stops/targets. **Backward-compatible:** with `atr_pct`
+omitted (every existing caller/test, demo, backtest) sizing is byte-identical to
+the old fixed-8% model — the 1% account-risk invariant is unchanged.
+- Coupled fix: the day-45 tighten (both `positions_view._action_for` and the
+  pick's `exit_schedule.day_45`) now tightens to **entry − 0.5R = (entry+stop)/2**
+  instead of a flat `entry − 4%`. Identical (96 on a 100/92 position) for an 8%
+  stop; scales correctly for wider ATR stops. Without this, a wide-stop pick
+  would have tightened too aggressively at day 45.
+- Fix points: `ATR_STOP_MULT` (2.0), `T1_R_MULT` (1.0), `T2_R_MULT` (2.0),
+  `STOP_PCT` floor (position_sizer.py).
+
+**B. §5 exit-watch signals now wired into the live trajectory.** PRINCIPLES §5
+lists distribution-day count and AVWAP breakdown as exit triggers; neither was
+live (they were the planned `exit_watch.py`). Added two pure indicators and wired
+them into `signal_trajectory._build_report` as "flipped" states (→
+`exit_recommendation` → `_action_for` `exit_distribution`):
+- `indicators.distribution_day_count` — down-close on heavier-than-prior volume;
+  `>= DIST_DAY_EXIT_COUNT` (3) in the last 15 sessions trips an exit.
+- `indicators.anchored_vwap_from_low` / `avwap_breakdown` — VWAP anchored at the
+  90-session lowest close (§2.3); `AVWAP_CONFIRM_CLOSES` (2) consecutive closes
+  below a previously-holding AVWAP trips an exit. A "had held" guard prevents a
+  name that was never above its cost basis from reading as a fresh breakdown.
+- Both fire only when triggered (like the bearish volume-spike layer), so healthy
+  positions stay uncluttered. Degrade to silent in the file-only replay path
+  (`trajectory_between_traces`) where a df isn't available.
+- Fix points: `DIST_DAY_EXIT_COUNT`, `AVWAP_ANCHOR_LOOKBACK`,
+  `AVWAP_CONFIRM_CLOSES` (signal_trajectory.py).
+
+Tests: `backend/tests/test_exit_layers.py` (14) — ATR sizing (fixed unchanged /
+high-ATR widens+scales / low-ATR floor), day-45 0.5R (8% and wide-stop),
+distribution-day count, AVWAP breakdown (breaks / holds / anchor), and trajectory
+integration (both signals flip the report; sub-threshold does not). Full backend
+package 109/109; accuracy script 32/32.
+
+## 2026-08-03 — Fix B1.5 micro-stop label + realign stale exit tests (exit-side correctness)
+
+The failed-breakout micro-stop (B1.5) in `backend/signal_trajectory.py` reported
+a close that was BELOW the breakout level as *"Breakout holding above 20d high
+500.00 (close 490.00)"* — a false, trust-breaking label. Root-caused to two
+things, both fixed:
+
+1. **Real bug — misleading description.** `_fmt_failed_breakout` had a single
+   non-fired branch that always said "holding above". Now it checks
+   `close >= resistance`: only then "holding above"; a close back BELOW the level
+   that simply didn't trip the stop (inside the 1% buffer and/or below the 1.5x-
+   ADV supply bar) reads honestly as "Close X back below 20d high Y … below the
+   B1.5 trigger". Classifier logic (`_classify_failed_breakout`) unchanged — the
+   verdict was already correct; only the human label lied.
+2. **Stale tests, not a logic regression.** The two failing tests in
+   `scripts/test_pre_breakout_accuracy.py` asserted the PRE-refit thresholds
+   (`vol >= 1.0x`) and fed 1.4x volume, which correctly no longer fires under the
+   documented 2026-07-18 anti-whipsaw refit (`FAILED_BR_VOLUME_MULT` 1.0 → 1.5x +
+   1% close buffer). Updated them to the current thresholds (1.6x volume exercises
+   the real fire path) and refreshed their docstrings. **Did NOT revert the
+   anti-whipsaw refit** — lowering the bar back to 1.0x would reintroduce the
+   day-1 whipsaw exits it was built to stop (DIVISLAB).
+- Added `test_report_breakout_below_on_light_volume_labels_honestly` locking in
+  the label fix (close below on light volume → "back below", never "holding
+  above", and no exit). Accuracy script 32/32; backend package 95/95.
+- Knob if you want the micro-stop more/less sensitive: `FAILED_BR_VOLUME_MULT`
+  (recommend leaving at 1.5 — B2 −8% + the 90d indicators still catch a genuine
+  failure; B1.5 is only the early heavy-volume distribution catch).
+
+## 2026-08-03 — Pre-breakout TAG eligibility guard (3 rules; presentation-only, additive)
+
+New module `backend/pre_breakout_tag.py` + pure indicator
+`indicators.stealth_demand_ratio`. Answers one question about an ALREADY-SELECTED
+pick — "may it wear the PRE-BREAKOUT badge?" — and attaches
+`pick.pre_breakout_eligibility`. **Never changes selection, scoring, sizing, or
+exits**; a failing pick keeps its place and just loses the pre-breakout tag
+(drops out of any pre-breakout list view). Three user rules (2026-08-03):
+
+1. **Self-Veto Override.** Any internal bearish flag disqualifies the tag — our
+   own read wins over a tight-looking base. Reads (does not recompute):
+   `entry_stage ∈ {POST_BREAKOUT_EXTENDED, LATE_CHASE, FAILED_BREAKOUT_RETEST}`,
+   `accumulation_assessment.contradictions` (`[DV]` footprints + OBV-vs-delivery
+   divergence), `accumulation_assessment.would_veto_shadow` (shadow `[DV]` counts
+   for the label even while it's trace-only for selection), and a bearish
+   `volume_event`. ("Stage 4" needs no code — `[LTV]` hard-gates OBV-90d < 0
+   upstream, so it never becomes a pick.)
+2. **Unanimous Accumulation — with the healing carve-out.** Coherent flow across
+   90d/180d OBV, up/down-90d, and the 10d-vs-30d inflection. Disqualifies on an
+   impossible/missing metric, on hemorrhaging (10d & 30d both negative), and on
+   any negative long-term read — **unless** the tape is healing (negative-long /
+   positive-short: the earliest, most valuable pre-breakout footprint, the same
+   carve-out `[LTV]` already makes). Literal strict unanimity would amputate
+   exactly these; `HEALING_CARVE_OUT_ENABLED` (default True) is the switch —
+   set False for the literal reading.
+3. **Stealth Demand (Stealth Accumulation Burst).** Proves buyers are *present*,
+   not just that sellers left: requires a right-edge Up/Down volume ratio ≥
+   `STEALTH_DEMAND_MIN_RATIO` (default 1.5) over the last `window` bars. This
+   resolves the VPA dry-up ambiguity — a quiet base with a HIGH ratio is stealth
+   absorption; the same dry-up with a LOW ratio is apathy and is disqualified.
+
+- Wiring: `hypothesis.build_pick_payload` attaches `flow_timeframes` +
+  `stealth_demand` (computed where OHLCV/VD features live); the orchestrator
+  Phase-3 layer calls `assess_pre_breakout_tag(payload)` AFTER every contradiction
+  is attached, so the self-veto sees the complete list. Pure function of the
+  payload — deterministic, never raises.
+- UI: a "Pre-Breakout" list/section should filter on
+  `pick.pre_breakout_eligibility.eligible`; `reason` + the three conflict lists
+  make every disqualification auditable.
+- Tests: `backend/tests/test_pre_breakout_tag.py` (18) — all three rules, the
+  healing carve-out on/off, and the stealth-demand indicator. Full backend
+  unittest package: 95/95.
+- Fix points: `HEALING_CARVE_OUT_ENABLED`, `STEALTH_DEMAND_MIN_RATIO`,
+  `UP_DOWN_90D_MIN`, `PRE_BREAKOUT_STAGES`/`LATE_STAGES` (pre_breakout_tag.py);
+  `window`/`adv_window`/`dryup_mult` (stealth_demand_ratio).
+
+**Follow-on (same day) — give the pre-breakout pick teeth + visibility:**
+- **Ranker bonus #7 "Stealth accumulation burst"** (`backend/stages/rank.py`).
+  The stealth-demand signal now also floats genuine quiet-absorption setups UP
+  the pick list: +1 confirmation bonus (weight `BONUS_WEIGHT`) when the right
+  edge is BOTH in a dry-up AND demand-dominated (up/down >= `STEALTH_DEMAND_
+  BONUS_MIN`, default 1.5). Pure price/volume, so it legitimately scores (unlike
+  the scoring-neutral deals/delivery layer) — same mechanism as bonuses #5/#6.
+  Additive (never excludes) but note it CAN change which picks land in the top-N,
+  since selection is top-N by confirmation score. Tunable / removable.
+- **Frontend**: `PickCard` now shows a "⚡ Pre-Breakout" badge (violet when the
+  guard clears all three rules, rose "blocked" with the reason on hover when our
+  own machinery disqualifies it; " · healing" when the carve-out applied).
+  `Pick.pre_breakout_eligibility` typed in `types.ts`. A dedicated pre-breakout
+  list/section can now filter on `eligible`. tsc --noEmit clean.
+
 ## 2026-07-31 — Presentation order follows confirmation rank, not flow strength (scoring-neutral fix)
 
 Corrects a **presentation-layer** misalignment surfaced by the user: after the

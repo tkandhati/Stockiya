@@ -17,6 +17,8 @@ Computes a confirmation score for each survivor:
         net buying, quiet dry-up/divergence footprint)   [early or mid tier]
       - Genuine early entry — not extended (near launch pad, 180d return < 30%,
         within +12% of the 50d MA, mature base)           [early tier only]
+      - Stealth accumulation burst (right-edge up/down volume >= threshold while
+        the base is in a volume dry-up — quiet absorption, not abandonment)
 
 The pick with the highest confirmation score is rank #1. Top N selected
 (default 3). Less-likely-false setups bubble to the top.
@@ -44,6 +46,7 @@ from ..indicators import (
     ma_stack_aligned,
     obv,
     obv_slope_pct,
+    stealth_demand_ratio,
     volume_spike_event,
 )
 from ..pipeline import COMPOSITE_WEIGHTS, PipelineResult
@@ -57,6 +60,7 @@ BONUS_OBV_90D_MIN: float = 5.0          # tunable
 BONUS_RS_RANK_TOP_PCT: float = 0.30     # tunable
 BONUS_WEIGHT: float = 0.5               # tunable
 TOP_N: int = 3                           # tunable
+STEALTH_DEMAND_BONUS_MIN: float = 1.5   # tunable — right-edge up/down floor (in dry-up)
 
 
 # --------------------------------------------------------------------------- #
@@ -182,6 +186,26 @@ def rank_survivors(
             bonuses_fired.append("Slow+durable accumulation (OBV 90d & 180d positive)")
         if early_accum["tier"] == "early":
             bonuses_fired.append("Genuine early entry — not extended")
+
+        # 7. Stealth accumulation burst (2026-08-03). Complements #6 (which reads
+        # 90d/180d flow) by reading the LAST ~10 bars' up/down volume: fires only
+        # when the right edge is BOTH quiet (dry-up) AND demand-dominated — the
+        # "supply exhausted, institutions quietly absorbing" footprint, as opposed
+        # to a base that is merely being abandoned. Pure price/volume, so it
+        # belongs in the ranker (not the scoring-neutral deals/delivery layer). It
+        # only reorders — nothing is excluded. See indicators.stealth_demand_ratio.
+        if df is not None:
+            sd = stealth_demand_ratio(df["Close"], df["Volume"])
+            if (
+                sd is not None
+                and sd.get("in_dryup")
+                and sd.get("ratio") is not None
+                and sd["ratio"] >= STEALTH_DEMAND_BONUS_MIN
+            ):
+                bonuses_fired.append(
+                    f"Stealth accumulation burst (right-edge up/down "
+                    f"{sd['ratio']:.1f}x in dry-up)"
+                )
 
         bonus_count = len(bonuses_fired)
         confirmation = margin + BONUS_WEIGHT * bonus_count

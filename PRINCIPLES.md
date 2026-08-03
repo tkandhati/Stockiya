@@ -11,6 +11,8 @@ Volume is the only signal that cannot be faked. Institutions cannot enter or exi
 > **UI truth-in-labelling (2026-07-12):** because a pick can clear the composite `S ≥ τ` while a listed soft leg failed its own boolean, the UI never asserts "all N gates passed" unconditionally. `hypothesis.build_pick_payload` now emits `gate_confirmation_status = {hard_confirmed | composite_qualified, passed[], failed[]}` and the stock-detail page reads it. See CHANGELOG 2026-07-12.
 >
 > **Volume signal integrity (2026-07-12):** OBV is a signed cumulative that can cross zero, so `% change vs a base bar` is unstable on long horizons (e.g. `n=120` can print ±thousands of %). `indicators.obv_norm_slope_pct` — linear-regression slope normalized by `mean(|OBV|)` — is now the preferred user-facing form. Existing threshold sites (`lt_flow.py`, `rank.py` bonus) keep the % form so strategy math is unchanged; the ranker can be re-anchored on the norm form once outcomes accumulate.
+>
+> **Exit upgrades now live (2026-08-03):** §3's volatility-adaptive stop (`stop = max(8%, 2×ATR20)`) with an R-based T1/T2 ladder is implemented in `position_sizer.size_position` (opt-in via `atr_pct`, fed from the [CS] ATR20); the day-45 tighten is now `entry − 0.5R`. Two §5 exit-watch signals are wired into `signal_trajectory` — distribution-day cluster (≥3/15 sessions) and anchored-VWAP breakdown (2 closes below the base-anchored VWAP). See CHANGELOG 2026-08-03.
 
 ---
 

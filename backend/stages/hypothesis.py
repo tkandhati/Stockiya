@@ -25,7 +25,7 @@ from typing import Optional
 
 from ..early_accumulation import assess_early_accumulation
 from ..entry_stage_label import entry_stage_label
-from ..indicators import sma, volume_spike_event
+from ..indicators import sma, stealth_demand_ratio, volume_spike_event
 from ..pipeline import PipelineResult, classify_trigger
 from ..position_sizer import size_position
 from ..signal_trajectory import (
@@ -148,7 +148,18 @@ def build_pick_payload(
     else:
         entry = float(br.features.get("close") or snapshot.get("current") or 0.0)
 
-    plan = size_position(account_value=account_value, entry=entry)
+    # Volatility-adaptive stop (PRINCIPLES §3): feed the [CS] stage's ATR20 (a
+    # percent, e.g. 2.5) as a fraction so a volatile name gets a wider stop and an
+    # R-scaled target ladder instead of a flat 8/16%. None -> fixed-8% model.
+    cs = result.stage_results.get("CS")
+    atr_pct_frac: Optional[float] = None
+    _cs_atr = (cs.features or {}).get("atr_pct") if cs else None
+    if _cs_atr is not None:
+        try:
+            atr_pct_frac = float(_cs_atr) / 100.0
+        except (TypeError, ValueError):
+            atr_pct_frac = None
+    plan = size_position(account_value=account_value, entry=entry, atr_pct=atr_pct_frac)
 
     headline = _build_headline(result)
     vol_event = volume_spike_event(result.ohlcv).as_dict() if result.ohlcv is not None else None
@@ -161,10 +172,16 @@ def build_pick_payload(
             "milestone_days": DAY_45_MILESTONE,
             "action": "tighten_stop",
             "trigger": "T1 not hit",
-            "new_stop": round(entry * (1 - DAY_45_TIGHTEN_STOP_PCT), 2),
+            # entry - 0.5R (midpoint of entry and the stop) — matches the
+            # positions_view enforcement and scales with the ATR-adaptive stop.
+            "new_stop": (
+                round((entry + plan.stop) / 2, 2)
+                if 0 < plan.stop < entry
+                else round(entry * (1 - DAY_45_TIGHTEN_STOP_PCT), 2)
+            ),
             "note": (
                 f"If T1 not hit by day {DAY_45_MILESTONE}, raise stop to "
-                f"entry - {int(DAY_45_TIGHTEN_STOP_PCT*100)}%."
+                "entry - 0.5R (bank half the initial risk)."
             ),
         },
         "day_90": {
@@ -324,6 +341,30 @@ def build_pick_payload(
     if not early_accum:
         early_accum = assess_early_accumulation(result.ohlcv, result.stage_results)
 
+    # ---- Multi-timeframe flow snapshot + stealth-demand — the inputs the
+    # pre-breakout TAG guard (backend/pre_breakout_tag.py) reads to enforce
+    # Instruction 2 (coherent flow across timeframes, with the healing carve-out)
+    # and Instruction 3 (active right-edge buying, not just seller exhaustion).
+    # Gathered here where the OHLCV frame and VD features live; the guard itself
+    # is a pure function of the payload, computed in the orchestrator once every
+    # advisory contradiction is attached. Presentation-only — never gates picks.
+    _ea_feats = (early_accum or {}).get("features") or {}
+    _vd_feats = (vd.features or {}) if vd else {}
+    flow_timeframes = {
+        "obv_10d_norm_slope_pct": _vd_feats.get("obv_slope_short_pct"),
+        "obv_30d_norm_slope_pct": _vd_feats.get("obv_slope_long_pct"),
+        "obv_flow_inflection": _vd_feats.get("obv_flow_inflection"),
+        "obv_90d_norm_slope_pct": _ea_feats.get("obv_90d_norm_slope_pct"),
+        "obv_180d_norm_slope_pct": _ea_feats.get("obv_180d_norm_slope_pct"),
+        "up_down_vol_ratio_90d": _ea_feats.get("up_down_vol_ratio_90d"),
+    }
+    stealth_demand = None
+    if df is not None and not df.empty:
+        try:
+            stealth_demand = stealth_demand_ratio(df["Close"], df["Volume"])
+        except Exception:  # noqa: BLE001 — degrade to None (guard treats as missing)
+            stealth_demand = None
+
     # ---- Split-date labels (2026-07-17) — advisory metadata that separates
     # the three orthogonal clocks the user reads. Enforcement still lives in
     # positions_view._action_for; these are honest labels for the human/UI.
@@ -377,6 +418,8 @@ def build_pick_payload(
         "entry_stage": entry_stage,
         "entry_stage_features": entry_stage_features,
         "early_accumulation": early_accum,
+        "flow_timeframes": flow_timeframes,
+        "stealth_demand": stealth_demand,
         "date_labels": date_labels,
 
         # ---- Legacy aliases (so existing frontend keeps rendering) ----

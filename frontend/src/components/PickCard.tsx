@@ -71,6 +71,24 @@ export function PickCard({ pick }: { pick: Pick }) {
                   : 'Slow Accumulation'}
               </span>
             )}
+            {/* Pre-breakout TAG guard — only shown for pre-breakout setups.
+                Green when it clears all three rules; rose when our own machinery
+                disqualifies it (self-veto / flow conflict / no stealth demand). */}
+            {pick.pre_breakout_eligibility?.is_pre_breakout_setup && (
+              <span
+                className={`rounded-full px-2 py-0.5 text-xs font-semibold ${
+                  pick.pre_breakout_eligibility.eligible
+                    ? 'bg-violet-600 text-white'
+                    : 'bg-rose-100 text-rose-800'
+                }`}
+                title={pick.pre_breakout_eligibility.reason}
+              >
+                {pick.pre_breakout_eligibility.eligible
+                  ? '⚡ Pre-Breakout'
+                  : '⚡ Pre-Breakout blocked'}
+                {pick.pre_breakout_eligibility.healing_exemption && ' · healing'}
+              </span>
+            )}
           </div>
           <div className="mt-1 flex flex-wrap items-center gap-1.5 font-mono text-xs text-slate-500">
             <span>{pick.symbol}</span>

@@ -216,6 +216,24 @@ export interface Pick {
     reasons: string[]
     features?: Record<string, unknown>
   }
+  // Pre-breakout TAG eligibility — the coherence guard (backend/pre_breakout_tag.py).
+  // Presentation-only: does NOT affect selection. `eligible` says the pick may wear
+  // the pre-breakout badge; the three lists explain any disqualification.
+  pre_breakout_eligibility?: {
+    is_pre_breakout_setup: boolean
+    eligible: boolean
+    self_veto: string[]
+    flow_conflicts: string[]
+    demand_conflicts: string[]
+    healing_exemption: boolean
+    stealth_demand?: {
+      ratio: number | null
+      in_dryup: boolean
+      window: number
+    } | null
+    stage?: string | null
+    reason: string
+  }
   composite_score?: number
 }
 

@@ -439,11 +439,14 @@ def test_healing_flip_non_divergent_entry_returns_unknown() -> None:
 
 
 def test_failed_breakout_fires_inside_window() -> None:
-    """close < resistance AND vol >= 1.0x ADV50 within window -> flipped."""
+    """close < resistance*0.99 AND vol >= 1.5x ADV50 within window -> flipped.
+
+    (Thresholds updated to the 2026-07-18 anti-whipsaw refit: FAILED_BR_VOLUME_MULT
+    is 1.5x, not the old 1.0x, and the close must clear a 1% buffer.)"""
     state = _classify_failed_breakout(
         resistance_20d_at_entry=500.0,
-        current_close=490.0,
-        current_volume=1_400_000,
+        current_close=490.0,        # 490 < 495 (= 500 x 0.99) -> clears buffer
+        current_volume=1_600_000,   # 1.6x ADV50 >= 1.5x -> real supply
         current_adv50=1_000_000,
         trading_days_since_entry=3,
     )
@@ -549,7 +552,7 @@ def test_report_breakout_micro_stop_fires() -> None:
     entry_vd = {"obv_flow_inflection": "neutral"}
     entry_br = {"resistance_20d": 500.0}
     current = _base_current(
-        last_close=490.0, last_volume=1_400_000, adv_50d=1_000_000,
+        last_close=490.0, last_volume=1_600_000, adv_50d=1_000_000,
     )
     report = _build_report(
         entry_lt=_base_lt_features(),
@@ -562,6 +565,32 @@ def test_report_breakout_micro_stop_fires() -> None:
     names = [i.name for i in report.indicators]
     assert "failed_breakout_micro_stop" in names, names
     print("PASS full trajectory: failed breakout micro-stop fires")
+
+
+def test_report_breakout_below_on_light_volume_labels_honestly() -> None:
+    """Close back below the 20d high on LIGHT volume: the B1.5 micro-stop must
+    NOT fire (anti-whipsaw — light volume is not distribution), but the label
+    must say 'back below', never the old misleading 'holding above'."""
+    entry_vd = {"obv_flow_inflection": "neutral"}
+    entry_br = {"resistance_20d": 500.0}
+    current = _base_current(
+        last_close=490.0, last_volume=800_000, adv_50d=1_000_000,   # 0.8x ADV
+    )
+    report = _build_report(
+        entry_lt=_base_lt_features(),
+        entry_vd=entry_vd,
+        entry_br=entry_br,
+        current=current,
+        trading_days_since_entry=3,
+    )
+    micro = [i for i in report.indicators if i.name == "failed_breakout_micro_stop"]
+    assert micro, "micro-stop indicator should be present (stable, not fired)"
+    assert micro[0].state == "stable", micro[0].state
+    desc = micro[0].description
+    assert "holding above" not in desc, desc          # the bug: false when close < resistance
+    assert "back below" in desc, desc
+    assert not report.exit_recommendation, report
+    print("PASS close-below-on-light-volume labels honestly (no false 'holding above')")
 
 
 def test_report_breakout_holds_after_window() -> None:
@@ -622,6 +651,7 @@ def main() -> int:
         test_report_divergent_entry_flips_on_hemorrhaging,
         test_report_divergent_entry_holds_on_healing,
         test_report_breakout_micro_stop_fires,
+        test_report_breakout_below_on_light_volume_labels_honestly,
         test_report_breakout_holds_after_window,
     ]
     failures = 0

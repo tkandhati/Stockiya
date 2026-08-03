@@ -487,6 +487,20 @@ def run_universe(
                             contras.append(_div)
             except Exception:
                 log.exception("obv_delivery_divergence failed for %s", res.symbol)
+            # Pre-breakout TAG eligibility — the coherence guard on the
+            # pre-breakout label (backend/pre_breakout_tag.py). Computed HERE,
+            # after every advisory contradiction is attached, so the self-veto
+            # (Instruction 1) sees the complete contradiction list. Also enforces
+            # coherent multi-timeframe flow with the healing carve-out
+            # (Instruction 2) and right-edge stealth demand (Instruction 3).
+            # Presentation/labeling only: never changes selection or any score —
+            # a failing pick keeps its place, it just loses the pre-breakout badge.
+            try:
+                from .pre_breakout_tag import assess_pre_breakout_tag
+                payload["pre_breakout_eligibility"] = assess_pre_breakout_tag(payload)
+            except Exception:
+                log.exception("assess_pre_breakout_tag failed for %s", res.symbol)
+                payload["pre_breakout_eligibility"] = None
             # Reasoning checklist "steps" — built AFTER delivery is attached so
             # the delivery-load-status step reflects the same advisory. Purely
             # additive: activates the (previously dormant) frontend checklist

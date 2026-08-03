@@ -649,6 +649,65 @@ def obv_flow_inflection(
     return "neutral", s_short, s_long
 
 
+def stealth_demand_ratio(
+    close: pd.Series,
+    volume: pd.Series,
+    *,
+    window: int = 10,
+    adv_window: int = 50,
+    dryup_mult: float = 0.8,
+) -> Optional[dict]:
+    """Right-edge Up/Down volume ratio — 'stealth demand' inside a quiet base.
+
+    Over the last `window` bars, sum volume on up-close days vs down-close days
+    and return their ratio. Also reports whether that window sits in a volume
+    DRY-UP (mean window volume < dryup_mult x ADV(adv_window)) — the ambiguous
+    state a plain VPA dry-up can't resolve: a HIGH ratio there means institutions
+    are quietly absorbing supply ('stealth accumulation'); a LOW ratio means
+    simple apathy ('no one cares').
+
+    Returns None when there isn't enough history. The ratio saturates at 5.0
+    when there is no down-day volume (pure demand) and is 0.0 when there is no
+    up-day volume — matching up_down_vol_ratio's convention. Deterministic; no
+    I/O; never raises on clean OHLCV.
+
+    Fix points (caller-tunable): window (5-10 typical), adv_window, dryup_mult.
+    """
+    if close is None or volume is None:
+        return None
+    n = len(close)
+    if n < max(window + 1, adv_window):
+        return None
+    w_close = close.iloc[-window:]
+    w_vol = volume.iloc[-window:]
+    prev_close = close.iloc[-window - 1:-1]
+    deltas = w_close.to_numpy() - prev_close.to_numpy()
+    vols = w_vol.to_numpy()
+    up_vol = float(vols[deltas > 0].sum())
+    down_vol = float(vols[deltas < 0].sum())
+
+    if up_vol <= 0 and down_vol <= 0:
+        ratio: Optional[float] = None
+    elif down_vol <= 0:
+        ratio = 5.0
+    else:
+        ratio = min(5.0, up_vol / down_vol)
+
+    adv50 = adv(volume, adv_window)
+    mean_w = float(w_vol.mean())
+    vol_vs_adv50 = (mean_w / adv50) if (adv50 and adv50 > 0) else None
+    in_dryup = bool(vol_vs_adv50 is not None and vol_vs_adv50 < dryup_mult)
+
+    return {
+        "ratio": (round(ratio, 3) if ratio is not None else None),
+        "up_vol": up_vol,
+        "down_vol": down_vol,
+        "window": window,
+        "vol_vs_adv50": (round(vol_vs_adv50, 3) if vol_vs_adv50 is not None else None),
+        "in_dryup": in_dryup,
+    }
+
+
 @dataclass
 class DivergenceResult:
     is_bullish: bool
@@ -755,6 +814,87 @@ def obv_bullish_divergence(df: pd.DataFrame, lookback: int = 20) -> DivergenceRe
         f"No divergence (price {(p2/p1-1)*100 if p1 else 0:+.1f}%, "
         f"OBV {(o2-o1)/max(abs(o1),1)*100:+.1f}%).",
     )
+
+
+# --------------------------------------------------------------------------- #
+# Exit-watch signals (PRINCIPLES §5) — distribution-day cluster + AVWAP breakdown
+# --------------------------------------------------------------------------- #
+
+def distribution_day_count(
+    close: pd.Series, volume: pd.Series, *, lookback: int = 15,
+) -> int:
+    """Count 'distribution days' in the last `lookback` bars.
+
+    A distribution day = a down-close on HEAVIER volume than the prior session
+    (institutions selling into the tape). PRINCIPLES §5 treats >= 3 within 15
+    sessions as an exit trigger. Pure; returns 0 on short history.
+    """
+    if close is None or volume is None or len(close) < lookback + 1:
+        return 0
+    c = close.to_numpy()
+    v = volume.to_numpy()
+    n = len(c)
+    count = 0
+    for i in range(n - lookback, n):
+        if i <= 0:
+            continue
+        if c[i] < c[i - 1] and v[i] > v[i - 1]:
+            count += 1
+    return count
+
+
+def anchored_vwap_from_low(
+    df: pd.DataFrame, *, anchor_lookback: int = 90,
+) -> Optional[float]:
+    """Anchored VWAP from the lowest-close bar within the last `anchor_lookback`
+    sessions, computed forward from that anchor to the latest bar (PRINCIPLES
+    §2.3) — the institutional cost basis off the base low. None on empty /
+    zero-volume data.
+    """
+    if df is None or len(df) == 0:
+        return None
+    window = df.iloc[-anchor_lookback:] if len(df) > anchor_lookback else df
+    closes = window["Close"].to_numpy()
+    if len(closes) == 0:
+        return None
+    anchor_pos = int(closes.argmin())
+    seg = window.iloc[anchor_pos:]
+    tp = (seg["High"] + seg["Low"] + seg["Close"]) / 3.0
+    vol = seg["Volume"]
+    denom = float(vol.sum())
+    if denom <= 0:
+        return None
+    return float((tp * vol).sum() / denom)
+
+
+def avwap_breakdown(
+    df: pd.DataFrame, *, anchor_lookback: int = 90, confirm: int = 2,
+) -> Optional[dict]:
+    """Anchored-VWAP breakdown check (PRINCIPLES §5).
+
+    Fires when the last `confirm` consecutive closes are ALL below the
+    base-anchored VWAP AND at least one of the `confirm` bars just before them
+    was AT/above it — i.e. a level that HAD been holding has just broken, not a
+    name that was never above its cost basis. Returns
+    {avwap, confirm, broke, last_close}, or None when the AVWAP is uncomputable
+    or there are too few bars.
+    """
+    if df is None or len(df) < confirm + 1:
+        return None
+    av = anchored_vwap_from_low(df, anchor_lookback=anchor_lookback)
+    if av is None:
+        return None
+    closes = df["Close"].to_numpy()
+    recent = closes[-confirm:]
+    broke_below = bool((recent < av).all())
+    prior = closes[-(2 * confirm):-confirm]
+    had_held = bool(len(prior) > 0 and (prior >= av).any())
+    return {
+        "avwap": round(av, 2),
+        "confirm": confirm,
+        "broke": bool(broke_below and had_held),
+        "last_close": float(closes[-1]),
+    }
 
 
 # --------------------------------------------------------------------------- #

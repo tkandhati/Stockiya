@@ -217,11 +217,21 @@ def _action_for(
 
     # 9. Day-45 stop-tighten (only if still holding pre-T1).
     if DAY_45 <= days_held < DAY_90 and not hit_t1:
-        new_stop = entry * (1 - DAY_45_TIGHTEN_PCT)
+        # Tighten to entry - 0.5R (PRINCIPLES §4). R = entry - stop, so the new
+        # stop is the midpoint of entry and the original stop — self-scaling to
+        # the position's own risk unit. With the fixed-8% stop this is entry-4%
+        # (unchanged); with a wider ATR-adaptive stop it leaves proportionally
+        # more room. Falls back to the flat 4% only if the stop is missing.
+        if stop is not None and 0 < stop < entry:
+            new_stop = (entry + stop) / 2.0
+            pct_txt = f"entry -{(1 - new_stop / entry) * 100:.1f}% (= 0.5R)"
+        else:
+            new_stop = entry * (1 - DAY_45_TIGHTEN_PCT)
+            pct_txt = f"entry -{int(DAY_45_TIGHTEN_PCT*100)}%"
         return (
             "tighten_stop_45",
             f"Day {days_held} (>= {DAY_45}) and T1 not hit. "
-            f"Tighten stop to {new_stop:.2f} (entry -{int(DAY_45_TIGHTEN_PCT*100)}%).",
+            f"Tighten stop to {new_stop:.2f} ({pct_txt}).",
             new_stop,
         )
 

@@ -30,6 +30,8 @@ from typing import Literal, Optional
 
 from .indicators import (
     adv,
+    avwap_breakdown,
+    distribution_day_count,
     obv,
     obv_flow_inflection,
     obv_slope_pct,
@@ -129,6 +131,24 @@ FAILED_BR_WINDOW_TRADING_DAYS: int = 5
 FAILED_BR_MIN_TRADING_DAYS: int = 1
 FAILED_BR_VOLUME_MULT: float = 1.5
 FAILED_BR_CLOSE_BUFFER: float = 0.99
+
+# --------------------------------------------------------------------------- #
+# Exit-watch signals (PRINCIPLES §5) — added 2026-08-03. Both are early,
+# volume-based exit triggers that fire a "flipped" state (→ exit at next open),
+# complementing the OBV/updown/MA150 flips and the failed-breakout micro-stop.
+#
+# Fix points:
+#     DIST_DAY_EXIT_COUNT      : distribution days in 15 sessions that trip an
+#                                exit (default 3 — a down-close on heavier volume
+#                                than the prior day counts as one).
+#     AVWAP_ANCHOR_LOOKBACK    : window whose lowest close anchors the VWAP (90).
+#     AVWAP_CONFIRM_CLOSES     : consecutive closes below the anchored VWAP that
+#                                confirm a breakdown (default 2).
+# --------------------------------------------------------------------------- #
+
+DIST_DAY_EXIT_COUNT: int = 3
+AVWAP_ANCHOR_LOOKBACK: int = 90
+AVWAP_CONFIRM_CLOSES: int = 2
 
 
 # Order matters: worst state wins in aggregation.
@@ -249,6 +269,11 @@ def _current_features_from_df(df) -> dict:
         "last_volume": last_volume,
         "trailing_20d_high": trailing_20d_high,
         "adv_50d": adv50,
+        # PRINCIPLES §5 exit-watch signals.
+        "distribution_day_count_15": distribution_day_count(close, volume, lookback=15),
+        "avwap_breakdown": avwap_breakdown(
+            df, anchor_lookback=AVWAP_ANCHOR_LOOKBACK, confirm=AVWAP_CONFIRM_CLOSES,
+        ),
     }
 
 
@@ -616,6 +641,41 @@ def _build_report(
             ),
         ))
 
+    # 7. Distribution-day cluster (PRINCIPLES §5) — repeated down-closes on
+    # heavier-than-prior volume within the last 15 sessions. Fires only when it
+    # trips (like the bearish volume-spike layer), keeping healthy cards clean.
+    dd = current.get("distribution_day_count_15")
+    if isinstance(dd, int) and dd >= DIST_DAY_EXIT_COUNT:
+        indicators.append(IndicatorDelta(
+            name="distribution_day_count",
+            label="Distribution days (15d)",
+            entry_value=None,
+            current_value=float(dd),
+            state="flipped",
+            description=(
+                f"{dd} distribution days in the last 15 sessions "
+                f"(>= {DIST_DAY_EXIT_COUNT}) — repeated institutional selling. "
+                "Exit at next open."
+            ),
+        ))
+
+    # 8. Anchored-VWAP breakdown (PRINCIPLES §5) — AVWAP_CONFIRM_CLOSES
+    # consecutive closes below the base-anchored VWAP that had been holding.
+    av = current.get("avwap_breakdown")
+    if isinstance(av, dict) and av.get("broke"):
+        indicators.append(IndicatorDelta(
+            name="avwap_breakdown",
+            label="Anchored-VWAP breakdown",
+            entry_value=av.get("avwap"),
+            current_value=av.get("last_close"),
+            state="flipped",
+            description=(
+                f"{av.get('confirm')} consecutive closes below the base-anchored "
+                f"VWAP {float(av.get('avwap')):.2f} — institutional cost basis "
+                "lost. Exit at next open."
+            ),
+        ))
+
     overall = _aggregate(indicators)
     flipped_any = any(i.state == "flipped" for i in indicators)
 
@@ -688,10 +748,26 @@ def _fmt_failed_breakout(
             f"(>= {FAILED_BR_VOLUME_MULT:.2f}x). Exit at next open."
         )
     if resistance and close:
+        armed = (
+            f"armed day {FAILED_BR_MIN_TRADING_DAYS} through day "
+            f"{FAILED_BR_WINDOW_TRADING_DAYS}"
+        )
+        # Only claim "holding above" when the close is ACTUALLY at/above the
+        # breakout level. A close back BELOW the level that merely didn't trip
+        # the stop (inside the 1% buffer and/or below the 1.5x-ADV supply bar)
+        # must NOT read as "holding above" — that was the misleading-label bug.
+        if close >= resistance:
+            return (
+                f"Breakout holding above 20d high {resistance:.2f} "
+                f"(close {close:.2f}) — micro-stop {armed}."
+            )
+        vol_txt = ""
+        if volume and adv50 and adv50 > 0:
+            vol_txt = f" on {volume/adv50:.2f}x ADV50"
         return (
-            f"Breakout holding above 20d high {resistance:.2f} "
-            f"(close {close:.2f}) — micro-stop armed day "
-            f"{FAILED_BR_MIN_TRADING_DAYS} through day "
-            f"{FAILED_BR_WINDOW_TRADING_DAYS}."
+            f"Close {close:.2f} back below 20d high {resistance:.2f}{vol_txt} "
+            f"— below the B1.5 trigger (needs close < "
+            f"{resistance * FAILED_BR_CLOSE_BUFFER:.2f} on >= "
+            f"{FAILED_BR_VOLUME_MULT:.2f}x ADV50); {armed}."
         )
     return "Failed-breakout micro-stop: inputs unavailable."
