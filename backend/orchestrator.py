@@ -246,7 +246,10 @@ def _log_gate_breakdown(results: list[PipelineResult]) -> None:
 IST = ZoneInfo("Asia/Kolkata")
 log = logging.getLogger("orchestrator")
 
-DEFAULT_TOP_N = 3
+# Raised 3 -> 5 on 2026-08-03 so the extra genuine pre-breakout bases that the
+# BR-relief reweight now lifts over tau (see pipeline.TRIGGER_BR_SHRINK_FRAC)
+# actually surface. A cap, not a floor: thin days still show fewer.
+DEFAULT_TOP_N = 5
 DEFAULT_ACCOUNT_VALUE = float(os.environ.get("STOCKYA_ACCOUNT_VALUE", "100000"))
 
 

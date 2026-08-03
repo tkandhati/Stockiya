@@ -31,11 +31,14 @@ from backend.indicators import obv_flow_inflection  # noqa: E402
 from backend.pipeline import (  # noqa: E402
     COMPOSITE_WEIGHTS,
     TRIGGER_AC_MIN_SCORE,
+    TRIGGER_BR_SHRINK_FRAC,
+    TRIGGER_MT_SHRINK_FRAC,
     StageResult,
     _reweight_for_trigger,
     classify_trigger,
     compute_composite,
 )
+import backend.pipeline as _pipeline  # noqa: E402
 from backend.stages.volume import VELOCITY_MARGIN_BONUS  # noqa: E402
 
 
@@ -179,19 +182,42 @@ def test_reweight_sums_to_one() -> None:
     print("PASS reweight_sums_to_one")
 
 
-def test_pre_breakout_reduces_vd_weight() -> None:
-    """Pre-breakout regime halves VD weight; freed share goes to LT + AC."""
+def test_pre_breakout_reduces_vd_and_br_weight() -> None:
+    """Pre-breakout regime shrinks VD AND the not-yet-applicable BR leg; the
+    total freed weight is split equally to LT + AC (sum preserved)."""
     original = COMPOSITE_WEIGHTS
     adj = _reweight_for_trigger(original, "pre_breakout")
     assert adj["VD"] < original["VD"] - 1e-9, (adj["VD"], original["VD"])
-    freed = original["VD"] - adj["VD"]
-    assert abs(freed - original["VD"] * 0.5) < 1e-9
+    assert adj["BR"] < original["BR"] - 1e-9, (adj["BR"], original["BR"])
+    freed_vd = original["VD"] - adj["VD"]
+    freed_br = original["BR"] - adj["BR"]
+    assert abs(freed_vd - original["VD"] * TRIGGER_MT_SHRINK_FRAC) < 1e-9
+    assert abs(freed_br - original["BR"] * TRIGGER_BR_SHRINK_FRAC) < 1e-9
+    total_freed = freed_vd + freed_br
     lt_bump = adj["LT"] - original["LT"]
     ac_bump = adj["AC"] - original["AC"]
-    assert abs(lt_bump - freed / 2) < 1e-9
-    assert abs(ac_bump - freed / 2) < 1e-9
-    print(f"PASS pre_breakout weight shift: VD {original['VD']:.3f} -> {adj['VD']:.3f}, "
+    assert abs(lt_bump - total_freed / 2) < 1e-9, (lt_bump, total_freed)
+    assert abs(ac_bump - total_freed / 2) < 1e-9, (ac_bump, total_freed)
+    print(f"PASS pre_breakout weight shift: VD->{adj['VD']:.3f} BR->{adj['BR']:.3f}, "
           f"LT +{lt_bump:.3f}, AC +{ac_bump:.3f}")
+
+
+def test_br_relief_lifts_prebreakout_composite() -> None:
+    """A strong-AC pre-breakout (BR fail) scores strictly higher WITH BR relief
+    than with it disabled — the fix that lifts quiet accumulation bases over tau."""
+    stages = _stages(
+        ac_pass=True, br_pass=False,
+        ac_score=0.8, lt_score=0.7, cs_score=0.6, vd_score=0.5,
+    )
+    s_with = compute_composite(stages)
+    saved = _pipeline.TRIGGER_BR_SHRINK_FRAC
+    try:
+        _pipeline.TRIGGER_BR_SHRINK_FRAC = 0.0     # disable BR relief
+        s_without = compute_composite(stages)
+    finally:
+        _pipeline.TRIGGER_BR_SHRINK_FRAC = saved
+    assert s_with > s_without + 1e-9, (s_with, s_without)
+    print(f"PASS BR relief lifts pre-breakout composite: {s_without:.4f} -> {s_with:.4f}")
 
 
 def test_sos_breakout_keeps_vd_weight() -> None:
@@ -621,7 +647,8 @@ def main() -> int:
     print("=" * 60)
     tests = [
         test_reweight_sums_to_one,
-        test_pre_breakout_reduces_vd_weight,
+        test_pre_breakout_reduces_vd_and_br_weight,
+        test_br_relief_lifts_prebreakout_composite,
         test_sos_breakout_keeps_vd_weight,
         test_classify_trigger_pre_breakout,
         test_classify_trigger_pre_breakout_marginal_AC_denied,

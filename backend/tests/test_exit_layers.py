@@ -68,19 +68,35 @@ class TestDay45HalfR(unittest.TestCase):
 
 
 class TestDistributionDayCount(unittest.TestCase):
-    def test_counts_downclose_on_heavier_volume(self):
-        closes = pd.Series([100] * 12 + [99, 98, 97, 96])
-        vols = pd.Series([1000] * 12 + [1100, 1200, 1300, 1400])
-        self.assertEqual(distribution_day_count(closes, vols, lookback=15), 4)
+    # ADV-relative rule (2026-08-04): a distribution day is a down-close on volume
+    # ABOVE the trailing 20d average — NOT merely above the prior day (that loose
+    # form tripped >= 3 on a majority of stocks). ADV is measured on the prefix
+    # before the 15-bar window; need >= 15 + 20 + 1 = 36 bars.
+    def test_counts_only_heavy_volume_downcloses(self):
+        prefix_c, prefix_v = [100.0] * 45, [1000.0] * 45          # adv20 -> 1000
+        win_c = [99, 100, 99, 100, 99, 100, 99, 100, 100, 100, 100, 100, 100, 100, 100]
+        win_v = [1500, 1000, 1500, 1000, 1500, 1000, 800, 1000, 1000, 1000, 1000,
+                 1000, 1000, 1000, 1000]
+        closes = pd.Series(prefix_c + win_c)
+        vols = pd.Series(prefix_v + win_v)
+        # 3 down-closes on 1500 (> adv 1000); the 4th down-close is on 800 (< adv)
+        # and must NOT count.
+        self.assertEqual(distribution_day_count(closes, vols, lookback=15), 3)
 
-    def test_flat_and_light_volume_not_counted(self):
-        closes = pd.Series([100] * 16)                 # no down closes
-        vols = pd.Series([1000] * 16)
+    def test_light_volume_downcloses_not_counted(self):
+        # Every down-close is on volume ABOVE the PRIOR day but BELOW the 20d avg.
+        # The old (prior-day) rule would have counted these; the ADV rule must not.
+        prefix_c, prefix_v = [100.0] * 45, [2000.0] * 45          # adv20 -> 2000
+        win_c = [99, 100] * 7 + [99]
+        win_v = [1100, 1050] * 7 + [1100]                          # all < adv 2000
+        closes = pd.Series(prefix_c + win_c)
+        vols = pd.Series(prefix_v + win_v)
         self.assertEqual(distribution_day_count(closes, vols, lookback=15), 0)
 
     def test_short_history_zero(self):
         self.assertEqual(
-            distribution_day_count(pd.Series([100, 99]), pd.Series([1, 2]), lookback=15),
+            distribution_day_count(pd.Series([100.0] * 20), pd.Series([1000.0] * 20),
+                                   lookback=15),
             0,
         )
 

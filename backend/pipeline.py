@@ -147,10 +147,28 @@ HARD_GATE_IDS, COMPOSITE_WEIGHTS, COMPOSITE_TAU = _load_weight_config()
 # results and rebalance the weight vector. Sum stays exactly 1.0 — we only
 # move weight between stages, never mint or destroy it.
 #
+# BR relief (2026-08-03): a pre-breakout base has BR *failed* only because the
+# breakout hasn't fired yet — BR is not-applicable, not a real negative. Counting
+# its full 0.20 weight against the setup handicaps every genuine accumulation base
+# vs a broken-out name judged at the SAME tau, so strong quiet coils (POWERGRID,
+# DLF, DIXON, ...) sit just under tau and never surface. We therefore also relieve
+# a fraction of the BR weight in the pre_breakout regime, redistributing it to the
+# accumulation legs — the same structural move already made for VD. Gated by the
+# pre_breakout regime (AC.score >= 0.6), so only genuinely strong coils benefit.
+# Set TRIGGER_BR_SHRINK_FRAC = 0.0 to disable (exact pre-2026-08-03 behaviour).
+#
 # Fix points:
 #     TRIGGER_MT_STAGE_ID     : the mid-term-flow stage id (default "VD")
 #     TRIGGER_MT_SHRINK_FRAC  : fraction of MT weight redistributed on
 #                                pre-breakout (default 0.5 = halve MT)
+#     TRIGGER_BR_STAGE_ID     : the breakout stage id (default "BR")
+#     TRIGGER_BR_SHRINK_FRAC  : fraction of the not-yet-applicable BR weight
+#                                redistributed on pre-breakout (default 0.5).
+#                                Half, not full — a pre-breakout still INTENDS to
+#                                break out, so BR isn't wholly irrelevant, and
+#                                full relief would let AC dominate the composite.
+#                                Magnitude is a starting point for the RL bandit
+#                                to ratify on outcomes, per PRINCIPLES §9.
 #     TRIGGER_MT_REDISTRIBUTE : ordered stage ids to receive the freed weight;
 #                                split equally (default ("LT", "AC"))
 #     TRIGGER_AC_MIN_SCORE    : minimum AC.score for a pre_breakout admission
@@ -163,6 +181,8 @@ HARD_GATE_IDS, COMPOSITE_WEIGHTS, COMPOSITE_TAU = _load_weight_config()
 
 TRIGGER_MT_STAGE_ID: str = "VD"
 TRIGGER_MT_SHRINK_FRAC: float = 0.5
+TRIGGER_BR_STAGE_ID: str = "BR"
+TRIGGER_BR_SHRINK_FRAC: float = 0.5
 TRIGGER_MT_REDISTRIBUTE: tuple[str, ...] = ("LT", "AC")
 TRIGGER_AC_MIN_SCORE: float = 0.6
 
@@ -206,21 +226,32 @@ def _reweight_for_trigger(
     """Return an adjusted copy of `weights` given the trigger regime.
 
     Only pre_breakout adjusts today. sos_breakout and neutral are pass-through.
-    The sum is preserved to within 1e-9 (invariant we assert on).
+    For a pre_breakout setup we shrink the mid-term-flow (VD) leg AND the
+    not-yet-applicable breakout (BR) leg, then redistribute the freed weight
+    equally to the accumulation legs (LT, AC). The sum is preserved to within
+    1e-9 (invariant we assert on).
     """
     if regime != "pre_breakout":
         return dict(weights)
-    mt_id = TRIGGER_MT_STAGE_ID
-    w_mt = float(weights.get(mt_id, 0.0))
-    if w_mt <= 0.0:
-        return dict(weights)
+    adjusted = dict(weights)
     receivers = [s for s in TRIGGER_MT_REDISTRIBUTE if weights.get(s, 0.0) > 0.0]
     if not receivers:
-        return dict(weights)
-    freed = w_mt * TRIGGER_MT_SHRINK_FRAC
-    share = freed / len(receivers)
-    adjusted = dict(weights)
-    adjusted[mt_id] = w_mt - freed
+        return adjusted
+    # Shrink each relieved leg by its fraction; pool the freed weight.
+    total_freed = 0.0
+    for sid, frac in (
+        (TRIGGER_MT_STAGE_ID, TRIGGER_MT_SHRINK_FRAC),
+        (TRIGGER_BR_STAGE_ID, TRIGGER_BR_SHRINK_FRAC),
+    ):
+        w = float(adjusted.get(sid, 0.0))
+        if w <= 0.0 or frac <= 0.0:
+            continue
+        freed = w * frac
+        adjusted[sid] = w - freed
+        total_freed += freed
+    if total_freed <= 0.0:
+        return adjusted
+    share = total_freed / len(receivers)
     for r in receivers:
         adjusted[r] = float(adjusted.get(r, 0.0)) + share
     return adjusted
@@ -234,8 +265,9 @@ def compute_composite(stage_results: dict[str, "StageResult"]) -> float:
     LLR detector under Gaussian noise assumptions on the margins.
 
     Weights are trigger-contextual: for a pre-breakout setup (AC pass, BR
-    fail) the mid-term-flow weight is halved and redistributed to LT/AC. See
-    _reweight_for_trigger for the exact mapping and rationale.
+    fail) the mid-term-flow AND the not-yet-applicable breakout weights are
+    partially redistributed to LT/AC. See _reweight_for_trigger for the exact
+    mapping and rationale.
     """
     regime = classify_trigger(stage_results)
     weights = _reweight_for_trigger(COMPOSITE_WEIGHTS, regime)

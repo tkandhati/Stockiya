@@ -100,7 +100,8 @@ mid-term flow. At composite time we now classify the trigger regime from
 which gates fired and rebalance the weights (sum-preserving):
 
 ```
-pre_breakout   AC.score ≥ 0.6  AND  BR fail   →  VD × 0.5; freed share → LT + AC
+pre_breakout   AC.score ≥ 0.6  AND  BR fail   →  VD × 0.5 AND BR × 0.5 (BR not-yet-
+                                                  applicable, 2026-08-03); freed → LT + AC
 sos_breakout   BR pass                        →  no change (a new-high on weak flow IS a trap)
 neutral        neither                        →  no change
 ```

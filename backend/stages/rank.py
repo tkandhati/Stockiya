@@ -43,6 +43,8 @@ import pandas as pd
 
 from ..early_accumulation import assess_early_accumulation
 from ..indicators import (
+    avwap_breakdown,
+    distribution_day_count,
     effort_vs_result_ok,
     ma_stack_aligned,
     obv,
@@ -51,6 +53,13 @@ from ..indicators import (
     volume_spike_event,
 )
 from ..pipeline import COMPOSITE_WEIGHTS, PipelineResult
+# Reuse the EXACT exit-watch thresholds so a stock that WOULD exit-flip on day 0
+# is kept out of the picks — entry and exit stay in lockstep by construction.
+from ..signal_trajectory import (
+    AVWAP_ANCHOR_LOOKBACK,
+    AVWAP_CONFIRM_CLOSES,
+    DIST_DAY_EXIT_COUNT,
+)
 from ..volume_signals import compute as compute_volume_signals
 
 log = logging.getLogger("rank")
@@ -71,6 +80,18 @@ STEALTH_DEMAND_BONUS_MIN: float = 1.5   # tunable — right-edge up/down floor (
 # not entry", backend/volume_signals.py) OUT of the top-N picks. They may clear
 # the composite, but we refuse to present distribution as a buy. Reversible.
 EXCLUDE_MISSED_ENTRY: bool = True       # tunable
+
+# Day-0 coherence gate (2026-08-03): keep setups that would IMMEDIATELY trip the
+# exit monitor out of the picks, so the picks page and the positions page tell
+# the same story on day 0 (no "BUY here / EXIT here" on the same stock). Uses the
+# SAME distribution-day + AVWAP-breakdown rules and thresholds as the exit layer
+# (imported from signal_trajectory). Reversible.
+EXCLUDE_DAY0_EXIT_WATCH: bool = True    # tunable
+
+# Also drop entry_timing == "late" (price already run) from the top-N. Off by
+# default — "late" is extended-but-not-distribution, so excluding it is a
+# stricter policy the user can opt into; the reported bug does not require it.
+EXCLUDE_LATE_ENTRY: bool = False        # tunable
 
 
 # --------------------------------------------------------------------------- #
@@ -234,6 +255,25 @@ def rank_survivors(
         except Exception:
             log.exception("rank: volume-signature timing failed for %s", r.symbol)
 
+        # Day-0 coherence: would this setup IMMEDIATELY trip the exit monitor?
+        # Same rules/thresholds the positions page uses (distribution-day cluster,
+        # AVWAP breakdown). If so, we must not present it as a buy today.
+        day0_exit_watch: Optional[str] = None
+        if df is not None:
+            try:
+                dd = distribution_day_count(df["Close"], df["Volume"], lookback=15)
+                if dd >= DIST_DAY_EXIT_COUNT:
+                    day0_exit_watch = f"{dd} distribution days (>= {DIST_DAY_EXIT_COUNT})"
+                else:
+                    avb = avwap_breakdown(
+                        df, anchor_lookback=AVWAP_ANCHOR_LOOKBACK,
+                        confirm=AVWAP_CONFIRM_CLOSES,
+                    )
+                    if avb and avb.get("broke"):
+                        day0_exit_watch = "AVWAP breakdown from base low"
+            except Exception:
+                log.exception("rank: day-0 exit-watch failed for %s", r.symbol)
+
         r.confirmation_score = round(confirmation, 4)
         r.confirmation_components = {
             "gate_margin_sum": round(margin, 4),
@@ -243,26 +283,24 @@ def rank_survivors(
             "early_accumulation": early_accum,
             "entry_timing": entry_timing,
             "weinstein_stage": weinstein_stage,
+            "day0_exit_watch": day0_exit_watch,
         }
 
     # ---- Sort + select ----
     survivors.sort(key=lambda x: x.confirmation_score, reverse=True)
 
-    # Self-Veto Override: never surface a "missed" (Stage 4 / distribution) setup
-    # in the top-N — our own volume lens calls it "exit zone, not entry". If the
-    # veto leaves fewer than top_n actionable setups we present FEWER (honest),
-    # never backfilling with a distribution name. Reversible via EXCLUDE_MISSED_ENTRY.
-    if EXCLUDE_MISSED_ENTRY:
-        pool, missed = _partition_missed(survivors)
-        if missed:
-            log.info(
-                "rank: excluded %d 'missed' (Stage 4/distribution) setup(s) from "
-                "top-%d: %s", len(missed), top_n, ", ".join(r.symbol for r in missed),
-            )
-    else:
-        pool = list(survivors)
+    # Keep unsuitable-to-BUY setups out of the top-N: Stage-4/distribution
+    # ("missed"), optionally already-run ("late"), and anything that would trip
+    # the exit monitor on day 0. If this leaves fewer than top_n we present FEWER
+    # (honest) rather than backfill with a name we'd immediately sell.
+    actionable, excluded = _partition_selectable(survivors)
+    if excluded:
+        log.info(
+            "rank: excluded %d setup(s) from top-%d: %s", len(excluded), top_n,
+            "; ".join(f"{r.symbol} [{reason}]" for r, reason in excluded),
+        )
 
-    selected = pool[:top_n]
+    selected = actionable[:top_n]
     for rank, r in enumerate(selected, start=1):
         r.selected = True
         r.rank = rank
@@ -270,16 +308,35 @@ def rank_survivors(
     return selected
 
 
-def _partition_missed(
-    survivors: list[PipelineResult],
-) -> tuple[list[PipelineResult], list[PipelineResult]]:
-    """Split survivors into (actionable, missed) by the volume-signature
-    entry-timing recorded on confirmation_components. Pure — unit-testable
-    without OHLCV. A missing/unknown timing is treated as actionable (fail-open).
+def _selection_veto_reason(r: PipelineResult) -> Optional[str]:
+    """Why this survivor must NOT be surfaced as a buy today, or None if it may.
+
+    Pure — reads only confirmation_components (entry_timing / day0_exit_watch),
+    so it is unit-testable without OHLCV and fail-open on missing data. Honors
+    the EXCLUDE_* switches.
     """
+    comps = getattr(r, "confirmation_components", None) or {}
+    et = comps.get("entry_timing")
+    if EXCLUDE_MISSED_ENTRY and et == "missed":
+        return "missed (Stage 4 / distribution)"
+    if EXCLUDE_LATE_ENTRY and et == "late":
+        return "late (price already run)"
+    if EXCLUDE_DAY0_EXIT_WATCH and comps.get("day0_exit_watch"):
+        return f"day-0 exit-watch: {comps['day0_exit_watch']}"
+    return None
+
+
+def _partition_selectable(
+    survivors: list[PipelineResult],
+) -> tuple[list[PipelineResult], list[tuple[PipelineResult, str]]]:
+    """Split survivors into (actionable, excluded[(result, reason)]) for top-N
+    selection. Pure; see _selection_veto_reason for the rules."""
     actionable: list[PipelineResult] = []
-    missed: list[PipelineResult] = []
+    excluded: list[tuple[PipelineResult, str]] = []
     for r in survivors:
-        et = (getattr(r, "confirmation_components", None) or {}).get("entry_timing")
-        (missed if et == "missed" else actionable).append(r)
-    return actionable, missed
+        reason = _selection_veto_reason(r)
+        if reason:
+            excluded.append((r, reason))
+        else:
+            actionable.append(r)
+    return actionable, excluded

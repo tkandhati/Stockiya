@@ -821,24 +821,41 @@ def obv_bullish_divergence(df: pd.DataFrame, lookback: int = 20) -> DivergenceRe
 # --------------------------------------------------------------------------- #
 
 def distribution_day_count(
-    close: pd.Series, volume: pd.Series, *, lookback: int = 15,
+    close: pd.Series, volume: pd.Series, *, lookback: int = 15, adv_window: int = 20,
 ) -> int:
     """Count 'distribution days' in the last `lookback` bars.
 
-    A distribution day = a down-close on HEAVIER volume than the prior session
-    (institutions selling into the tape). PRINCIPLES §5 treats >= 3 within 15
-    sessions as an exit trigger. Pure; returns 0 on short history.
+    A distribution day = a down-close on volume ABOVE the trailing
+    `adv_window`-day average (institutional selling on heavy volume). Matches the
+    [DV] stage's dist-day rule (backend/stages/distribution_veto.py) so entry and
+    exit agree on what 'distribution' means. ADV is measured on the bars BEFORE
+    the window so a distribution day cannot inflate its own baseline. Returns 0
+    on insufficient history.
+
+    NOTE (2026-08-03 fix): the original form counted any down-close whose
+    volume merely exceeded the PRIOR DAY's — ~1-in-4 bars by chance, so it tripped
+    >= 3 on a MAJORITY of stocks (including healthy accumulation bases) and made
+    the exit monitor flag almost everything. The ADV-relative rule below is the
+    correct 'heavy-volume selling' definition and matches [DV].
     """
-    if close is None or volume is None or len(close) < lookback + 1:
+    if close is None or volume is None:
+        return 0
+    n = len(close)
+    if n < lookback + adv_window + 1:
         return 0
     c = close.to_numpy()
     v = volume.to_numpy()
-    n = len(c)
+    prefix = v[: n - lookback]
+    if len(prefix) < adv_window:
+        return 0
+    adv = float(prefix[-adv_window:].mean())
+    if adv <= 0:
+        return 0
     count = 0
     for i in range(n - lookback, n):
         if i <= 0:
             continue
-        if c[i] < c[i - 1] and v[i] > v[i - 1]:
+        if c[i] < c[i - 1] and v[i] > adv:
             count += 1
     return count
 

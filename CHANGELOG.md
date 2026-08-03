@@ -1,5 +1,102 @@
 # Changelog
 
+## 2026-08-03 — Increase pre-breakout picks: relieve the not-yet-applicable BR leg + top_n 3→5
+
+Diagnosed against the hand-copied `picks_2026-07-31.json` / `picks_2026-08-03.json`
+(no traces for these dates — worked from the picks + `closest_to_firing` +
+`pulled_down_by`). Findings:
+- Both days already deliver **3/3 pre-breakout** picks (all `tier=early`, all
+  BR-fail per `gate_confirmation_status`). The recent work holds.
+- The strongest quiet accumulation bases (POWERGRID, DLF, DIXON, CESC, ...) sit at
+  composite **0.15–0.22 vs τ=0.28**, EVERY one `pulled_down_by = BR`. Example:
+  POWERGRID — "close 284.80 not ≥ 20d high 290.95 (no breakout); volume 0.56×
+  adv (dry-up); close at 40% of candle." A textbook pre-breakout base.
+
+Root cause: a pre-breakout base has BR *failed* only because the breakout hasn't
+fired yet — BR is **not-applicable**, not a real negative — yet its full 0.20
+weight is counted against the setup while τ is calibrated for the whole gate set.
+The 2026-07-13 pre_breakout reweight relieved VD but not BR.
+
+Fix (structural, same pattern as the VD reweight — NOT a threshold hand-tuned to
+these two days):
+- `pipeline._reweight_for_trigger` now also relieves the BR leg in the
+  `pre_breakout` regime: `TRIGGER_BR_SHRINK_FRAC` (default **0.5** — half, so a
+  pre-breakout still "intends" to break out and AC can't dominate) of BR's weight
+  is pooled with the VD relief and split to LT + AC. Sum-preserving. Gated by the
+  existing `pre_breakout` regime (`AC.score ≥ 0.6`), so only genuinely strong
+  coils benefit. Set `TRIGGER_BR_SHRINK_FRAC = 0.0` for exact prior behaviour.
+- `orchestrator.DEFAULT_TOP_N` 3 → 5 so the extra bases that now clear τ actually
+  surface (a cap, not a floor — thin days still show fewer).
+- Only the `pre_breakout` regime changes; `sos_breakout`/`neutral` and the τ / hard
+  gates are untouched.
+
+Honesty notes: (1) the magnitudes (0.5 relief, top_n 5) are starting points — per
+PRINCIPLES §9 the RL bandit ratifies them on ≥90d of outcomes; both are one-line
+reversible. (2) The lift only applies to bases in the `pre_breakout` regime
+(AC ≥ 0.6); if even more pre-breakout picks are wanted, `TRIGGER_AC_MIN_SCORE` is
+the next (riskier — Bajaj-Auto fragility) knob. (3) The real-world increase will
+show when the pipeline is re-run on the laptop with this code and the new picks
+copied back — I can't run it offline.
+
+Tests: `scripts/test_pre_breakout_accuracy.py` — `test_pre_breakout_reduces_vd_
+and_br_weight` (both legs shrink, freed split to LT+AC, sum preserved),
+`test_br_relief_lifts_prebreakout_composite` (strict lift with relief on vs off).
+33/33; full backend package 115/115.
+
+## 2026-08-03 — Fix distribution-day over-firing + day-0 coherence gate (picks vs positions)
+
+User report: every "Early Accumulation" pick was simultaneously flagged
+"FLIPPED / Distribution flip — exit" on the positions page, all showing **3
+distribution days in the last 15**. The scanner was recommending stocks its own
+exit monitor would sell immediately. Two root causes, both fixed; a third
+theory (an OBV legacy-vs-normalized split) was investigated and deferred — see
+below.
+
+**Root cause 1 — `distribution_day_count` was statistically far too loose.** The
+2026-08-03 exit-watch shipped it as "down-close on volume > the PRIOR DAY's" —
+that's ~1-in-4 bars by chance, so `E[count] ≈ 3.4` over 15 bars and it tripped
+`>= 3` on a MAJORITY of stocks, including healthy accumulation bases. The exit
+monitor therefore flagged almost everything as distribution.
+- Fix (`indicators.distribution_day_count`): a distribution day is now a
+  down-close on volume ABOVE the trailing 20d average (ADV), measured on the
+  bars before the window so a distribution day can't inflate its own baseline —
+  the SAME rule the `[DV]` stage already uses. Genuine quiet bases now score 0–1;
+  `>= 3` again means real repeated heavy-volume selling.
+
+**Root cause 2 — the exit-watch signals were never checked at entry.** A stock
+could clear the composite and be picked while its recent tape (distribution
+cluster / AVWAP breakdown) would trip an immediate exit — the picks page and
+positions page told different stories on day 0.
+- Fix — **day-0 coherence gate** in `rank.rank_survivors`: each survivor is now
+  checked with the SAME distribution-day + AVWAP-breakdown rules and thresholds
+  as the exit layer (imported from `signal_trajectory`:
+  `DIST_DAY_EXIT_COUNT`, `AVWAP_ANCHOR_LOOKBACK`, `AVWAP_CONFIRM_CLOSES`), and a
+  setup that would immediately exit-flip is kept OUT of the top-N. Entry and exit
+  are now in lockstep by construction. Recorded on
+  `confirmation_components.day0_exit_watch` for the trace; excluded names logged;
+  shows FEWER rather than backfilling. Reversible via `EXCLUDE_DAY0_EXIT_WATCH`.
+- The 2026-08-03 self-veto (`_partition_missed`) generalised to
+  `_partition_selectable` / `_selection_veto_reason`: excludes `entry_timing ==
+  "missed"` (default), the day-0 exit-watch (default), and — new, OFF by default
+  — `entry_timing == "late"` (`EXCLUDE_LATE_ENTRY`, opt-in; "late" is extended-
+  but-not-distribution, and the reported bug doesn't require it).
+
+**Investigated & DEFERRED — the OBV legacy-vs-normalized split.** A second
+diagnosis claimed the trajectory reads legacy `obv_slope_pct` while entry uses
+normalized `obv_norm_slope_pct`, causing false flips. Verified: the LT gate
+(`lt_flow.py`) and the trajectory BOTH use the legacy form (mutually consistent,
+symmetric +3/−3), so this is NOT the reported symptom (which is distribution
+days). It IS a real inconsistency for the `early_accumulation` badge / `[LTV]`
+(which use the normalized form), but correcting the trajectory to normalized
+requires recalibrating `FLIP_THRESHOLD_OBV_90D_PCT` on real traces — deferred
+until data is hand-copied (no offline calibration; avoids a blind change to exit
+sensitivity).
+
+Tests: `test_exit_layers.py::TestDistributionDayCount` rewritten for the ADV rule
+(heavy-volume down-closes counted, light-volume ones not); `test_missed_
+exclusion.py` → `TestPartitionSelectable` (missed / day-0 exit-watch / late-off /
+fail-open / all-vetoed). Full backend package 115/115; accuracy script 32/32.
+
 ## 2026-08-03 — Self-Veto Override at selection: "missed" (Stage 4 / distribution) setups can't reach top-N
 
 User report: picks labelled **"MISSED · exit zone, not entry"** were appearing in

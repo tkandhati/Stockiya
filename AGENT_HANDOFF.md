@@ -1,11 +1,79 @@
 # Agent Handoff
 
-Last updated: 2026-07-26
+Last updated: 2026-08-03
 
 For proposals that have been analyzed but not shipped, see `WISHLIST.md`.
 For ideas parked pending trace evidence, see `ideas.md`.
 
-## Latest Change (2026-07-26) — Accumulation gauge + delivery-% + freshness + archiver (all advisory, additive)
+## Latest Change (2026-07-31 → 2026-08-03) — Pre-breakout picks, exit coherence, risk math
+
+A connected series aimed at one goal the user pushed on repeatedly: make the
+picks **genuinely pre-breakout**, and make the exit monitor **agree with the
+picks**. Per-change detail with rationale, tests, and failure scenarios is in
+`CHANGELOG.md` (2026-07-31 and the four 2026-08-03 entries). All offline-verified:
+full backend unittest package **115/115**, `scripts/test_pre_breakout_accuracy.py`
+**33/33**, frontend `tsc --noEmit` clean. Nothing runs against the network.
+
+**The arc (in order):**
+1. **Delivery no longer re-orders the picks (2026-07-31).** `flow_interest.
+   assign_presentation_ranks` now sorts by confirmation rank first; delivery/deals
+   only break exact ties. Delivery stays a fully visible indicator — it just
+   stopped floating mature high-delivery names above earlier picks.
+2. **Pre-breakout TAG guard (`backend/pre_breakout_tag.py`).** A presentation-only
+   coherence gate on the "⚡ Pre-Breakout" badge: (1) self-veto if any internal
+   module flags distribution/extended/exit-zone; (2) coherent multi-timeframe flow
+   with a **healing carve-out** (negative-long / positive-short early bases stay
+   eligible); (3) **stealth demand** — right-edge up/down volume must prove active
+   buying. Also an additive ranker bonus #7 for stealth accumulation, and a
+   `PickCard` badge. Does NOT change selection.
+3. **Self-veto at SELECTION + day-0 coherence (`backend/stages/rank.py`).** The
+   top-N now excludes setups our own lenses would immediately sell: `entry_timing
+   == "missed"` (Stage 4 / distribution), and — the day-0 gate — anything that
+   would trip the exit monitor today (distribution-day cluster / AVWAP breakdown,
+   using the SAME thresholds as the exit layer). Picks and positions now tell the
+   same story on day 0. `_partition_selectable` / `_selection_veto_reason`.
+4. **Fixed distribution-day over-firing (`indicators.distribution_day_count`).** It
+   had counted any down-close on volume > the *prior day* (~25%/bar → tripped ≥3
+   on most stocks, so the exit monitor flagged everything). Now: down-close on
+   volume > trailing **ADV20**, matching the `[DV]` stage. This was the actual
+   cause of "every pick shows 3 distribution days → FLIPPED".
+5. **Exit upgrades.** ATR-adaptive stop + R-based T1/T2 ladder (`position_sizer`,
+   opt-in via `atr_pct`, PRINCIPLES §3); day-45 tighten → `entry − 0.5R`; two §5
+   exit-watch signals wired live (distribution-day cluster + anchored-VWAP
+   breakdown); and the B1.5 micro-stop label fixed (a close *below* resistance no
+   longer prints "holding above").
+6. **Increase pre-breakout picks (BR relief).** `pipeline._reweight_for_trigger`
+   now relieves the not-yet-applicable **BR** leg in the `pre_breakout` regime
+   (not just VD) → strong quiet accumulation bases clear τ instead of sitting just
+   under it; `DEFAULT_TOP_N` 3 → 5 so they surface.
+
+**Tunables & reversal knobs** (every behavior change above is one edit to revert):
+
+| Knob | File | Default | Effect / revert |
+|---|---|---|---|
+| `TRIGGER_BR_SHRINK_FRAC` | `pipeline.py` | `0.5` | BR-leg relief for pre-breakouts; `0.0` = off |
+| `TRIGGER_AC_MIN_SCORE` | `pipeline.py` | `0.6` | Strong-coil floor for the pre_breakout regime (riskier knob) |
+| `DEFAULT_TOP_N` | `orchestrator.py` | `5` | Max picks shown (was 3) |
+| `EXCLUDE_MISSED_ENTRY` | `stages/rank.py` | `True` | Drop Stage-4/distribution from top-N |
+| `EXCLUDE_DAY0_EXIT_WATCH` | `stages/rank.py` | `True` | Drop would-immediately-exit setups |
+| `EXCLUDE_LATE_ENTRY` | `stages/rank.py` | `False` | Opt-in: also drop "late" (price already run) |
+| `STEALTH_DEMAND_BONUS_MIN` | `stages/rank.py` | `1.5` | Right-edge up/down for the ranker bonus |
+| `HEALING_CARVE_OUT_ENABLED` | `pre_breakout_tag.py` | `True` | `False` = literal strict flow unanimity |
+| `STEALTH_DEMAND_MIN_RATIO` | `pre_breakout_tag.py` | `1.5` | Right-edge demand floor for the tag |
+| `ATR_STOP_MULT` / `T1_R_MULT` / `T2_R_MULT` | `position_sizer.py` | `2.0 / 1.0 / 2.0` | Adaptive stop + R ladder (engaged when `atr_pct` passed) |
+| `DIST_DAY_EXIT_COUNT` | `signal_trajectory.py` | `3` | Distribution days that flip a position (and gate entry) |
+| `AVWAP_ANCHOR_LOOKBACK` / `AVWAP_CONFIRM_CLOSES` | `signal_trajectory.py` | `90 / 2` | AVWAP-breakdown exit (and entry gate) |
+| `FAILED_BR_VOLUME_MULT` | `signal_trajectory.py` | `1.5` | B1.5 micro-stop sensitivity |
+
+**Deferred (needs data, not shipped):** the trajectory's OBV-90d indicator uses
+the legacy `obv_slope_pct` while the early-accum badge / `[LTV]` use the normalized
+`obv_norm_slope_pct`. Real inconsistency for the badge, but recalibrating
+`FLIP_THRESHOLD_OBV_90D_PCT` needs ≥20–30 hand-copied traces — don't blind-change.
+Also: the real pre-breakout-count increase (change #6) only shows when the pipeline
+is re-run on the laptop with this code and new `picks_*.json` copied back;
+`scripts/analyze_prebreakout.py` re-diagnoses them offline.
+
+## Previous Change (2026-07-26) — Accumulation gauge + delivery-% + freshness + archiver (all advisory, additive)
 
 Several **advisory, additive** layers on top of the existing picks/positions —
 **none change selection, sizing, or exits.** All offline-verified (stdlib
