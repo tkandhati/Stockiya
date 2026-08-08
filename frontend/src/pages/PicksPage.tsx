@@ -7,6 +7,7 @@ import { DataHealthPill } from '../components/DataHealthPill'
 import { ClosestToFiringPanel } from '../components/ClosestToFiringPanel'
 import { PickCard } from '../components/PickCard'
 import { RegimeBanner } from '../components/RegimeBanner'
+import { StrategyTabs } from '../components/StrategyTabs'
 import type { PicksResponse } from '../types'
 
 export function PicksPage() {
@@ -23,6 +24,7 @@ export function PicksPage() {
 
   return (
     <div className="mx-auto max-w-6xl px-6 py-10">
+      <StrategyTabs />
       <header className="flex flex-wrap items-end justify-between gap-4">
         <div>
           <h1 className="flex items-center gap-2 text-2xl font-bold text-slate-900">

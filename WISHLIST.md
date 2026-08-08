@@ -17,6 +17,52 @@ Rules for this file:
 
 ## Active — approved, awaiting the right window
 
+### `[INS]` Lens 3 — indicator attribution (which check is helping, which to penalize/remove)
+
+**Requested:** 2026-08-08, alongside the insights module (see CHANGELOG 2026-08-08).
+Make it clear, per indicator/check, which ones are **helping** (keep / weight up)
+and which to **penalize or remove**.
+
+**Foundation already on disk.** `backend/sliding_window_learn.py` already computes
+a per-stage **IC** (Pearson correlation between a stage's entry-day margin and the
+pick's T+90 return): IC > 0 = the score predicts good outcomes (helping); IC < 0 =
+inversely predictive (penalize / investigate). And the insights module's
+**closed-bundle ledger is the correct substrate** — a check can only be judged on
+*matured* picks, which is exactly the closed side of the ledger.
+
+**Method — margin-lift, NOT pass/fail.** You can't fairly judge a *gate* by
+comparing traded vs rejected names: we only have outcomes for names we *selected*,
+and those nearly all passed the gates (selection bias). So attribution splits each
+check's *score* into strong vs weak halves among matured picks and compares
+win-rate + mean return (plus the IC). Per-check verdict:
+`HELPING` / `HURTING` (penalize-or-remove candidate) / `NEUTRAL` /
+`INSUFFICIENT` (below the matured-sample floor — labelled, never hidden).
+
+**Guardrail — advisory only.** Lens 3 *suggests*; it must not change weights. The
+champion-challenger tuner (`scripts/tune_weights.py`) keeps ownership of weight
+changes with its safety floors (`MIN_OUTCOMES_TO_TUNE = 20`, strict-beat ratchet).
+The real "does removing it help?" truth-test is a counterfactual backtest
+(`backend/backtest.py`). Insights points; the tuner decides. Keeps us on the
+additive-over-redesign and deterministic principles.
+
+**Why deferred (the "right window"):** data-starved today — most of the current
+bundle is still OPEN (3-week-to-3-month holds), so `outcomes.jsonl` has too few
+matured picks per stage for an honest verdict. It sharpens as bundles close. This
+is also exactly the "check the traces first" discipline in `ideas.md`.
+
+**Scope / fix-points if/when it ships:**
+- New `Lens 3` block in the window report (md + json). Reads `outcomes.jsonl` +
+  `run_*.jsonl` traces; no new writes to either.
+- Stage granularity first (aligns 1:1 with the tuner's `SCORED_STAGE_IDS`);
+  sub-feature drill-down (OBV slope / CMF / ADI / delivery-%) is a later refinement.
+- `ATTRIB_HORIZON_DAYS = 90`, `ATTRIB_MIN_MATURED` (per-stage sample floor below
+  which the verdict is `INSUFFICIENT`), strong/weak split at the median, IC/lift
+  thresholds for the HELPING/HURTING verdict.
+- Running (all matured to date) by default, with a per-window slice available.
+
+**Signal to build:** once the first bundles close and `outcomes.jsonl` clears
+`ATTRIB_MIN_MATURED` matured picks for a stage.
+
 ### Real ATR runway for the adversity buffer
 
 The buffer uses the stock's **entry-time** `atr_pct` (from the entry `[CS]`

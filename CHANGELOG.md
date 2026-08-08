@@ -1,5 +1,72 @@
 # Changelog
 
+## 2026-08-08 — New `[INS]` insights module: 20-day window "bundles" + per-check elimination funnel + per-pick ledger
+
+Shipped `backend/insights.py` — a **separate, read-only, deterministic** module
+(same posture as `backend/run_summary.py`): it never touches selection, scoring,
+the portfolio, the picks JSON, or the trace files. It only *reads* artifacts other
+stages already wrote and emits its own reports under `data/insights/`.
+
+**What it answers (the user's three asks + the 20-day cadence + "bundles"):**
+1. **Picks & elimination by each check** — an aggregate funnel over a whole
+   20-trading-day window: for every gate (`U → I → HR → LT → AC → CS → VD → BR`)
+   how many names were evaluated, passed, and eliminated, plus a de-duplicated
+   sample of the names dropped at each check.
+2. **Every pick tracked by stock AND date** — a per-pick lifecycle ledger keyed
+   by `(symbol, entry_date)`: OPEN / CLOSED, hold length, exit reason, realized
+   P&L, pulled from `portfolio.csv`.
+3. **Bundles (closed vs open for next window)** — the picks entered in a window
+   form an **entry-cohort bundle**. A bundle stays OPEN — carried into the next
+   window's report — until *every* non-declined pick in it reaches a terminal
+   portfolio exit; only then is it a CLOSED (booked) bundle.
+
+**The window / bundle model.** The trading-day calendar is the sorted set of
+`picks_<date>.json` dates (those files ARE the real trading days — no NSE holiday
+table needed). It is sliced into **non-overlapping 20-trading-day windows**
+(`WINDOW_TRADING_DAYS`). A pick is CLOSED when its portfolio status is terminal
+(`stopped / target_hit / timed_out / exit_* / superseded`) **and** `exit_date`
+is on-or-before the window's end. Comparing `exit_date ≤ as_of` (the window's last
+day) — never a wall clock — is what makes every historical window report
+byte-identical on re-run. A `declined` pick is treated as resolved (never holds a
+bundle open), mirroring the outcome tracker.
+
+**Design decisions (confirmed with the user):** entry-cohort bundles (not a flat
+closed/open split); portfolio-terminal-exit = closed (not outcome-horizon
+maturity).
+
+**Outputs (atomic writes):** `data/insights/window_<NN>_<start>_<end>.md`
+(human narration) + `.json` (sorted-key, versioned `SCHEMA_VERSION`) +
+`open_bundles.json` (the rolling "open for next window" set — a derived
+convenience output, always safe to overwrite).
+
+**Perf:** the traces dir holds thousands of files, so funnel discovery is a
+single `os.scandir` pass filtered by an in-memory set of the window's days — not
+one directory glob per day.
+
+**Cadence:** analysis unit is 20 trading days. Safe to run daily — it re-emits the
+latest *complete* window (byte-identical) until a new one forms; catch-up is just
+recompute. CLI: `python -m backend.insights [--all | --window N | --dry-run |
+--data-dir DIR]`.
+
+Verified on the hand-copied data (read-only, no fetch): **44 trading days → 2
+complete windows.** W2 (2026-07-02 → 2026-07-24): 1862 ticker-days screened → 9
+distinct picks; funnel shows **AC eliminates 94%, BR 98%** (consistent with
+pre-breakout bases where BR is not-yet-applicable). Bundle W2: 22 picks, 16 closed
+(mostly `superseded` churn + one stop-out + two `declined`), **6 open → carried
+forward**. W1 is empty (the portfolio only starts inside W2) and correctly shows
+nothing.
+
+Tests: `backend/tests/test_insights.py` — 15/15 (window slicing, pick
+classification incl. future-dated exit + declined + superseded, funnel counts +
+sample names, bundle carry-forward across two windows, byte-identical rerun,
+graceful under-a-window).
+
+Not yet (deliberately): **indicator attribution** ("which check is helping, which
+to penalize/remove") is parked in `WISHLIST.md` — it needs matured `outcomes.jsonl`
+and most of the current bundle is still open. The scheduling hook (Task Scheduler
+vs a guarded `nightly.py` step) and a UI tab are also unbuilt — the module was
+requested as standalone.
+
 ## 2026-08-03 — Increase pre-breakout picks: relieve the not-yet-applicable BR leg + top_n 3→5
 
 Diagnosed against the hand-copied `picks_2026-07-31.json` / `picks_2026-08-03.json`

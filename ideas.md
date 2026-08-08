@@ -8,6 +8,43 @@ Before entertaining any new scoring-logic change (tilts, new stages, threshold s
 
 ---
 
+## Price-trend strategy — maturation to a measurable second strategy
+
+**Date parked:** 2026-08-08
+**Status:** Deferred — shipped as an isolated V1 tab; these lift it from a parallel gadget to a strategy you can measure and compare
+
+### Context
+
+Codex's `backend/price_trend/` is a pure price-structure (High/Low/Close only, Volume firewalled out) pre-breakout scanner, exposed as its own `/api/price-trends` endpoint + `/price-trend` tab. It runs fully parallel to the volume-accumulation spine and is deliberately **out of scoring** (blending price-only "ready" into the composite would re-admit the false-breakouts the LT-distribution veto exists to reject). Two **must-fixes shipped 2026-08-08**: full-universe scan (was `UNIVERSE[:30]` — the alphabetical head of Nifty 300) and fetch via `backend.fetch.fetch_ohlcv` (was raw `yahoo.history_ohlcv` → firewall-blocked). The items below were deliberately deferred.
+
+### The ideas
+
+**P3 — Persist daily picks + outcome-track (the high-value one).** The scanner is ephemeral today (in-memory 15-min cache). To answer "does the price-only strategy actually work, and does it complement the volume model?", persist each day's `ready` picks and snapshot outcomes at T+21 / T+90. This plugs straight into the insights/outcome machinery: the same bundle + (future) attribution analysis could run on **both** strategies and compare hit-rates head-to-head.
+
+**P4 — Precompute once per trading day.** Replace the live 300-symbol fetch on the HTTP request thread with a nightly batch (EOD-closed bars, as-of date discipline like `picks` / `insights`). Faster first paint, stable within a day, deterministic.
+
+**P5 — Polish.** Service-level test for the sorting/caching path; name the `-0.35` / distance magic numbers; minor non-Wilder first-bar ATR nit; expose more than `MAX_RESULTS=8` (paginate) now that the whole universe is scanned.
+
+### Why parked
+
+1. The V1 tab is useful as-is once the two must-fixes land; persistence/outcomes only pay off after a few weeks of picks exist to measure.
+2. Outcome-tracking a second strategy is only worth wiring once there's appetite to compare strategies — premature before the price-only tab has proven it surfaces interesting names.
+3. **Isolation is non-negotiable:** none of these may touch the volume spine, scoring, or the shared `portfolio.csv` / `outcomes.jsonl`. Price-trend gets its OWN picks/outcomes files.
+
+### Signal to revisit
+
+- The price-trend tab is in regular use AND there's a question its ephemeral output can't answer ("is it working / is it beating volume?").
+- Then start with P3, reusing the insights bundle/attribution shapes.
+
+### Fix-points if it ever ships
+
+- Persist: new writer in `backend/price_trend/` → `data/price_trend/picks_<date>.json` (own dir; never the shared `data/picks_*.json`).
+- Outcomes: a dedicated `data/price_trend/outcomes.jsonl` + a small tracker mirroring `backend/stages/outcome.py` (own file — do NOT co-mingle with the volume model's `outcomes.jsonl`).
+- Precompute: a guarded nightly step (like the archiver) calling `get_price_trends(force=True)` and persisting; the UI reads the persisted file.
+- Keep `methodology="price_only"` and the Volume firewall in `scanner.py` intact.
+
+---
+
 ## Pre-breakout volume-based fine-tune
 
 **Date parked:** 2026-07-15

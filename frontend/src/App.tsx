@@ -4,6 +4,7 @@ import { PositionsPage } from './pages/PositionsPage'
 import { StockDetailPage } from './pages/StockDetailPage'
 import { DataHealthPage } from './pages/DataHealthPage'
 import { BacktestPage } from './pages/BacktestPage'
+import { PriceTrendPage } from './features/price-trend/PriceTrendPage'
 
 export default function App() {
   return (
@@ -13,6 +14,7 @@ export default function App() {
       <Route path="/stock/:symbol" element={<StockDetailPage />} />
       <Route path="/health" element={<DataHealthPage />} />
       <Route path="/backtest" element={<BacktestPage />} />
+      <Route path="/price-trend" element={<PriceTrendPage />} />
       {/* legacy URL — old bookmarks land on Backtest */}
       <Route path="/simulate" element={<Navigate to="/backtest" replace />} />
     </Routes>

@@ -32,6 +32,7 @@ from backend.positions_view import list_active_positions  # noqa: E402
 
 from .picks import generate_picks, get_or_generate_picks  # noqa: E402
 from .picks_cache import ist_today_iso, read_picks  # noqa: E402
+from .price_trend import router as price_trend_router  # noqa: E402
 from .schemas import (  # noqa: E402
     AccumulationDTO,
     Pick,
@@ -59,6 +60,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(price_trend_router)
 
 
 @app.on_event("startup")
