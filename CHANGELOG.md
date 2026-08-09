@@ -1,5 +1,28 @@
 # Changelog
 
+## 2026-08-09 — Price Trend single-symbol lookup (scanner unchanged)
+
+Added **Check one stock** to the Price Trend tab. A user can now enter one
+symbol and run it through the existing price-only pre-breakout scanner even
+when the ticker is outside the configured Nifty/custom universe.
+
+- New endpoint: `GET /api/price-trends/lookup?symbol=...`.
+- Bare symbols are resolved NSE-first (`SYMBOL.NS`) with a literal fallback for
+  global Yahoo tickers; exchange-qualified symbols are used as entered.
+- Matching symbols reuse the existing `PriceTrendCandidate` payload and detail
+  card. Non-matching and unavailable symbols return explicit messages.
+- Data loading uses the existing `fetch_ohlcv` abstraction, so demo, Yahoo, and
+  bhavcopy behavior stays consistent with the ranked scan.
+- Input is normalized and allow-listed before it reaches the filesystem/data
+  adapter.
+- **Scanner isolation:** `backend/price_trend/scanner.py` was not changed.
+  `lookup_price_trend()` calls the existing `scan_symbol()`; no threshold,
+  score, filter, or ranking logic was duplicated or relaxed.
+
+Validation: 11/11 focused backend tests, frontend production build, ESLint with
+0 errors (one pre-existing `PositionsPage` warning), matching and non-matching
+browser flows, and no browser console errors.
+
 ## 2026-08-08 — New `[INS]` insights module: 20-day window "bundles" + per-check elimination funnel + per-pick ledger
 
 Shipped `backend/insights.py` — a **separate, read-only, deterministic** module

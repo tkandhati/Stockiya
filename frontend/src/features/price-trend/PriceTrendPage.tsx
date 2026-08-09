@@ -1,22 +1,25 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import type { ReactNode } from 'react'
+import { useState } from 'react'
+import type { FormEvent, ReactNode } from 'react'
 import {
   ChartNoAxesCombined,
   Crosshair,
   RefreshCw,
   ScanSearch,
+  Search,
   ShieldCheck,
   TestTube2,
 } from 'lucide-react'
 import { fmtDateTimeIST } from '../../api'
 import { DataHealthPill } from '../../components/DataHealthPill'
 import { StrategyTabs } from '../../components/StrategyTabs'
-import { fetchPriceTrends } from './api'
+import { fetchPriceTrends, lookupPriceTrend } from './api'
 import { PriceTrendCard } from './PriceTrendCard'
 import type { PriceTrendResponse } from './types'
 
 export function PriceTrendPage() {
   const queryClient = useQueryClient()
+  const [symbol, setSymbol] = useState('')
   const { data, isLoading, isError, error } = useQuery({
     queryKey: ['price-trends'],
     queryFn: () => fetchPriceTrends(),
@@ -28,6 +31,13 @@ export function PriceTrendPage() {
       queryClient.setQueryData(['price-trends'], response)
     },
   })
+  const lookup = useMutation({ mutationFn: lookupPriceTrend })
+
+  function submitLookup(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const requested = symbol.trim()
+    if (requested) lookup.mutate(requested)
+  }
 
   const readyCount = data?.candidates.filter((item) => item.status === 'ready').length ?? 0
   const nearest = data?.candidates.reduce<number | null>((best, item) => {
@@ -79,6 +89,71 @@ export function PriceTrendPage() {
           <PriceTrendDemoBanner />
         </div>
       )}
+
+      <section className="mt-6 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+        <div className="flex flex-wrap items-end justify-between gap-4">
+          <div>
+            <h2 className="flex items-center gap-2 text-sm font-bold text-slate-900">
+              <Search className="h-4 w-4 text-indigo-600" />
+              Check one stock
+            </h2>
+            <p className="mt-1 text-xs text-slate-500">
+              Run any symbol through the same Price Trend logic, even when it is outside the configured universe.
+            </p>
+          </div>
+          <form onSubmit={submitLookup} className="flex w-full gap-2 sm:w-auto">
+            <label htmlFor="price-trend-symbol" className="sr-only">
+              Stock symbol
+            </label>
+            <input
+              id="price-trend-symbol"
+              value={symbol}
+              onChange={(event) => setSymbol(event.target.value)}
+              maxLength={30}
+              autoComplete="off"
+              placeholder="e.g. TATAPOWER or AAPL"
+              className="min-w-0 flex-1 rounded-lg border border-slate-300 bg-white px-3 py-2 font-mono text-sm uppercase text-slate-900 outline-none transition placeholder:font-sans placeholder:normal-case placeholder:text-slate-400 focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100 sm:w-64"
+            />
+            <button
+              type="submit"
+              disabled={!symbol.trim() || lookup.isPending}
+              className="flex shrink-0 items-center gap-2 rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <Search className="h-4 w-4" />
+              {lookup.isPending ? 'Checkingâ€¦' : 'Check stock'}
+            </button>
+          </form>
+        </div>
+
+        {lookup.isError && (
+          <div className="mt-4 rounded-lg border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800">
+            Could not check this symbol: {(lookup.error as Error).message}
+          </div>
+        )}
+
+        {lookup.data && (
+          <div className="mt-5 border-t border-slate-100 pt-5">
+            {lookup.data.candidate ? (
+              <div className="max-w-md">
+                <PriceTrendCard candidate={lookup.data.candidate} mode="lookup" />
+              </div>
+            ) : (
+              <div
+                className={`rounded-xl border p-4 text-sm ${
+                  lookup.data.price_history_available
+                    ? 'border-amber-200 bg-amber-50 text-amber-900'
+                    : 'border-slate-200 bg-slate-50 text-slate-700'
+                }`}
+              >
+                <div className="font-semibold">
+                  {lookup.data.resolved_symbol ?? lookup.data.requested_symbol}
+                </div>
+                <p className="mt-1">{lookup.data.message}</p>
+              </div>
+            )}
+          </div>
+        )}
+      </section>
 
       {data && (
         <section className="mt-7 grid grid-cols-1 gap-3 sm:grid-cols-3" aria-label="Scan summary">

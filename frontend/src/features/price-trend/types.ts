@@ -41,3 +41,12 @@ export interface PriceTrendResponse {
   methodology: 'price_only'
   candidates: PriceTrendCandidate[]
 }
+
+export interface PriceTrendLookupResponse {
+  requested_symbol: string
+  resolved_symbol: string | null
+  price_history_available: boolean
+  matches_strategy: boolean
+  message: string
+  candidate: PriceTrendCandidate | null
+}

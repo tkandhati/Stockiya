@@ -25,6 +25,36 @@ Read [ARCHITECTURE.md](./ARCHITECTURE.md) §0-§0.3 for the current-spine walkth
 
 ---
 
+## Price Trend tab (separate price-only feature)
+
+The **Price Trend** tab is independent from the volume strategy. It ranks
+stocks that are approaching a 55-day price pivot using only price structure:
+trend alignment, range compression, higher lows, ATR, and distance to
+resistance. `backend/price_trend/scanner.py` deliberately selects only
+`High`, `Low`, and `Close`; the existing volume pipeline is not called or
+modified.
+
+### Check one specific stock
+
+Use **Price Trend → Check one stock** to run a ticker through the same existing
+price-trend scanner without requiring it to be in the configured Nifty/custom
+universe.
+
+1. Enter a symbol such as `TATAPOWER`, `TATAPOWER.NS`, or `AAPL`.
+2. Bare symbols are tried as NSE first (`.NS`), then as the literal/global
+   ticker. Symbols that already include an exchange suffix are used as entered.
+3. If the stock matches the current setup, the page shows the same detailed
+   price-trend card used by the ranked scan.
+4. If price history exists but the stock does not match, the page reports that
+   it does not currently meet the existing criteria. Scanner thresholds are not
+   relaxed for manual lookups.
+
+Data availability follows `backend/fetch.py`: demo fixtures when
+`DEMO_MODE=1`, Yahoo when `DATA_SOURCE=yahoo`, or the local bhavcopy cache when
+`DATA_SOURCE=bhavcopy`.
+
+---
+
 ## Architecture — pipeline of swappable stages
 
 **Live spine (2026-07-04): v3 soft-gate composite.**
@@ -193,6 +223,8 @@ test_data/                  ← manual drop-zone for NSE historical CSVs (offlin
 | `GET /api/picks` | Today's picks (served from disk; runs pipeline if file missing) |
 | `POST /api/picks/refresh` | Force re-run the pipeline |
 | `GET /api/stock/{symbol}` | Detail panel (volume signals, sparkline, today's pick if any) |
+| `GET /api/price-trends` | Ranked price-only pre-breakout candidates |
+| `GET /api/price-trends/lookup?symbol=...` | Run one arbitrary symbol through the existing price-trend scanner |
 
 Interactive docs at <http://localhost:8000/docs> when middleware is running.
 

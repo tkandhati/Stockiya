@@ -941,6 +941,50 @@ anchors to its own scoring day's captured OBV / MA / ratio values —
 important for symbols with multiple open rows (taken paper + fresh
 suggested) or for a symbol re-picked days later.
 
+### Price Trend feature — isolated price-only path
+
+The Price Trend tab is a separate feature, not another stage in the volume
+pipeline. Its files live under `backend/price_trend/` and
+`frontend/src/features/price-trend/`.
+
+```
+ranked tab request
+  → GET /api/price-trends
+  → backend.price_trend.service.get_price_trends()
+  → fetch_ohlcv(symbol)
+  → scanner.scan_symbol(symbol, ohlcv)
+  → top candidates
+
+single-symbol request
+  → GET /api/price-trends/lookup?symbol=TATAPOWER
+  → backend.price_trend.service.lookup_price_trend()
+  → resolve TATAPOWER.NS, then TATAPOWER if needed
+  → fetch_ohlcv(resolved_symbol)
+  → the same scanner.scan_symbol(symbol, ohlcv)
+  → existing detail card, or a non-matching/unavailable message
+```
+
+**Isolation contract:** manual lookup does not duplicate, override, or relax
+the scanner. `lookup_price_trend()` calls the existing `scan_symbol()` exactly
+as the ranked path does. `backend/price_trend/scanner.py` remains the single
+source of truth for all thresholds and calculations.
+
+The lookup is not constrained by `backend.universe.UNIVERSE`. It is constrained
+only by symbol validation and by whether the configured data source can return
+enough price history. Bare symbols are NSE-first (`SYMBOL.NS`) with a literal
+fallback for global Yahoo tickers; exchange-qualified symbols are used as-is.
+
+Response contract for `GET /api/price-trends/lookup`:
+
+| Field | Meaning |
+|---|---|
+| `requested_symbol` | Normalized user input |
+| `resolved_symbol` | Ticker that produced price history, or `null` |
+| `price_history_available` | Whether the data source returned bars |
+| `matches_strategy` | Whether existing `scan_symbol()` returned a candidate |
+| `message` | Human-readable matching, non-matching, or unavailable result |
+| `candidate` | Existing `PriceTrendCandidate` detail payload, or `null` |
+
 ### HTTP API — `middleware/main.py`
 
 ```
@@ -948,6 +992,8 @@ GET  /api/health               → { status, date_ist, demo_mode }
 GET  /api/picks                → reads picks_<today>.json (runs pipeline if missing)
 POST /api/picks/refresh        → deletes cache, re-runs pipeline
 GET  /api/stock/{symbol}       → full signal panel + pick if selected today
+GET  /api/price-trends         → ranked price-only pre-breakout candidates
+GET  /api/price-trends/lookup  → one arbitrary symbol through the same scanner
 ```
 
 The middleware never runs the pipeline at request time unless the file is

@@ -1,4 +1,4 @@
-import type { PriceTrendResponse } from './types'
+import type { PriceTrendLookupResponse, PriceTrendResponse } from './types'
 
 async function jsonOrThrow<T>(response: Response): Promise<T> {
   if (!response.ok) {
@@ -11,4 +11,11 @@ async function jsonOrThrow<T>(response: Response): Promise<T> {
 export function fetchPriceTrends(refresh = false): Promise<PriceTrendResponse> {
   const query = refresh ? '?refresh=true' : ''
   return fetch(`/api/price-trends${query}`).then(jsonOrThrow<PriceTrendResponse>)
+}
+
+export function lookupPriceTrend(symbol: string): Promise<PriceTrendLookupResponse> {
+  const query = new URLSearchParams({ symbol })
+  return fetch(`/api/price-trends/lookup?${query}`).then(
+    jsonOrThrow<PriceTrendLookupResponse>,
+  )
 }

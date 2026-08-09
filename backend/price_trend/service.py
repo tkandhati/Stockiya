@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -13,7 +14,7 @@ from zoneinfo import ZoneInfo
 from backend.fetch import fetch_ohlcv
 from backend.universe import UNIVERSE, UNIVERSE_LABEL
 
-from .models import PriceTrendCandidate, PriceTrendResponse
+from .models import PriceTrendCandidate, PriceTrendLookupResponse, PriceTrendResponse
 from .scanner import scan_symbol
 
 log = logging.getLogger("price_trend")
@@ -58,6 +59,64 @@ def _scan_one(symbol: str) -> PriceTrendCandidate | None:
     # firewalls Volume out internally, so behaviour is unchanged — only the
     # source of the bars changes.
     return scan_symbol(symbol, fetch_ohlcv(symbol), company=_company_name(symbol))
+
+
+def _lookup_symbols(raw_symbol: str) -> tuple[str, list[str]]:
+    requested = raw_symbol.strip().upper()
+    if not re.fullmatch(r"[A-Z0-9^&._-]{1,30}", requested):
+        raise ValueError("Enter a valid stock symbol, for example RELIANCE or AAPL.")
+    if "." in requested or requested.startswith("^"):
+        return requested, [requested]
+    # Stockya is NSE-first, while the literal fallback keeps global Yahoo
+    # symbols such as AAPL available when DATA_SOURCE=yahoo.
+    return requested, [f"{requested}.NS", requested]
+
+
+def lookup_price_trend(raw_symbol: str) -> PriceTrendLookupResponse:
+    """Run one arbitrary symbol through the existing price-trend scanner."""
+    requested, symbols = _lookup_symbols(raw_symbol)
+    for symbol in symbols:
+        try:
+            ohlcv = fetch_ohlcv(symbol)
+        except Exception:
+            continue
+        if ohlcv is None or ohlcv.empty:
+            continue
+
+        candidate = scan_symbol(symbol, ohlcv, company=_company_name(symbol))
+        if candidate is not None:
+            candidate.rank = 0
+            return PriceTrendLookupResponse(
+                requested_symbol=requested,
+                resolved_symbol=symbol,
+                price_history_available=True,
+                matches_strategy=True,
+                message=f"{symbol} matches the existing Price Trend setup.",
+                candidate=candidate,
+            )
+        return PriceTrendLookupResponse(
+            requested_symbol=requested,
+            resolved_symbol=symbol,
+            price_history_available=True,
+            matches_strategy=False,
+            message=(
+                f"{symbol} has price history, but it does not currently meet "
+                "the existing Price Trend criteria."
+            ),
+            candidate=None,
+        )
+
+    return PriceTrendLookupResponse(
+        requested_symbol=requested,
+        resolved_symbol=None,
+        price_history_available=False,
+        matches_strategy=False,
+        message=(
+            f"No price history is available for {requested}. Try an exchange "
+            "suffix such as .NS or check the configured data source."
+        ),
+        candidate=None,
+    )
 
 
 def get_price_trends(*, force: bool = False) -> PriceTrendResponse:

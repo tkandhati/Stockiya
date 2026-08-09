@@ -90,5 +90,48 @@ class PriceTrendScanLimitTests(unittest.TestCase):
             self.assertEqual(pt_service._scan_limit(), len(UNIVERSE))
 
 
+class PriceTrendLookupTests(unittest.TestCase):
+    def test_arbitrary_symbol_uses_existing_scanner(self) -> None:
+        with mock.patch.object(
+            pt_service, "fetch_ohlcv", return_value=_pre_breakout_frame()
+        ) as fetch:
+            result = pt_service.lookup_price_trend("outside")
+
+        fetch.assert_called_once_with("OUTSIDE.NS")
+        self.assertTrue(result.price_history_available)
+        self.assertTrue(result.matches_strategy)
+        self.assertEqual(result.resolved_symbol, "OUTSIDE.NS")
+        self.assertIsNotNone(result.candidate)
+
+    def test_global_symbol_falls_back_after_nse_miss(self) -> None:
+        def bars(symbol: str) -> pd.DataFrame:
+            return pd.DataFrame() if symbol.endswith(".NS") else _pre_breakout_frame()
+
+        with mock.patch.object(pt_service, "fetch_ohlcv", side_effect=bars) as fetch:
+            result = pt_service.lookup_price_trend("AAPL")
+
+        self.assertEqual(
+            [call.args[0] for call in fetch.call_args_list],
+            ["AAPL.NS", "AAPL"],
+        )
+        self.assertEqual(result.resolved_symbol, "AAPL")
+        self.assertTrue(result.matches_strategy)
+
+    def test_non_matching_symbol_returns_clear_result(self) -> None:
+        frame = _pre_breakout_frame()
+        frame.loc[frame.index[-1], ["High", "Close"]] = [121.0, 120.0]
+        with mock.patch.object(pt_service, "fetch_ohlcv", return_value=frame):
+            result = pt_service.lookup_price_trend("LATE.NS")
+
+        self.assertTrue(result.price_history_available)
+        self.assertFalse(result.matches_strategy)
+        self.assertIsNone(result.candidate)
+        self.assertIn("does not currently meet", result.message)
+
+    def test_invalid_symbol_is_rejected_before_fetch(self) -> None:
+        with self.assertRaisesRegex(ValueError, "valid stock symbol"):
+            pt_service.lookup_price_trend("../secret")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -50,3 +50,12 @@ class PriceTrendResponse(BaseModel):
     demo_mode: bool
     methodology: str = "price_only"
     candidates: list[PriceTrendCandidate]
+
+
+class PriceTrendLookupResponse(BaseModel):
+    requested_symbol: str
+    resolved_symbol: str | None
+    price_history_available: bool
+    matches_strategy: bool
+    message: str
+    candidate: PriceTrendCandidate | None
