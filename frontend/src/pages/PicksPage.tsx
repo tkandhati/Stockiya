@@ -6,6 +6,7 @@ import { DemoBanner } from '../components/DemoBanner'
 import { DataHealthPill } from '../components/DataHealthPill'
 import { ClosestToFiringPanel } from '../components/ClosestToFiringPanel'
 import { PickCard } from '../components/PickCard'
+import { DeliveryWeightedPicks } from '../components/DeliveryWeightedPicks'
 import { RegimeBanner } from '../components/RegimeBanner'
 import { StrategyTabs } from '../components/StrategyTabs'
 import type { PicksResponse } from '../types'
@@ -121,6 +122,12 @@ export function PicksPage() {
           </div>
         )}
 
+        {/* NEW: delivery-weighted re-ranking of the SAME picks (display-only,
+            never changes selection). Sits right after the canonical picks. */}
+        {data && data.picks.length > 0 && (
+          <DeliveryWeightedPicks picks={data.picks} />
+        )}
+
         {data && data.picks.length === 0 && (
           <div className="rounded-2xl border border-slate-200 bg-white p-10 text-center">
             <div className="mx-auto h-12 w-12 rounded-full bg-slate-100 leading-[3rem] text-2xl">
@@ -140,10 +147,13 @@ export function PicksPage() {
           </div>
         )}
 
-        {data && data.picks.length === 0 && data.closest_to_firing && (
-          <ClosestToFiringPanel data={data.closest_to_firing} />
-        )}
       </main>
+
+      {/* The full candidate pool — moved to the very bottom and shown on EVERY
+          day (not only empty days), so the near-misses are always visible. */}
+      {data?.closest_to_firing && (
+        <ClosestToFiringPanel data={data.closest_to_firing} />
+      )}
 
       {data && (
         <footer className="mt-8 text-xs text-slate-400">

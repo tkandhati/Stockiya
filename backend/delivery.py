@@ -34,6 +34,8 @@ Fix points:
     STRONG/WEAK_DELIV_PCT    — absolute-level bands
     SHORT_WIN / LONG_WIN     — trend windows
     TREND_RISING/FALLING     — trend ratio thresholds
+    STREAK_MIN_PCT           — band for the quiet-accumulation consecutive-day streak
+    DRIFT_MIN_GAP            — per-rung gap for the slow-accumulation avg-stack drift
 """
 from __future__ import annotations
 
@@ -65,6 +67,36 @@ WIN_30: int = 30        # 30-day rolling mean — the longest window shown
 MAX_WIN: int = 30       # files fetched/sliced so the 30-day mean is complete
 TREND_RISING: float = 1.10
 TREND_FALLING: float = 0.90
+
+# Consecutive-day "quiet accumulation" streak — an additive INDICATOR, kept
+# SCORING-NEUTRAL like everything else here (never feeds composite / rank /
+# selection). Counts the most-recent run of days whose delivery% held at/above
+# STREAK_MIN_PCT — i.e. above-normal delivery sustained day after day, which is
+# the "someone is quietly taking shares to delivery" build the volume flow can't
+# see from traded volume alone. Set just below the STRONG band so a genuine
+# multi-day build registers without demanding a 60%+ print every single day.
+STREAK_MIN_PCT: float = 55.0
+STREAK_NOTE_MIN: int = 3      # only surface the streak in `note` at >= this many days
+
+# Rolling-average-vs-rolling-average "slow accumulation" drift — additive INDICATOR,
+# scoring-neutral. `trend` (avg_5d vs avg_20d) can trip on ONE recent spike; this
+# instead needs the delivery-% STACK to step up across horizons — avg_5d >= avg_15d
+# >= avg_30d with EACH rung >= DRIFT_MIN_GAP points. Requiring every rung to separate
+# is what rejects a single spike (which lifts only the short average, leaving
+# 15d ≈ 30d): it fires only on a broad, multi-week buildup — slow accumulation even on
+# low, unspiky volume. Display-only: never feeds composite / rank / selection.
+DRIFT_MIN_GAP: float = 2.0
+
+# Normalized [0,1] "accumulation signal" — a single blendable summary of the
+# delivery picture for the presentation-layer delivery-weighted section on the
+# picks page. SCORING-NEUTRAL: the canonical composite never sees it; it exists
+# only so the UI can tilt an already-selected pick's DISPLAY score. Blends the
+# delivery LEVEL (dominant), the consecutive-day STREAK, and the multi-horizon
+# DRIFT. None when delivery is unavailable so the UI applies no tilt.
+SIGNAL_W_LEVEL: float = 0.40
+SIGNAL_W_STREAK: float = 0.35
+SIGNAL_W_DRIFT: float = 0.25
+STREAK_FULL_DAYS: int = 5      # streak length that maps to a full 1.0 on the streak leg
 
 # Rolling retention: keep enough MTO files that the 30-day (30-trading-day ≈ 42
 # calendar-day) rolling mean is always complete, plus a small buffer.
@@ -308,6 +340,65 @@ def _mean(vals: list[float]) -> Optional[float]:
     return round(sum(vals) / len(vals), 2) if vals else None
 
 
+def _streak_from_end(pcts: list[float], min_pct: float) -> int:
+    """Length of the most-recent consecutive run with pct >= min_pct (0 if none).
+
+    `pcts` is ascending by date, so the streak is counted from the tail — the
+    latest days. A single day below the band breaks (resets) the streak.
+    """
+    n = 0
+    for p in reversed(pcts):
+        if p >= min_pct:
+            n += 1
+        else:
+            break
+    return n
+
+
+def _accum_drift(short: Optional[float], mid: Optional[float],
+                 longv: Optional[float], gap: float) -> Optional[str]:
+    """Slow-accumulation drift from the delivery-% rolling-average STACK (5d/15d/30d).
+
+    Needs all three windows. 'rising' only when EVERY adjacent rung steps up by
+    >= gap (avg_5d − avg_15d AND avg_15d − avg_30d) — a broad, multi-horizon
+    buildup. The gap-per-rung requirement is what rejects a single recent spike,
+    which lifts only the short average and leaves mid ≈ long. 'falling' mirrors
+    it; 'flat' otherwise; None when < 30 days (can't confirm a slow drift yet).
+    """
+    if short is None or mid is None or longv is None:
+        return None
+    if short - mid >= gap and mid - longv >= gap:
+        return "rising"
+    if mid - short >= gap and longv - mid >= gap:
+        return "falling"
+    return "flat"
+
+
+def _clamp01(x: float) -> float:
+    return 0.0 if x < 0 else 1.0 if x > 1 else x
+
+
+def _accum_signal(latest_pct: Optional[float], streak_days: int,
+                  drift: Optional[str]) -> Optional[float]:
+    """Normalized [0,1] blendable delivery signal — level (dominant) + streak + drift.
+
+    level : 0 at/below the WEAK band, 1 at/above the STRONG band, linear between.
+    streak: streak_days / STREAK_FULL_DAYS, capped at 1.
+    drift : rising=1.0, flat/None=0.5, falling=0.0.
+    None when there is no delivery (latest_pct is None) so the UI applies no tilt.
+    Presentation-only; never enters the composite / rank / selection.
+    """
+    if latest_pct is None:
+        return None
+    span = STRONG_DELIV_PCT - WEAK_DELIV_PCT
+    level_c = _clamp01((latest_pct - WEAK_DELIV_PCT) / span) if span > 0 else 0.0
+    streak_c = _clamp01(streak_days / STREAK_FULL_DAYS) if STREAK_FULL_DAYS > 0 else 0.0
+    drift_c = {"rising": 1.0, "flat": 0.5, "falling": 0.0}.get(drift, 0.5)
+    return round(_clamp01(
+        SIGNAL_W_LEVEL * level_c + SIGNAL_W_STREAK * streak_c + SIGNAL_W_DRIFT * drift_c
+    ), 3)
+
+
 def _advisory_from_series(series: list[tuple[str, float]]) -> dict:
     """Build the advisory dict from a (date, pct) series (ascending). Pure.
 
@@ -319,6 +410,8 @@ def _advisory_from_series(series: list[tuple[str, float]]) -> dict:
             "available": False, "latest_pct": None, "latest_date": None,
             "avg_5d": None, "avg_15d": None, "avg_20d": None, "avg_30d": None,
             "trend": None, "level": None, "note": "", "days": 0,
+            "accum_streak_days": 0, "accum_streak_min_pct": STREAK_MIN_PCT,
+            "accum_drift": None, "accum_signal": None,
         }
 
     pcts = [p for _, p in series]
@@ -350,7 +443,14 @@ def _advisory_from_series(series: list[tuple[str, float]]) -> dict:
     if avg_30d is not None:
         roll.append(f"30d {avg_30d:.0f}%")
     roll_txt = f"; {', '.join(roll)}" if roll else ""
-    note = f"Delivery today {latest_pct:.0f}% ({level_txt}){roll_txt}{trend_txt}"
+    accum_streak = _streak_from_end(pcts, STREAK_MIN_PCT)
+    accum_drift = _accum_drift(avg_5d, avg_15d, avg_30d, DRIFT_MIN_GAP)
+    accum_signal = _accum_signal(latest_pct, accum_streak, accum_drift)
+    streak_txt = (
+        f"; ≥{STREAK_MIN_PCT:.0f}% for {accum_streak}d (quiet accumulation)"
+        if accum_streak >= STREAK_NOTE_MIN else ""
+    )
+    note = f"Delivery today {latest_pct:.0f}% ({level_txt}){roll_txt}{trend_txt}{streak_txt}"
 
     return {
         "available": True,
@@ -364,6 +464,11 @@ def _advisory_from_series(series: list[tuple[str, float]]) -> dict:
         "level": level,
         "note": note,
         "days": len(series),
+        # Additive quiet-accumulation signals (display-only).
+        "accum_streak_days": accum_streak,   # level persistence — sustained ≥ band
+        "accum_streak_min_pct": STREAK_MIN_PCT,
+        "accum_drift": accum_drift,          # slow multi-horizon buildup (spike-proof)
+        "accum_signal": accum_signal,        # [0,1] blendable summary (presentation-only)
     }
 
 
@@ -375,6 +480,19 @@ def delivery_advisory(symbol: str) -> dict:
     disk or the symbol never appears — the UI then simply hides the line.
     """
     return _advisory_from_series(delivery_series(symbol, n=MAX_WIN))
+
+
+def delivery_streak(symbol: str, *, min_pct: float = STREAK_MIN_PCT) -> int:
+    """Consecutive most-recent days `symbol`'s delivery% held >= `min_pct`.
+
+    The 'quiet build' persistence signal — sustained above-normal delivery,
+    i.e. someone taking shares to delivery day after day. Additive INDICATOR
+    only, scoring-neutral like the rest of this module. 0 when no data / no
+    streak. Convenience wrapper; the same value ships inside delivery_advisory.
+    """
+    return _streak_from_end(
+        [p for _, p in delivery_series(symbol, n=MAX_WIN)], min_pct
+    )
 
 
 def all_advisories() -> dict[str, dict]:

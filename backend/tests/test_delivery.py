@@ -128,5 +128,84 @@ class TestDeliveryLoader(unittest.TestCase):
         self.assertEqual(adv["latest_pct"], 70.0)
 
 
+class TestDeliveryStreak(unittest.TestCase):
+    """Additive, scoring-neutral quiet-accumulation streak."""
+
+    def test_counts_recent_consecutive_above_band(self):
+        # pcts ascending by date; most-recent run >= 55 is the last 5 days.
+        series = [(f"2026-06-{i:02d}", pct) for i, pct in
+                  enumerate([40.0, 62.0, 61.0, 58.0, 65.0, 70.0], start=1)]
+        adv = D._advisory_from_series(series)
+        self.assertEqual(adv["accum_streak_days"], 5)
+        self.assertEqual(adv["accum_streak_min_pct"], D.STREAK_MIN_PCT)
+
+    def test_below_band_day_breaks_streak(self):
+        series = [("2026-06-01", 70.0), ("2026-06-02", 68.0), ("2026-06-03", 40.0)]
+        self.assertEqual(D._advisory_from_series(series)["accum_streak_days"], 0)
+
+    def test_note_mentions_streak_when_long_enough(self):
+        series = [(f"2026-06-{i:02d}", 66.0) for i in range(1, 5)]   # 4 days >= 55
+        self.assertIn("quiet accumulation", D._advisory_from_series(series)["note"])
+
+    def test_short_streak_not_in_note(self):
+        series = [("2026-06-01", 40.0), ("2026-06-02", 66.0)]        # 1 day only
+        self.assertNotIn("quiet accumulation", D._advisory_from_series(series)["note"])
+
+    def test_unavailable_has_streak_keys(self):
+        adv = D._advisory_from_series([])
+        self.assertEqual(adv["accum_streak_days"], 0)
+        self.assertIn("accum_streak_min_pct", adv)
+        self.assertIsNone(adv["accum_drift"])
+
+
+class TestDeliveryDrift(unittest.TestCase):
+    """Rolling-avg-vs-rolling-avg 'slow accumulation' stack — spike-proof."""
+
+    def test_slow_buildup_is_rising(self):
+        # Steadily climbing delivery 1..30 -> avg_5d(28) > avg_15d(23) > avg_30d(15.5),
+        # every rung separated by >> DRIFT_MIN_GAP.
+        series = [(f"2026-06-{i:02d}", float(i)) for i in range(1, 31)]
+        self.assertEqual(D._advisory_from_series(series)["accum_drift"], "rising")
+
+    def test_single_spike_is_NOT_rising(self):
+        # 29 flat days then one 95% spike: lifts avg_5d but 15d ≈ 30d -> not slow drift.
+        pcts = [40.0] * 29 + [95.0]
+        series = [(f"2026-06-{i:02d}", p) for i, p in enumerate(pcts, start=1)]
+        self.assertEqual(D._advisory_from_series(series)["accum_drift"], "flat")
+
+    def test_constant_is_flat(self):
+        series = [(f"2026-06-{i:02d}", 50.0) for i in range(1, 31)]
+        self.assertEqual(D._advisory_from_series(series)["accum_drift"], "flat")
+
+    def test_none_when_insufficient_history(self):
+        # < 30 days: 15d and 30d means collapse together -> can't confirm a slow drift.
+        series = [(f"2026-06-{i:02d}", float(i)) for i in range(1, 8)]
+        adv = D._advisory_from_series(series)
+        self.assertIn(adv["accum_drift"], (None, "flat"))
+
+
+class TestDeliverySignal(unittest.TestCase):
+    """Normalized [0,1] blendable accumulation signal (presentation-only)."""
+
+    def test_high_when_strong_level_streak_and_rising(self):
+        series = [(f"2026-06-{i:02d}", 60.0 + 0.5 * i) for i in range(1, 31)]
+        adv = D._advisory_from_series(series)
+        self.assertIsNotNone(adv["accum_signal"])
+        self.assertGreater(adv["accum_signal"], 0.7)
+
+    def test_low_when_weak_churn(self):
+        series = [(f"2026-06-{i:02d}", 30.0) for i in range(1, 31)]
+        self.assertLessEqual(D._advisory_from_series(series)["accum_signal"], 0.2)
+
+    def test_none_when_unavailable(self):
+        self.assertIsNone(D._advisory_from_series([])["accum_signal"])
+
+    def test_bounded_0_1(self):
+        series = [(f"2026-06-{i:02d}", 99.0) for i in range(1, 31)]
+        sig = D._advisory_from_series(series)["accum_signal"]
+        self.assertGreaterEqual(sig, 0.0)
+        self.assertLessEqual(sig, 1.0)
+
+
 if __name__ == "__main__":
     unittest.main()

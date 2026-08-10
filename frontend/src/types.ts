@@ -338,6 +338,11 @@ export interface DeliveryInfo {
   level: 'strong' | 'moderate' | 'weak' | null
   note: string
   days: number
+  // Additive quiet-accumulation signals (backend/delivery.py) — presentation-only.
+  accum_streak_days?: number
+  accum_streak_min_pct?: number
+  accum_drift?: 'rising' | 'flat' | 'falling' | null
+  accum_signal?: number | null   // [0,1] blendable summary used by DeliveryWeightedPicks
 }
 
 // Scoring-neutral institutional-flow strength (bulk deals + delivery %).
