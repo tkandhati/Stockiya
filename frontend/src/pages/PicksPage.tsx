@@ -122,10 +122,11 @@ export function PicksPage() {
           </div>
         )}
 
-        {/* NEW: delivery-weighted re-ranking of the SAME picks (display-only,
-            never changes selection). Sits right after the canonical picks. */}
-        {data && data.picks.length > 0 && (
-          <DeliveryWeightedPicks picks={data.picks} />
+        {/* NEW: fresh, delivery-led analysis over today's eligible field —
+            its own ranking, independent of the picks above; never changes
+            selection. Sits right after the canonical picks. */}
+        {data && data.delivery_analysis && data.delivery_analysis.length > 0 && (
+          <DeliveryWeightedPicks rows={data.delivery_analysis} />
         )}
 
         {data && data.picks.length === 0 && (

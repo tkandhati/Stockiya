@@ -483,6 +483,19 @@ export interface ClosestToFiring {
   overall: ClosestRow[]
 }
 
+// One row of the fresh, delivery-led analysis (backend/delivery_weighted.py).
+// SCORING-NEUTRAL — its own ranking over the day's eligible field.
+export interface DeliveryAnalysisRow {
+  symbol: string
+  company: string
+  base_score: number          // raw composite S
+  base_norm: number           // S scaled to the day's strongest survivor
+  delivery_signal: number | null   // [0,1]; null when no delivery data
+  fresh_score: number         // the ranking key = w·delivery + (1−w)·base_norm
+  delivery?: DeliveryInfo | null
+  in_picks: boolean           // also a volume pick today?
+}
+
 export interface PicksResponse {
   date: string
   generated_at: string
@@ -492,6 +505,7 @@ export interface PicksResponse {
   message?: string
   picks: Pick[]
   closest_to_firing?: ClosestToFiring
+  delivery_analysis?: DeliveryAnalysisRow[]
 }
 
 // --------------------------------------------------------------------------

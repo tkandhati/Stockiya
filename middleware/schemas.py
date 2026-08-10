@@ -227,6 +227,10 @@ class PicksResponse(BaseModel):
     # which stocks to analyze). Each row: {symbol, flow_interest}. Untyped dicts
     # so inner keys pass through; None/absent when no flow data is on disk.
     watchlist: Optional[list[dict]] = None
+    # Fresh, delivery-LED analysis over the day's eligible field (SCORING-NEUTRAL,
+    # additive — its own ranking, independent of `picks`). Untyped dicts so inner
+    # keys pass through untouched; None/absent on older payloads.
+    delivery_analysis: Optional[list[dict]] = None
 
 
 # --------------------------------------------------------------------------- #

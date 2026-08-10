@@ -627,6 +627,32 @@ def run_universe(
         closest_to_firing=closest_to_firing,
         watchlist=watchlist,
     )
+
+    # Fresh, delivery-LED analysis over TODAY'S ELIGIBLE FIELD (every hard-gate
+    # survivor) — SCORING-NEUTRAL and purely additive. Its own ranking (a
+    # strong-delivery near-miss can outrank a volume pick); it never touches
+    # selection / composite / rank / sizing / exits or any other section. Built
+    # here, after selection, from the survivors already in memory + a single
+    # batch delivery read. Degrades to composite order when no delivery on disk.
+    try:
+        from .delivery import all_advisories
+        from .delivery_weighted import build_delivery_analysis
+        _advs = all_advisories()
+        _cands = [
+            {
+                "symbol": r.symbol,
+                "company": (r.snapshot or {}).get("company") or r.symbol,
+                "composite_score": r.composite_score,
+                "delivery": _advs.get(r.symbol),
+            }
+            for r in hard_survivors
+        ]
+        _picked = {p.get("symbol") for p in visible_picks}
+        response["delivery_analysis"] = build_delivery_analysis(_cands, _picked)
+    except Exception:
+        log.exception("build_delivery_analysis failed")
+        response["delivery_analysis"] = []
+
     path = write_picks_file(response)
     log.info(
         "  [Phase 4/4] Wrote %s  (visible=%d suppressed=%d)",
