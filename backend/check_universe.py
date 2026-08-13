@@ -1,9 +1,9 @@
-"""Universe sanity check — find dead / stale tickers in the selected universe.
+"""Universe sanity check — find dead / stale tickers in the volume universe.
 
 Run:
     python -m backend.check_universe
 
-For each ticker in `backend/universe.py:UNIVERSE`, fetches 1y of OHLCV and
+For each ticker in `backend/universe.py:VOLUME_UNIVERSE`, fetches 1y of OHLCV and
 classifies into:
 
     ok         : >= 200 bars, last bar within 7 days
@@ -22,7 +22,7 @@ import time
 from datetime import date
 from typing import Optional
 
-from .universe import UNIVERSE
+from .universe import VOLUME_UNIVERSE
 
 
 # Sleep between sequential fetches to stay below Yahoo's per-host rate limit.
@@ -46,9 +46,9 @@ def check_universe(min_bars: int = 200, stale_days: int = 7) -> dict:
 
     today = date.today()
     out: dict[str, list] = {"ok": [], "low_bars": [], "stale": [], "empty": []}
-    total = len(UNIVERSE)
+    total = len(VOLUME_UNIVERSE)
 
-    for i, sym in enumerate(UNIVERSE, start=1):
+    for i, sym in enumerate(VOLUME_UNIVERSE, start=1):
         sys.stderr.write(f"\r[{i}/{total}] checking {sym:25}")
         sys.stderr.flush()
         if i > 1:

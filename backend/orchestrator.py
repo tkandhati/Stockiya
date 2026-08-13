@@ -36,7 +36,7 @@ from .pipeline import (
 )
 from .stages import PER_TICKER_CHAIN
 from .stages.hypothesis import build_pick_payload
-from .stages.rank import rank_survivors
+from .stages.rank import rank_lead_fallback, rank_survivors
 from .stages.regime import check_regime
 from .stages.render import render_picks_response, write_picks_file
 from .picks_reconcile import (
@@ -51,7 +51,7 @@ from .trading_day import (
     load_previous_picks,
     log_no_fire,
 )
-from .universe import UNIVERSE
+from .universe import VOLUME_UNIVERSE
 
 # Stages in canonical order — used for the per-gate breakdown log.
 _GATE_ORDER = ["U", "I", "HR", "ACS", "AC", "LTV", "LT", "CS", "VD", "BR"]
@@ -267,7 +267,7 @@ def run_universe(
     demo_mode = os.environ.get("DEMO_MODE", "0") == "1"
     log.info("=" * 76)
     log.info("  PIPELINE RUN  %s   (universe=%d, top_n=%d, account=%.0f, demo=%s)",
-             today_iso, len(UNIVERSE), top_n, account_value, demo_mode)
+             today_iso, len(VOLUME_UNIVERSE), top_n, account_value, demo_mode)
     log.info("=" * 76)
 
     # ---- Non-trading-day guard (weekend) ----
@@ -331,12 +331,12 @@ def run_universe(
 
     # ---- Phase 1: per-ticker pipeline (parallel) ----
     log.info("  [Phase 1/4] Running per-ticker chain over %d tickers (%d workers) ...",
-             len(UNIVERSE), max_workers)
+             len(VOLUME_UNIVERSE), max_workers)
     results: list[PipelineResult] = []
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
         futures = {
             pool.submit(run_pipeline, sym, PER_TICKER_CHAIN, today_iso): sym
-            for sym in UNIVERSE
+            for sym in VOLUME_UNIVERSE
         }
         for fut in as_completed(futures):
             try:
@@ -430,8 +430,26 @@ def run_universe(
     # ---- Phase 2: rank + select ----
     log.info("  [Phase 2/4] Confirmation ranking over %d survivors ...", len(survivors))
     selected = rank_survivors(survivors, top_n=top_n)
+    # Guaranteed daily pre-breakout LEAD: if nothing cleared confirmation, surface
+    # the single best calm, accumulation-confirmed base that is coiling just under
+    # τ (ATR ceiling + accumulation + day-0 coherence still enforced — see
+    # rank.rank_lead_fallback). Never leaves the day empty when a genuine
+    # pre-breakout candidate exists; badged watch-grade downstream.
+    lead_fallback_fired = False
+    if not selected:
+        lead = rank_lead_fallback(hard_survivors)
+        if lead is not None:
+            selected = [lead]
+            lead_fallback_fired = True
     if selected:
-        log.info("  [Phase 2/4] Selected %d:", len(selected))
+        if lead_fallback_fired:
+            log.info(
+                "  [Phase 2/4] No confirmed picks — surfaced 1 pre-breakout LEAD "
+                "(watch, S=%.3f < τ=%.2f): %s",
+                selected[0].composite_score, COMPOSITE_TAU, selected[0].symbol,
+            )
+        else:
+            log.info("  [Phase 2/4] Selected %d:", len(selected))
         for pick in selected:
             bonuses = (pick.confirmation_components or {}).get("bonuses_fired") or []
             log.info("    #%d  %-15s  confirmation=%.3f  bonuses=%s",
@@ -540,6 +558,15 @@ def run_universe(
     # ---- Phase 4: render to disk ----
     log.info("  [Phase 4/4] Rendering picks_%s.json ...", today_iso)
     message: Optional[str] = None
+    if lead_fallback_fired and pick_payloads:
+        _lead_sym = pick_payloads[0].get("symbol", selected[0].symbol)
+        message = (
+            f"No setup cleared confirmation (S ≥ {COMPOSITE_TAU:.2f}) today. "
+            f"Showing the strongest pre-breakout lead — {_lead_sym} — as a "
+            "WATCH-grade indication: accumulation-confirmed and inside the "
+            "volatility ceiling, but still approaching the confirmation line. "
+            "Wait for the trigger or size cautiously; this is not a confirmed buy."
+        )
     # Closest-to-firing is now computed EVERY run (not just on zero-pick days)
     # so the near-misses are always visible alongside the picks.
     closest_to_firing: dict = _collect_closest_to_firing(
@@ -741,7 +768,7 @@ def diagnostics(today_iso: Optional[str] = None) -> dict:
     with ThreadPoolExecutor(max_workers=10) as pool:
         futures = {
             pool.submit(run_pipeline, sym, PER_TICKER_CHAIN, today_iso): sym
-            for sym in UNIVERSE
+            for sym in VOLUME_UNIVERSE
         }
         for fut in as_completed(futures):
             try:

@@ -74,7 +74,11 @@ Data availability follows `backend/fetch.py`: demo fixtures when
                             ↓
                             filter: S ≥ COMPOSITE_TAU
                             ↓
-[RK] Rank ─► [PS] Position Size ─► [H] Hypothesis+Exit ─► [R] Render ─► UI
+[RK] Rank ─► quality guard (ATR ≤ 3.0% + confirmed accumulation)
+                            │   └─ if 0 confirmed: 1 watch-grade pre-breakout LEAD
+                            │        (τ relaxed; ATR + accumulation + coherence kept)
+                            ↓
+            [PS] Position Size ─► [H] Hypothesis+Exit ─► [R] Render ─► UI
                                     │                     (attaches           │
                                     │              accumulation_assessment    │
                                     │                     envelope)           │
@@ -178,7 +182,7 @@ backend/
 ├── block_deals.py          ← NSE block/bulk CSV downloader + 30d aggregator (+ rolling 7d-vs-30d trend)
 ├── delivery.py             ← NSE MTO delivery-% best-effort fetcher + file-only reader + rolling 5d/20d   *(fetch 2026-07-26)*
 ├── reasoning_points.py     ← builds the pick "reasoning checklist" steps (incl. always-visible delivery load status)  *(new 2026-07-26)*
-├── universe.py             ← scan universe (Nifty 50/100/200/300/500 + custom; default Nifty 300)
+├── universe.py             ← fixed Nifty-300 volume universe + configurable discovery universes
 ├── yahoo.py, fetch.py      ← data source adapters
 ├── demo_data.py            ← DEMO_MODE=1 synthetic OHLCV
 ├── nightly.py, weekly.py   ← cron entry points

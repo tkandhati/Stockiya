@@ -81,6 +81,11 @@ class VolumeEventDTO(BaseModel):
 class Pick(BaseModel):
     symbol: str
     rank: Optional[int] = None
+    # Selection confidence tier (2026-08-13): "confirmed" = cleared every strict
+    # guard; "lead_watch" = guaranteed daily pre-breakout lead surfaced just under
+    # the confirmation threshold. `lead_note` carries the watch-grade explanation.
+    selection_tier: Optional[str] = None
+    lead_note: Optional[str] = None
     trace_id: Optional[str] = None
     company: Optional[str] = None
     sector: Optional[str] = None

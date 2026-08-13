@@ -153,6 +153,11 @@ export interface PickHistoryEntry {
 export interface Pick {
   symbol: string
   rank?: number | null
+  // Selection confidence tier (2026-08-13). 'confirmed' = cleared every strict
+  // guard; 'lead_watch' = guaranteed daily pre-breakout lead surfaced just under
+  // the confirmation threshold (lead_note explains it). Absent on older payloads.
+  selection_tier?: 'confirmed' | 'lead_watch' | null
+  lead_note?: string | null
   trace_id?: string | null
   company?: string | null
   sector?: string | null

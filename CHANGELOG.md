@@ -1,5 +1,190 @@
 # Changelog
 
+## 2026-08-13 — Guaranteed daily pre-breakout LEAD (never-empty, still calm)
+
+Follow-on to the pick-quality guards below. Those guards (ATR ceiling +
+accumulation evidence) are the right precision bar, but they can leave a day with
+**zero** picks — and the user's directive is "focus on pre-breakout, quality, but
+not zero: at least one good indication a day, without letting volatile names
+through that whipsaw the next day." This adds a **guaranteed watch-grade lead**
+that threads exactly that needle.
+
+**Mechanism (`backend/stages/rank.py::rank_lead_fallback`).** When
+`rank_survivors` returns no confirmed picks, the orchestrator surfaces the single
+best pre-breakout candidate from the **hard-gate pool** — which, unlike the strict
+`survivors` list, includes names **below the confirmation threshold τ**. It reuses
+the exact same confirmation ranking and selection vetoes, so **only τ is relaxed**:
+- the **ATR ≤ 3.0% volatility ceiling** still applies → the lead is a *calm,
+  coiling* base, never a name that would gap/whipsaw the next day;
+- **accumulation evidence** (direct `[AC]` or durable-slow flow) still required →
+  never a no-footprint or distribution setup;
+- **day-0 exit-coherence** and the **missed-entry** veto still apply → never a name
+  we'd immediately sell.
+
+The promoted lead is tagged `selection_tier="lead_watch"` with a `lead_note`
+("Approaching confirmation — S=… vs τ=…; watch-grade, wait for the trigger"),
+and the response `message` explains it is **not** a confirmed buy. Confirmed picks
+carry `selection_tier="confirmed"`. Both flow through
+`build_pick_payload` → `middleware/schemas.py:Pick` (new `selection_tier` /
+`lead_note`) → the frontend, which renders a sky "⏳ Lead · Watch" badge on the
+card (`PickCard.tsx`).
+
+**Integrity floor.** `LEAD_FALLBACK_MIN_COMPOSITE` (default `0.0`) can refuse a lead
+whose composite is too far under τ — so a genuinely dead day can still honestly show
+zero rather than promote a weak name. At the default it surfaces the best qualifying
+lead whenever one exists (essentially always, across 300 names). `LEAD_FALLBACK_ENABLED`
+(default `True`) turns the whole behaviour off in one edit.
+
+**Why this is safe / on-strategy:** the lead is only ever a name that already passed
+every hard gate and every quality veto *except* clearing τ — i.e. a real
+pre-breakout base a hair under the line. Nothing about selection of the confirmed
+top-N changes; on days with confirmed picks the fallback never runs.
+
+**Tests:** `backend/tests/test_pick_quality.py::TestGuaranteedLeadFallback` — best
+below-τ accumulation-confirmed lead surfaced + tagged; ATR-hot / no-accumulation
+leads still vetoed; empty pool → None; composite floor refuses a too-weak lead.
+Full backend suite **176/176**; frontend `tsc --noEmit` clean;
+`python -m compileall backend middleware` clean.
+
+**Reversal knobs:** `LEAD_FALLBACK_ENABLED`, `LEAD_FALLBACK_MIN_COMPOSITE`
+(`backend/stages/rank.py`).
+
+**Honesty:** offline-verified only (firewall + no on-disk OHLCV) — pure
+ranking/veto logic exercised by unit tests; which real name becomes the lead on a
+given day only shows on a laptop run.
+
+## 2026-08-13 — Volume strategy locked to a fixed Nifty-300 universe + final pick-quality guards
+
+Two connected changes. First, the volume strategy's eligibility boundary is now a
+**fixed Nifty-300 set that config can no longer widen**; second, three final
+quality guards make the top-N reflect what the strategy actually wants to own.
+Both are **selection-affecting** (not scoring-neutral), so both are behind revert
+knobs. Offline-verified: full backend unittest package **171/171**;
+`python -m compileall backend middleware` clean. Nothing runs against the network.
+
+**1. Fixed volume universe (`backend/universe.py` + call-site migration).** The
+volume strategy no longer reads the configurable `STOCKYA_UNIVERSE`. That env var
+now scopes *only* the independent discovery tools (the Price Trend scanner in
+`backend/price_trend/`); it can widen/narrow discovery but can **never admit a
+non-Nifty-300 volume pick**.
+- New symbols in `universe.py`: `VOLUME_UNIVERSE` (tuple of `NIFTY_300`),
+  `VOLUME_UNIVERSE_SET` (frozenset for O(1) membership), `VOLUME_UNIVERSE_LABEL`
+  (`"Nifty 300"`), `VOLUME_UNIVERSE_NAME`. A hard guard **raises at import** if the
+  set isn't exactly 300 unique symbols, so a truncated list fails loudly.
+- Migrated every volume-strategy call site from `UNIVERSE` → `VOLUME_UNIVERSE` /
+  `VOLUME_UNIVERSE_SET`: `[U]` gate (`stages/universe.py`), `orchestrator.py`
+  (`run_universe` + `diagnostics`), `backtest.py` (range scans now intersect any
+  supplied symbol list with the Nifty-300 set and error if the intersection is
+  empty), `check_universe.py`, `data_health.py` (now expects **exactly 300**),
+  `explain.py`, and `middleware/main.py` (`/api/stock/{symbol}` 404s for names
+  outside the set). `price_trend/service.py` deliberately **stays** on the
+  configurable `UNIVERSE` — it's the discovery tool the env var is for.
+- **Defence in depth:** `rank_survivors` partitions out any candidate not in
+  `VOLUME_UNIVERSE_SET` (de-selects, nulls its rank, logs a warning) so a backtest
+  or programmatic caller passing a wider/custom list can't turn an out-of-scope
+  result into a volume pick. The `[U]` gate and live orchestrator already restrict
+  the input; this closes the ranker path too.
+
+**2. Final pick-quality guards (`backend/stages/rank.py`, `stages/accumulation.py`).**
+The composite stays tolerant of one weak soft leg, but the *buy list* should not
+contain setups the strategy would not actually own:
+- **Volatility ceiling** — `EXCLUDE_HIGH_VOLATILITY=True`, `MAX_PICK_ATR_PCT=3.0`.
+  A top-N pick may not have `[CS].atr_pct > 3.0%`. `[CS]` remains a soft stage so
+  near-misses stay visible; this only trims the final list. Deliberately below CS's
+  broad **5.5%** analysis ceiling.
+- **Accumulation evidence required** — `REQUIRE_ACCUMULATION_EVIDENCE=True`. A
+  volume-accumulation pick must show accumulation *somewhere*: either a direct
+  `[AC]` pass, or the durable-slow multi-horizon profile
+  (`early_accumulation.features.durable_slow`, itself requiring a quiet VD/AC
+  footprint). Closes the path where unrelated breakout bonuses carried a
+  no-accumulation candidate into the top-N. **Fails open** when `[AC]` didn't run
+  (legacy/minimal callers) — the live and backtest chains always include it.
+- **Stable-volume bases admitted** — `VOLUME_DRY_MULT` **0.95 → 1.00** in `[AC]`.
+  `[AC]` already requires a tight range AND rising ADI; allowing *unchanged* (1.00x)
+  volume captures quiet accumulation the cheap `[ACS]` pre-screen misses by a few
+  basis points, **without** admitting expanding-volume churn (a breakout on volume
+  still fails the range check).
+
+**Tests:** `backend/tests/test_volume_universe.py` (boundary is exactly the 300-name
+set; a `nifty500` discovery selection can't widen it; the `[U]` gate and the ranker
+partition both reject a Nifty-500 name outside the top 300) and
+`backend/tests/test_pick_quality.py` (ATR ceiling rejects >3.0%, both
+accumulation-evidence paths, stable-volume-with-rising-ADI captured /
+without-ADI still rejected) — **11 new tests**, all green inside the 171/171 suite.
+
+**Reversal knobs:** `MAX_PICK_ATR_PCT` / `EXCLUDE_HIGH_VOLATILITY` /
+`REQUIRE_ACCUMULATION_EVIDENCE` (`stages/rank.py`), `VOLUME_DRY_MULT`
+(`stages/accumulation.py`). The universe lock is **structural by design** (no revert
+knob — the whole point is that config cannot widen it); to change the volume set,
+edit the tracked lists in `backend/universe.py`.
+
+**Honesty:** offline-verified only (firewall + no on-disk OHLCV) — no live pipeline
+run. These are pure membership / threshold-logic changes exercised directly by unit
+tests, so their behavior is fully determined offline; the pick-count effect only
+shows when the pipeline is re-run on the laptop with real data.
+
+## 2026-08-10 — Delivery accumulation signals + a fresh delivery-led analysis section (scoring-neutral)
+
+Deepened the NSE delivery advisory and added a **new, separate "Delivery-led
+analysis" section** on the picks page. Everything here is **SCORING-NEUTRAL and
+additive** — the volume composite, selection, confirmation rank, sizing, exits,
+and every existing section are untouched. The canonical picks still ignore
+delivery entirely (see the "why not in the composite" note below and `ideas.md`).
+
+**1. Delivery accumulation signals (`backend/delivery.py`).** The advisory now
+also carries three quiet-accumulation reads, all display-only:
+- `accum_streak_days` — consecutive most-recent days delivery held ≥ `STREAK_MIN_PCT`
+  (default 55%). Level *persistence* — someone taking shares to delivery day after
+  day. A single sub-band day resets it.
+- `accum_drift` — the delivery-% rolling-average **stack** (`avg_5d ≥ avg_15d ≥
+  avg_30d`, each rung ≥ `DRIFT_MIN_GAP`). Deliberately **spike-proof**: a single
+  high-delivery day lifts only the 5-day mean (15d ≈ 30d) and is rejected, so this
+  fires only on a broad multi-week buildup — slow accumulation on low, unspiky
+  volume, which is exactly the footprint traded-volume can't show.
+- `accum_signal` — a normalized `[0,1]` blendable summary = level (dominant) +
+  streak + drift; `None` when no delivery data.
+
+**2. Fresh delivery-led analysis (`backend/delivery_weighted.py`, new).** A
+presentation overlay — NOT a re-rank of the picks. It scores **every hard-gate
+survivor** the pipeline evaluated today with delivery weighted in as a
+first-class term:
+
+    fresh = w · delivery_signal + (1 − w) · base_norm      (w = 0.50, DELIVERY_ANALYSIS_WEIGHT)
+
+where `base_norm` is the candidate's composite S scaled to the day's strongest
+survivor (so the two legs are comparable and `w` is honest). It returns its own
+top-8 (`DELIVERY_ANALYSIS_TOP_N`), so a **strong-delivery near-miss can outrank a
+volume pick**, or surface even if it isn't a pick (each row is badged `pick` when
+it is). Built in the orchestrator **after selection** (`hard_survivors` +
+one batch `all_advisories()` read) and attached as an additive `delivery_analysis`
+block; `PicksResponse` gains the field. Deterministic (ties broken by symbol);
+**degrades to plain composite order when no delivery is on disk** (firewall-safe).
+
+**3. UI (`frontend`).** New `DeliveryWeightedPicks` section renders the fresh
+ranking right after the canonical picks. The full candidate pool
+(`ClosestToFiringPanel`) was **moved to the very bottom and is now shown on every
+day** (previously gated to zero-pick days, so the near-misses were invisible).
+`DeliveryInfo` gains `accum_streak_days` / `accum_drift` / `accum_signal`; new
+`DeliveryAnalysisRow` type + `delivery_analysis` on `PicksResponse`.
+
+**Why delivery is NOT in the canonical composite** (decision reaffirmed): (a) the
+champion-challenger tuner validates every weight on historical backtests, but
+on-disk delivery only spans ~45 days — a delivery weight could never be tuned or
+validated the way the others are (hand-set magnitudes are forbidden, PRINCIPLES
+§9); (b) a weight renormalizes the sum and perturbs *every* pick; (c) delivery
+*level* skews toward mature names — the very pull the 2026-07-31 change removed
+from ordering. The fresh section gives delivery a real, weighted role **without**
+any of that. See `ideas.md` for the measure-first path if it's ever revisited.
+
+Tests: `backend/tests/test_delivery.py` (streak / drift / signal — spike-proofing
+proven) and `backend/tests/test_delivery_weighted.py` (delivery-leads-over-
+composite, no-data fallback, top-N, deterministic tie-break) — **25/25**; frontend
+`tsc --noEmit` clean.
+
+Honesty: not runnable here (firewall + no on-disk OHLCV/delivery), so verify on the
+laptop where `data/delivery/` exists — that's where the signal actually shapes the
+ranking; demo/firewalled runs show "no data" and fall back to composite order.
+
 ## 2026-08-09 — Price Trend single-symbol lookup (scanner unchanged)
 
 Added **Check one stock** to the Price Trend tab. A user can now enter one

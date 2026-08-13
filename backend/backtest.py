@@ -51,7 +51,7 @@ from .stages.hypothesis import build_pick_payload
 from .stages.ingest import MIN_BARS, _recompute_snapshot_from_ohlcv
 from .stages.rank import rank_survivors
 from .stages.regime import check_regime
-from .universe import UNIVERSE
+from .universe import VOLUME_UNIVERSE, VOLUME_UNIVERSE_SET
 
 log = logging.getLogger("backtest")
 
@@ -86,7 +86,7 @@ def _normalize_symbol(raw: str) -> Optional[str]:
       "bajajauto"                         → "BAJAJ-AUTO.NS" (best-effort)
       "m&m"                               → "M&M.NS"
 
-    Returns None if no plausible match exists in UNIVERSE. The caller is
+    Returns None if no plausible match exists in VOLUME_UNIVERSE. The caller is
     responsible for surfacing the not-found message to the user.
     """
     if not raw:
@@ -96,21 +96,21 @@ def _normalize_symbol(raw: str) -> Optional[str]:
         return None
 
     # Already in canonical form?
-    if s in UNIVERSE:
+    if s in VOLUME_UNIVERSE_SET:
         return s
     # Add .NS suffix?
-    if not s.endswith(".NS") and f"{s}.NS" in UNIVERSE:
+    if not s.endswith(".NS") and f"{s}.NS" in VOLUME_UNIVERSE_SET:
         return f"{s}.NS"
     # Try dropping any trailing exchange tag and re-suffixing
     base = s.rsplit(".", 1)[0]
-    if f"{base}.NS" in UNIVERSE:
+    if f"{base}.NS" in VOLUME_UNIVERSE_SET:
         return f"{base}.NS"
 
     # Best-effort: collapse non-alphanumeric in both sides and try again
     def _collapse(x: str) -> str:
         return "".join(c for c in x if c.isalnum())
     collapsed = _collapse(base)
-    for sym in UNIVERSE:
+    for sym in VOLUME_UNIVERSE:
         sym_base = sym.split(".", 1)[0]
         if _collapse(sym_base) == collapsed:
             return sym
@@ -442,7 +442,7 @@ def run_backtest(
             }
         mode = "A" if len(symbols) <= 2 else "B"
     else:
-        symbols = list(UNIVERSE)
+        symbols = list(VOLUME_UNIVERSE)
         for s in symbols:
             in_universe_map[s] = True
         mode = "B"
@@ -466,7 +466,11 @@ def run_backtest(
 
         # Did the caller pass exactly one symbol? Single-symbol gate timeline.
         # Otherwise (zero, or many): universe historical-picks scan.
-        if len(symbols) == 1 and len(UNIVERSE) > 1 and symbols != list(UNIVERSE):
+        if (
+            len(symbols) == 1
+            and len(VOLUME_UNIVERSE) > 1
+            and symbols != list(VOLUME_UNIVERSE)
+        ):
             return scan_symbol(
                 symbol=symbols[0],
                 start=as_of,
@@ -482,7 +486,9 @@ def run_backtest(
             hold_days=hold_days,
             top_n=top_n,
             capital=capital,
-            symbols=symbols if symbols and symbols != list(UNIVERSE) else None,
+            symbols=(
+                symbols if symbols and symbols != list(VOLUME_UNIVERSE) else None
+            ),
             max_workers=max_workers,
             overrides=overrides,
         )
@@ -1376,7 +1382,15 @@ def scan_universe(
             ),
         }
 
-    sym_set = list(symbols) if symbols else list(UNIVERSE)
+    # Range scans model the live volume strategy. Even an explicit symbol list
+    # cannot widen it beyond Nifty 300.
+    sym_set = (
+        [symbol for symbol in symbols if symbol in VOLUME_UNIVERSE_SET]
+        if symbols
+        else list(VOLUME_UNIVERSE)
+    )
+    if not sym_set:
+        return {"error": "no supplied symbols are in the Nifty 300 volume universe"}
 
     # ---- Prefetch all OHLCV in parallel ----
     fetch_end = end_d + _td(days=int(hold_days * 1.6) + 5)

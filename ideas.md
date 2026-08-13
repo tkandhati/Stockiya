@@ -8,6 +8,50 @@ Before entertaining any new scoring-logic change (tilts, new stages, threshold s
 
 ---
 
+## Delivery % in the canonical composite — deliberately NOT done (measure-first)
+
+**Date parked:** 2026-08-10
+**Status:** Deferred — the scoring-neutral "Delivery-led analysis" section (CHANGELOG 2026-08-10) is the shipped alternative
+
+### The idea
+
+Give NSE delivery % a real weight in the pick rule (the composite S), so sustained
+above-normal delivery can lift a name into the actual picks — not just into the
+separate delivery-led section.
+
+### Why parked
+
+1. **Un-tunable / un-backtestable.** The champion-challenger tuner validates every
+   weight against historical backtests, but on-disk delivery only spans ~45 days —
+   the 2024/2025 trace history has none. A delivery weight could never be fit or
+   ratified the way the other legs are; hand-setting a magnitude violates
+   PRINCIPLES §9 ("the bandit ratifies magnitudes on outcomes, not intuition").
+2. **Perturbs everything.** A new weight renormalizes the sum → shifts the
+   tau-relative ranking of *every* candidate, not just delivery-strong ones.
+3. **Mature-name skew.** Delivery *level* skews toward later-stage names — the very
+   pull the 2026-07-31 change removed from display ordering. A weight reintroduces
+   it against the pre-breakout north star.
+4. **Firewall / determinism.** Delivery is often absent; selection must not depend
+   on whether an optional NSE file happens to be on disk.
+
+The fresh delivery-led section already gives delivery a genuine weighted role
+(`fresh = 0.5·delivery + 0.5·base`) **without** touching selection — measurable in
+place before anything harder.
+
+### Signal to revisit
+
+- Enough matured outcomes exist to run the attribution/IC on `accum_signal` vs
+  T+90/T+180 returns AND it shows positive, stable predictive value on borderline
+  (near-tau) names; AND
+- The delivery corpus is deep enough (or backfilled) that the tuner can fit a
+  delivery leg on real history — not a hand-set number.
+
+### Fix-points if it ever ships
+
+- It would be a new scored stage id + weight in `config/stage_weights.json` (tuner-
+  owned), NOT a hand-edit; the `accum_signal` in `backend/delivery.py` is the ready
+  feature. Keep the veto/determinism guards: absent delivery ⇒ 0 contribution.
+
 ## Price-trend strategy — maturation to a measurable second strategy
 
 **Date parked:** 2026-08-08

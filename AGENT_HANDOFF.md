@@ -1,11 +1,42 @@
 # Agent Handoff
 
-Last updated: 2026-08-03
+Last updated: 2026-08-13
 
 For proposals that have been analyzed but not shipped, see `WISHLIST.md`.
 For ideas parked pending trace evidence, see `ideas.md`.
 
-## Latest Change (2026-07-31 → 2026-08-03) — Pre-breakout picks, exit coherence, risk math
+## Latest Change (2026-08-13) — Fixed Nifty-300 volume universe + final pick-quality guards
+
+Two connected, **selection-affecting** changes (full detail + rationale in
+`CHANGELOG.md → 2026-08-13`). Offline-verified: full backend unittest package
+**171/171**; `python -m compileall backend middleware` clean. Nothing runs against
+the network.
+
+1. **Volume strategy is locked to a fixed Nifty-300 set.** New `VOLUME_UNIVERSE` /
+   `VOLUME_UNIVERSE_SET` / `VOLUME_UNIVERSE_LABEL` in `backend/universe.py`
+   (guarded to be exactly 300 unique names — raises at import otherwise). Every
+   volume call site (`[U]` gate, `orchestrator`, `backtest`, `check_universe`,
+   `data_health`, `explain`, `middleware/main`) migrated off the configurable
+   `UNIVERSE`. `STOCKYA_UNIVERSE` now scopes **only** the independent discovery
+   tools (`price_trend/`) and can never widen the volume picks. `rank_survivors`
+   partitions out any non-Nifty-300 candidate as defence-in-depth for backtest /
+   programmatic callers.
+2. **Three final pick-quality guards** (see the knob table below): volatility
+   ceiling `MAX_PICK_ATR_PCT=3.0`, `REQUIRE_ACCUMULATION_EVIDENCE` (direct `[AC]`
+   or durable-slow flow), and `[AC]` `VOLUME_DRY_MULT` 0.95→1.00 (admit
+   stable-volume bases only when tight-range + rising-ADI also pass).
+3. **Guaranteed daily pre-breakout LEAD** (`rank.rank_lead_fallback`, wired in
+   `orchestrator`): on a zero-confirmed-pick day, surface the single best calm,
+   accumulation-confirmed base coiling just under τ — **only τ is relaxed**; the
+   ATR ceiling, accumulation evidence and day-0 coherence still apply, so the
+   guaranteed pick is never a whipsaw/distribution name. Badged
+   `selection_tier="lead_watch"` (frontend "⏳ Lead · Watch"); confirmed picks get
+   `selection_tier="confirmed"`. Never runs on days with confirmed picks.
+
+New tests: `backend/tests/test_volume_universe.py`, `backend/tests/test_pick_quality.py`
+(incl. `TestGuaranteedLeadFallback`). Full backend suite **176/176**.
+
+## Previous Change (2026-07-31 → 2026-08-03) — Pre-breakout picks, exit coherence, risk math
 
 A connected series aimed at one goal the user pushed on repeatedly: make the
 picks **genuinely pre-breakout**, and make the exit monitor **agree with the
@@ -57,6 +88,11 @@ full backend unittest package **115/115**, `scripts/test_pre_breakout_accuracy.p
 | `EXCLUDE_MISSED_ENTRY` | `stages/rank.py` | `True` | Drop Stage-4/distribution from top-N |
 | `EXCLUDE_DAY0_EXIT_WATCH` | `stages/rank.py` | `True` | Drop would-immediately-exit setups |
 | `EXCLUDE_LATE_ENTRY` | `stages/rank.py` | `False` | Opt-in: also drop "late" (price already run) |
+| `MAX_PICK_ATR_PCT` | `stages/rank.py` | `3.0` | Final pick volatility ceiling; broader CS analysis remains 5.5% |
+| `REQUIRE_ACCUMULATION_EVIDENCE` | `stages/rank.py` | `True` | Require direct AC or durable-slow flow before selection |
+| `LEAD_FALLBACK_ENABLED` | `stages/rank.py` | `True` | Guarantee 1 watch-grade pre-breakout lead on zero-pick days (τ relaxed; ATR + accumulation + coherence kept). `False` = honest zero |
+| `LEAD_FALLBACK_MIN_COMPOSITE` | `stages/rank.py` | `0.0` | Floor on the lead's composite S; raise to refuse a lead too far under τ |
+| `VOLUME_DRY_MULT` | `stages/accumulation.py` | `1.00` | Admit stable-volume bases only when tight range + rising ADI also pass |
 | `STEALTH_DEMAND_BONUS_MIN` | `stages/rank.py` | `1.5` | Right-edge up/down for the ranker bonus |
 | `HEALING_CARVE_OUT_ENABLED` | `pre_breakout_tag.py` | `True` | `False` = literal strict flow unanimity |
 | `STEALTH_DEMAND_MIN_RATIO` | `pre_breakout_tag.py` | `1.5` | Right-edge demand floor for the tag |
@@ -476,7 +512,8 @@ have been analyzed and moved to `WISHLIST.md`.
 ## Current Architecture Truth
 
 Stockiya is a deterministic, volume-only swing screener (default scan universe
-`nifty300` — a curated top-300 set; configurable via `STOCKYA_UNIVERSE`) for a
+`nifty300` — a curated top-300 set, fixed for the volume strategy; the independent
+discovery universe remains configurable via `STOCKYA_UNIVERSE`) for a
 **swing hold — 3 weeks to 3 months typical, up to 6 months for runners**.
 Day-180 is the outer hard cap, not a target; the median winner hits T1
 around day 21 and finishes T2 or exits inside 1-3 months from entry.

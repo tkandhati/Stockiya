@@ -124,9 +124,9 @@ def _most_recent_trading_day(today: Optional[date] = None) -> date:
 def _check_universe() -> HealthItem:
     """Universe is in-code; verify import + count."""
     try:
-        from .universe import UNIVERSE, UNIVERSE_LABEL
-        n = len(UNIVERSE)
-        label = f"{UNIVERSE_LABEL} universe list"
+        from .universe import VOLUME_UNIVERSE, VOLUME_UNIVERSE_LABEL
+        n = len(VOLUME_UNIVERSE)
+        label = f"{VOLUME_UNIVERSE_LABEL} volume universe list"
     except Exception as e:
         return HealthItem(
             id="universe", label="Scan universe list",
@@ -134,14 +134,12 @@ def _check_universe() -> HealthItem:
             status="error", detail=f"import failed: {e}",
             fix="Check backend/universe.py exists and is syntactically valid.",
         )
-    # Universe-agnostic floor: anything under ~40 means a broken/empty list
-    # (nifty50 is the smallest valid preset). Not tied to any one preset size.
-    if n < 40:
+    if n != 300:
         return HealthItem(
             id="universe", label=label,
             path="backend/universe.py",
-            status="warn", detail=f"only {n} symbols — list looks truncated",
-            fix="Check STOCKYA_UNIVERSE / refresh backend/universe.py UNIVERSE list.",
+            status="warn", detail=f"{n} symbols — expected exactly 300",
+            fix="Refresh backend/universe.py VOLUME_UNIVERSE list.",
         )
     return HealthItem(
         id="universe", label=label,

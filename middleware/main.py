@@ -25,7 +25,10 @@ load_dotenv(_PROJECT_ROOT / "backend" / ".env")
 
 from backend.cache import detail_cache  # noqa: E402
 from backend.signals import compute as compute_accumulation  # noqa: E402
-from backend.universe import UNIVERSE, UNIVERSE_LABEL  # noqa: E402
+from backend.universe import (  # noqa: E402
+    VOLUME_UNIVERSE_LABEL,
+    VOLUME_UNIVERSE_SET,
+)
 from backend.yahoo import history_6m, history_ohlcv, snapshot  # noqa: E402
 
 from backend.positions_view import list_active_positions  # noqa: E402
@@ -274,8 +277,11 @@ def _todays_pick_for(symbol: str) -> Pick | None:
 @app.get("/api/stock/{symbol}", response_model=StockDetail)
 def stock_detail(symbol: str) -> StockDetail:
     symbol = symbol.upper()
-    if symbol not in UNIVERSE:
-        raise HTTPException(status_code=404, detail=f"{symbol} not in {UNIVERSE_LABEL} universe")
+    if symbol not in VOLUME_UNIVERSE_SET:
+        raise HTTPException(
+            status_code=404,
+            detail=f"{symbol} not in {VOLUME_UNIVERSE_LABEL} universe",
+        )
 
     cached = detail_cache.get(symbol)
     if cached is not None:

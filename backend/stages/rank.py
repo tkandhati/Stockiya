@@ -28,6 +28,7 @@ Fix points:
     BONUS_RS_RANK_TOP_PCT   : top fraction of survivors for RS bonus
     BONUS_WEIGHT            : weight on bonus signals (default 0.5)
     TOP_N                   : how many picks per day (default 3)
+    MAX_PICK_ATR_PCT        : final volatility ceiling (default 3.0%)
 
 Note: bulk/block deals were removed from confirmation scoring on 2026-07-27 —
 they are optional/flaky data and now feed only the scoring-neutral presentation
@@ -52,7 +53,8 @@ from ..indicators import (
     stealth_demand_ratio,
     volume_spike_event,
 )
-from ..pipeline import COMPOSITE_WEIGHTS, PipelineResult
+from ..pipeline import COMPOSITE_TAU, COMPOSITE_WEIGHTS, PipelineResult
+from ..universe import VOLUME_UNIVERSE_SET
 # Reuse the EXACT exit-watch thresholds so a stock that WOULD exit-flip on day 0
 # is kept out of the picks — entry and exit stay in lockstep by construction.
 from ..signal_trajectory import (
@@ -92,6 +94,32 @@ EXCLUDE_DAY0_EXIT_WATCH: bool = True    # tunable
 # default — "late" is extended-but-not-distribution, so excluding it is a
 # stricter policy the user can opt into; the reported bug does not require it.
 EXCLUDE_LATE_ENTRY: bool = False        # tunable
+
+# Final quality boundary. [CS] remains a soft stage so near-misses stay visible,
+# but the actual buy list should not contain a stock moving more than ~3% ATR
+# per day. This is deliberately below CS's broad 5.5% analysis ceiling.
+EXCLUDE_HIGH_VOLATILITY: bool = True    # tunable
+MAX_PICK_ATR_PCT: float = 3.0           # tunable
+
+# The composite is intentionally tolerant of one weak soft leg, but a volume-
+# accumulation strategy must still show accumulation somewhere. Accept either
+# direct [AC] confirmation or the durable-slow multi-horizon profile (which
+# itself requires a quiet VD/AC footprint). This closes the path where unrelated
+# breakout bonuses could carry a no-accumulation candidate into the top-N.
+REQUIRE_ACCUMULATION_EVIDENCE: bool = True  # tunable
+
+# Guaranteed daily pre-breakout LEAD (2026-08-13). When the strict guards leave
+# zero confirmed picks, surface the single best PRE-BREAKOUT candidate from the
+# hard-gate pool even when it is just below the confirmation threshold τ. Only τ
+# is relaxed here: the volatility ceiling (MAX_PICK_ATR_PCT), accumulation
+# evidence, day-0 exit-coherence and the missed-entry veto ALL still apply — so
+# the lead is always a calm, coiling, accumulation-confirmed name that will not
+# be a whipsaw/volatility problem the next day, never a distribution setup. It is
+# badged `selection_tier="lead_watch"` so the UI shows it as watch-grade, not a
+# confirmed buy. Set LEAD_FALLBACK_ENABLED=False to restore honest zero-pick days;
+# raise LEAD_FALLBACK_MIN_COMPOSITE to refuse a lead that is too far under τ.
+LEAD_FALLBACK_ENABLED: bool = True        # tunable
+LEAD_FALLBACK_MIN_COMPOSITE: float = 0.0  # tunable — floor on S (0 = always surface best qualifying)
 
 
 # --------------------------------------------------------------------------- #
@@ -145,6 +173,23 @@ def rank_survivors(
 
     Returns the selected list, sorted #1 -> #N.
     """
+    if not survivors:
+        return []
+
+    # Defence in depth: the [U] gate and live orchestrator already use the
+    # fixed volume universe, but the ranker is also called by backtests and
+    # programmatic callers.  No caller may turn an out-of-scope result into a
+    # volume-strategy pick by supplying a wider/custom candidate list.
+    survivors, outside_volume_universe = _partition_volume_universe(survivors)
+    for r in outside_volume_universe:
+        r.selected = False
+        r.rank = None
+    if outside_volume_universe:
+        log.warning(
+            "rank: rejected %d non-Nifty-300 candidate(s): %s",
+            len(outside_volume_universe),
+            ", ".join(r.symbol for r in outside_volume_universe),
+        )
     if not survivors:
         return []
 
@@ -304,8 +349,69 @@ def rank_survivors(
     for rank, r in enumerate(selected, start=1):
         r.selected = True
         r.rank = rank
+        if isinstance(r.confirmation_components, dict):
+            # Default tier for a name that cleared every strict guard. The
+            # fallback below overrides the winner it promotes to "lead_watch".
+            r.confirmation_components.setdefault("selection_tier", "confirmed")
 
     return selected
+
+
+def rank_lead_fallback(
+    hard_survivors: list[PipelineResult],
+    *,
+    min_composite: Optional[float] = None,
+) -> Optional[PipelineResult]:
+    """Best watch-grade pre-breakout lead from the hard-gate pool (τ relaxed).
+
+    Runs the SAME confirmation ranking and selection vetoes as `rank_survivors`
+    — volatility ceiling, accumulation evidence, day-0 exit-coherence and the
+    missed-entry veto all still enforced — over the wider hard-gate pool, which
+    (unlike the strict `survivors` list) includes below-τ near-misses. Returns
+    the single top qualifying candidate, tagged `selection_tier="lead_watch"`,
+    or None when nothing qualifies or its composite is under the floor.
+
+    Call this only when `rank_survivors` returned no confirmed picks; it exists
+    so a day is never silently empty when a genuine, calm, accumulating
+    pre-breakout base is coiling just under the confirmation line.
+    """
+    if not LEAD_FALLBACK_ENABLED or not hard_survivors:
+        return None
+    floor = LEAD_FALLBACK_MIN_COMPOSITE if min_composite is None else min_composite
+
+    ranked = rank_survivors(list(hard_survivors), top_n=1)
+    if not ranked:
+        return None
+    lead = ranked[0]
+
+    composite = float(lead.composite_score or 0.0)
+    if composite < floor:
+        # Even the best coherent, accumulation-confirmed candidate is too far
+        # under τ — honest empty beats surfacing a weak name as "the lead".
+        lead.selected = False
+        lead.rank = None
+        return None
+
+    comps = lead.confirmation_components if isinstance(lead.confirmation_components, dict) else {}
+    comps["selection_tier"] = "lead_watch"
+    comps["lead_note"] = (
+        f"Approaching confirmation — S={composite:.3f} vs τ={COMPOSITE_TAU:.2f}. "
+        f"Accumulation-confirmed and inside the {MAX_PICK_ATR_PCT:.1f}% volatility "
+        "ceiling; watch-grade lead, wait for the trigger / size cautiously."
+    )
+    lead.confirmation_components = comps
+    return lead
+
+
+def _partition_volume_universe(
+    survivors: list[PipelineResult],
+) -> tuple[list[PipelineResult], list[PipelineResult]]:
+    """Split candidates at the volume strategy's fixed Nifty-300 boundary."""
+    eligible: list[PipelineResult] = []
+    excluded: list[PipelineResult] = []
+    for result in survivors:
+        (eligible if result.symbol in VOLUME_UNIVERSE_SET else excluded).append(result)
+    return eligible, excluded
 
 
 def _selection_veto_reason(r: PipelineResult) -> Optional[str]:
@@ -323,6 +429,30 @@ def _selection_veto_reason(r: PipelineResult) -> Optional[str]:
         return "late (price already run)"
     if EXCLUDE_DAY0_EXIT_WATCH and comps.get("day0_exit_watch"):
         return f"day-0 exit-watch: {comps['day0_exit_watch']}"
+
+    stages = getattr(r, "stage_results", None) or {}
+    cs = stages.get("CS")
+    cs_features = getattr(cs, "features", None) or {}
+    try:
+        atr_pct = float(cs_features.get("atr_pct"))
+    except (TypeError, ValueError):
+        atr_pct = None
+    if (
+        EXCLUDE_HIGH_VOLATILITY
+        and atr_pct is not None
+        and atr_pct > MAX_PICK_ATR_PCT
+    ):
+        return f"high volatility: ATR/price {atr_pct:.2f}% > {MAX_PICK_ATR_PCT:.1f}%"
+
+    # Fail open for legacy/minimal callers that did not run [AC]. The live and
+    # backtest chains always include it, so their complete context is held to
+    # the accumulation-evidence requirement.
+    ac = stages.get("AC")
+    early = comps.get("early_accumulation") or {}
+    durable_slow = bool((early.get("features") or {}).get("durable_slow"))
+    direct_ac = bool(ac is not None and getattr(ac, "passed", False))
+    if REQUIRE_ACCUMULATION_EVIDENCE and ac is not None and not (direct_ac or durable_slow):
+        return "no confirmed accumulation (AC failed and durable flow absent)"
     return None
 
 

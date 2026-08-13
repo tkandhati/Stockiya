@@ -150,11 +150,11 @@ def _ingest(sr: StageResult) -> str:
 
 
 def _universe(sr: StageResult) -> str:
-    from .universe import UNIVERSE_LABEL
+    from .universe import VOLUME_UNIVERSE_LABEL
     if sr.passed:
-        return f"Ticker is in the {UNIVERSE_LABEL} scan universe — eligible for the strategy."
+        return f"Ticker is in the {VOLUME_UNIVERSE_LABEL} scan universe — eligible for the strategy."
     return (
-        f"Ticker isn't in the {UNIVERSE_LABEL} scan universe. The strategy is "
+        f"Ticker isn't in the {VOLUME_UNIVERSE_LABEL} scan universe. The strategy is "
         "intentionally scoped to a curated liquid universe where the "
         "institutional volume signature is reliable; less-liquid names are "
         "excluded because delivery/deal/volume evidence gets noisy there."

@@ -1,6 +1,8 @@
 """Stock universes — Nifty 50 / 100 / 200 / 300 / 500, plus a `custom` file loader.
 
-The pipeline scans whichever universe is selected by `STOCKYA_UNIVERSE`:
+The volume strategy is permanently scoped to ``VOLUME_UNIVERSE`` (Nifty 300).
+``STOCKYA_UNIVERSE`` only selects the configurable universe used by independent
+discovery tools such as the price-trend scanner:
 
     STOCKYA_UNIVERSE=nifty50    — Nifty 50 (fast smoke tests)
     STOCKYA_UNIVERSE=nifty100   — Nifty 50 + Nifty Next 50
@@ -14,17 +16,16 @@ The pipeline scans whichever universe is selected by `STOCKYA_UNIVERSE`:
 NOTE: "Nifty 300" is NOT an official NSE index (the official broad indices are
 Nifty 200 and Nifty 500; the top-300-by-cap set is closest to "Nifty
 LargeMidcap 250" + 50). `NIFTY_300` here is a pragmatic top-300 slice of the
-curated `NIFTY_500` list. For the *exact* official constituents of any index at
-a point in time, paste them into `config/universe_custom.txt` and set
-`STOCKYA_UNIVERSE=custom` — that overrides everything.
+curated `NIFTY_500` list. `STOCKYA_UNIVERSE=custom` can supply exact official
+constituents to independent discovery tools, but it intentionally cannot widen
+the volume strategy beyond the fixed set below.
 
 NSE rebalances these indices ~twice a year. Bump the lists below when the
 rebalance lands, and confirm symbols via `python -m backend.check_universe`.
 
 The hardcoded NIFTY_500 list is a *reasonable* snapshot from prior knowledge;
-it will drift from the official constituents at each rebalance. If accuracy
-matters, put the current official list in `config/universe_custom.txt` and set
-`STOCKYA_UNIVERSE=custom` — that overrides everything.
+it will drift from official constituents at each rebalance. Refresh these
+tracked lists when the volume strategy's exact membership needs to change.
 
 Known dead / corporate-action affected (kept as comments so future-you
 knows why they were removed):
@@ -115,9 +116,8 @@ NIFTY_200 = NIFTY_100 + [t for t in NIFTY_MIDCAP_100 if t not in NIFTY_100]
 # Nifty Smallcap 100 (subset) — 300 more names below N200 to reach ~500
 #
 # Broad small-cap universe, curated from well-known listed names on NSE.
-# Not an official NSE index snapshot — treat as a starter set. For accuracy
-# at any point in time, use STOCKYA_UNIVERSE=custom with the current official
-# constituents pasted into config/universe_custom.txt.
+# Not an official NSE index snapshot — treat as a starter set and refresh the
+# tracked lists when the volume strategy's exact membership needs to change.
 # --------------------------------------------------------------------------- #
 NIFTY_SMALLCAP_300 = [
     # Auto / auto ancillary
@@ -222,6 +222,16 @@ NIFTY_500 = _dedupe(NIFTY_200 + [t for t in NIFTY_SMALLCAP_300 if t not in NIFTY
 # --------------------------------------------------------------------------- #
 NIFTY_300 = NIFTY_500[:300]
 
+# The volume strategy's eligibility boundary.  Keep this separate from the
+# configurable ``UNIVERSE`` below: changing STOCKYA_UNIVERSE may widen or narrow
+# independent scanners, but must never admit a non-Nifty-300 volume pick.
+VOLUME_UNIVERSE_NAME = "nifty300"
+VOLUME_UNIVERSE_LABEL = "Nifty 300"
+VOLUME_UNIVERSE = tuple(NIFTY_300)
+VOLUME_UNIVERSE_SET = frozenset(VOLUME_UNIVERSE)
+if len(VOLUME_UNIVERSE) != 300 or len(VOLUME_UNIVERSE_SET) != 300:
+    raise RuntimeError("VOLUME_UNIVERSE must contain exactly 300 unique symbols")
+
 
 # --------------------------------------------------------------------------- #
 # Custom-file universe — the escape hatch
@@ -254,7 +264,7 @@ def _load_custom_universe() -> list[str]:
 
 
 # --------------------------------------------------------------------------- #
-# Universe selector — driven by env var STOCKYA_UNIVERSE
+# Discovery-universe selector — driven by env var STOCKYA_UNIVERSE
 # --------------------------------------------------------------------------- #
 
 UNIVERSES = {
@@ -272,7 +282,7 @@ _UNIVERSE_LABELS = {
     "nifty300": "Nifty 300", "nifty500": "Nifty 500", "custom": "custom universe",
 }
 
-# Default universe (2026-07-27): nifty300. Was nifty100.
+# Default discovery universe (2026-07-27): nifty300. Was nifty100.
 _DEFAULT_UNIVERSE = "nifty300"
 
 

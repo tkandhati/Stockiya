@@ -308,15 +308,15 @@ file you can open.**
 
 ### Stage [U] Universe — `backend/stages/universe.py`
 
-**What it does:** Gate. Checks if the ticker is in the scan universe (default Nifty 300).
+**What it does:** Gate. Checks if the ticker is in the fixed Nifty-300 volume universe.
 
 ```
 Input:  ticker symbol (e.g. "HDFCBANK.NS")
-Check:  symbol in backend/universe.py:UNIVERSE  (100 tickers hardcoded)
+Check:  symbol in backend/universe.py:VOLUME_UNIVERSE  (300 tickers)
 Output: passed=True → continue | passed=False → skip forever
 ```
 
-**Fix point:** `backend/universe.py` — edit the list to add/remove tickers.
+**Fix point:** `backend/universe.py:VOLUME_UNIVERSE`.
 
 ---
 

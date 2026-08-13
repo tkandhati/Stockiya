@@ -54,6 +54,18 @@ export function PickCard({ pick }: { pick: Pick }) {
                 #{pick.rank}
               </span>
             )}
+            {/* Watch-grade daily lead: no setup cleared confirmation today, so
+                this is the strongest calm, accumulation-confirmed base coiling
+                just under the threshold — an indication to watch, not a
+                confirmed buy. */}
+            {pick.selection_tier === 'lead_watch' && (
+              <span
+                className="rounded-full bg-sky-100 px-2 py-0.5 text-xs font-semibold text-sky-800"
+                title={pick.lead_note || 'Approaching confirmation — watch-grade lead'}
+              >
+                ⏳ Lead · Watch
+              </span>
+            )}
             <h2 className="text-xl font-semibold leading-tight text-slate-900">
               {pick.company || pick.symbol}
             </h2>

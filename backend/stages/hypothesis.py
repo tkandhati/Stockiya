@@ -394,10 +394,16 @@ def build_pick_payload(
         },
     }
 
+    _comps = result.confirmation_components or {}
     return {
         # ---- New shape (primary) ----
         "symbol": result.symbol,
         "rank": result.rank,
+        # Selection confidence tier: "confirmed" (cleared every strict guard) or
+        # "lead_watch" (guaranteed daily pre-breakout lead, coiling just under τ —
+        # see rank.rank_lead_fallback). `lead_note` explains a watch-grade lead.
+        "selection_tier": _comps.get("selection_tier"),
+        "lead_note": _comps.get("lead_note"),
         "trace_id": result.trace_id,
         "company": snapshot.get("company"),
         "sector": snapshot.get("sector"),

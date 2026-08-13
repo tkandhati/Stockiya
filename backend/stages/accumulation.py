@@ -7,7 +7,7 @@ underlying accumulation (smart-money footprint), not just a lull.
 Three checks, all must pass on the last EOD bar:
 
   1. Range over W bars is tight             (re-check, same as [ACS])
-  2. Volume in W bars is dry                (re-check, same as [ACS])
+  2. Volume in W bars is dry or stable      (no expansion without a breakout)
   3. ADI positive divergence:               (the new signal)
         price_slope over W    is ~flat
         AND ADI_slope over W  is rising
@@ -20,7 +20,7 @@ Fix points:
     ACCUM_WINDOW              : bars for all slope/range checks (default 20)
     TIER2_BARS_REQUIRED       : minimum history for stable ADI + slope fit
     TIGHT_RANGE_PCT_MAX       : range as % of mean close (default 0.10)
-    VOLUME_DRY_MULT           : recent vol vs prior vol (default 0.95)
+    VOLUME_DRY_MULT           : recent vol vs prior vol (default 1.00)
     PRICE_SLOPE_MAX_ABS       : max |price slope| for "flat" (default 0.002)
     ADI_SLOPE_MIN             : min ADI slope for "rising" (default 0.005)
 
@@ -50,7 +50,10 @@ ACCUM_WINDOW_BASE: int = 20      # tunable — anchor for adaptive_windows()
 ACCUM_WINDOW_MAX_CAP: int = 60   # tunable — cap for adaptive triplet
 TIER2_BARS_REQUIRED: int = 180        # tunable — stability floor for ADI slope
 TIGHT_RANGE_PCT_MAX: float = 0.10     # tunable
-VOLUME_DRY_MULT: float = 0.95         # tunable
+# AC already requires tight price action AND rising ADI. Allowing unchanged
+# volume (1.00x) captures quiet accumulation that the cheap ACS pre-screen can
+# miss by a few basis points, without admitting expanding-volume churn.
+VOLUME_DRY_MULT: float = 1.00         # tunable
 PRICE_SLOPE_MAX_ABS: float = 0.002    # tunable — normalized slope threshold
 ADI_SLOPE_MIN: float = 0.005          # tunable — normalized slope threshold
 MIN_ADV_SHARES: float = 200_000       # tunable — liquidity floor
