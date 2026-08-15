@@ -656,3 +656,42 @@ When the user wants to decide the signed-pressure/veto items without waiting for
 - Fetch script (laptop-side, standalone): reads `config/nifty100.txt` equivalent (universe from `backend/universe.py::NIFTY_100`), writes `SYMBOL.NS.csv` per ticker. Not committed data.
 - Run: `DATA_SOURCE=bhavcopy STOCKYA_OHLCV_DIR=<stockya-local dir> python -m backend.backtest` (Mode B).
 - `[HR]`-passer outcome widening: `stages/outcome.py` (+ `was_selected` column) — prereq C, shared with *Precision-first refit*.
+
+---
+
+## Evaluation: 5 user "ideal" names — capture is fine, in-sample exit expectancy is not (measure-first)
+
+**Date parked:** 2026-08-15
+**Status:** Documented finding + experiments. **NO code change made** — sample far too small/correlated to touch deterministic selection or exit logic.
+
+### What was tested
+
+User supplied 18-month NSE OHLCV (~350 bars, ending 14-Aug-2026) for AUROPHARMA, BHARATFORG, BHEL, TITAN, UNITDSPR and asked (a) would the volume engine pick them and (b) hold them correctly. Method: fed the real per-ticker chain + real `rank_survivors` as-of *every* session (walk-forward), then graded each confirmed pick with the app's own exit ladder (`backtest.forward_walk`) on the forward bars already inside the file. Scratch harnesses at repo root (uncommitted): `_harness_walkforward.py`, `_harness_survivor_audit.py`, `_harness_exit_grade.py`.
+
+### Findings
+
+1. **Capture is NOT the problem.** All 5 became CONFIRMED picks on real dates (TITAN 9×, BHARATFORG 4×, AUROPHARMA/BHEL/UNITDSPR 2× each). Highest-S captures were quiet-coil days (TITAN S=0.52 with AC+VD true, BR false), not spike days — the stated quiet-accumulation edge is intact. The one-day 14-Aug snapshot that showed "0 picks" was merely a resting as-of date, not a blind spot.
+2. **Exit expectancy in-sample was negative.** App's own ladder (fill=next open; stop −8% / T1 +8% sell-half+raise-to-BE / T2 +16% / day-45 tighten / day-90 hard-exit) over the 14 complete outcomes: mean −3.1%, median −8.0%, win 36%, T1-hit 36%, **9/14 hit the −8% stop.** WORSE than raw buy&hold-63d (−1.6%, 45% win) — the fixed −8% stop books routine pullbacks before +8% T1.
+3. **Root-cause hypothesis.** The engine admits these leaders MID-Stage-2 (only UNITDSPR tagged `entry_timing="early"`). A mid-advance entry sits well above the base, so an ordinary shakeout ≈ −8% and the stop fires. The ATR-adaptive stop does NOT engage because these names' ATR (2–3%) → 2×ATR < the 8% floor, so the flat 8% governs.
+
+### Why NO change (measure-first)
+
+14 outcomes ≈ 5–6 *independent* trades (5 self-selected names, one regime, TITAN's 8 "picks" are one drifting base live-reconciliation would dedupe to ~1). Changing the stop/entry on this overfits to the user's favorites in one period — the anti-pattern the guiding principle above and PRINCIPLES §9 forbid.
+
+### Two testable hypotheses (run at scale first)
+
+- **H1 — entry timing.** If stop-hit rate correlates with `entry_stage_label`/`entry_timing` (mid/late worse than early), the lever is *earlier admission* (the AC coil), not the stop. Measure via `backtest.py` Mode B universe-wide × multiple as-of spans → group stop-hit rate by entry_timing.
+- **H2 — stop structure.** Re-grade the same picks with a structure/swing-low stop (below the base low) vs the fixed −8% in `forward_walk`. If swing-low cuts stop-outs without ballooning avg loss, the flat floor is the culprit for calm large-caps.
+
+### Signal to revisit / fix-points
+
+Revisit once point-in-time OHLCV is dropped (see *Matured outcomes via offline backtest* above) so H1/H2 run over the full universe + several periods. Fix-points if H2 ships: `position_sizer.STOP_PCT` and the ATR-floor logic; `backtest.forward_walk` stop model. Do not act on the 5-name sample alone.
+
+### Tested variants (2026-08-15) — both rejected on evidence
+
+Two anti-churn proposals were tested on the same 5 names (`_harness_persistence.py`):
+
+- **"Scan longer than today" (require a pick to persist ≥2 sessions before entering).** Made outcomes **worse**: today-only entries mean −2.2% / 40% win / 60% stopped (n=5); persisted-≥2-day entries mean **−8.0% / 0% win / 100% stopped** (n=3). Names that persist as picks are drifting bases — persistence means entering *later* into the drift, so the −8% stop is even likelier. Rejected (small sample, but it points the wrong way).
+- **"More threshold to avoid next-day flip."** The pick→non-pick next-day flip rate is genuinely high (58% of pick-days), so the churn the user perceives is real — **but it is candidate-LIST churn, not position churn**: once entered, `picks_reconcile` holds the position and exits are governed by stop/target/trajectory, not the daily pick list. So the flip does not cause the measured losses. The day-0 flip guards are also *already* the biggest veto source (EXCLUDE_DAY0_EXIT_WATCH blocked BHARATFORG 11×, BHEL 7×, TITAN 5× in the survivor audit); adding more would over-block good setups. Rejected — wrong target.
+
+Net: neither churn lever touches the actual loss driver (−8% stop on mid-advance entries → H2). Keep the focus on H1/H2, measured at scale.
