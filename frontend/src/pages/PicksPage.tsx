@@ -5,6 +5,7 @@ import { fetchPicks, fmtDateTimeIST, refreshPicks } from '../api'
 import { DemoBanner } from '../components/DemoBanner'
 import { DataHealthPill } from '../components/DataHealthPill'
 import { ClosestToFiringPanel } from '../components/ClosestToFiringPanel'
+import { NotActionablePanel } from '../components/NotActionablePanel'
 import { PickCard } from '../components/PickCard'
 import { DeliveryWeightedPicks } from '../components/DeliveryWeightedPicks'
 import { RegimeBanner } from '../components/RegimeBanner'
@@ -149,6 +150,12 @@ export function PicksPage() {
         )}
 
       </main>
+
+      {/* Picks the scan surfaced that are NOT enterable today (late / extended /
+          distribution). Own section below the buy list, for awareness only. */}
+      {data?.not_actionable && data.not_actionable.length > 0 && (
+        <NotActionablePanel rows={data.not_actionable} />
+      )}
 
       {/* The full candidate pool — moved to the very bottom and shown on EVERY
           day (not only empty days), so the near-misses are always visible. */}

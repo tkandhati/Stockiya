@@ -34,6 +34,7 @@ from .indicators import (
     distribution_day_count,
     obv,
     obv_flow_inflection,
+    obv_norm_slope_pct,
     obv_slope_pct,
     rolling_high,
     sma_slope_pct,
@@ -71,6 +72,16 @@ _WEAKEN_RATIO = 0.50        # current <  entry * 0.50 -> weakening
 FLIP_THRESHOLD_OBV_90D_PCT: float = -3.0
 FLIP_THRESHOLD_UP_DOWN_RATIO: float = 0.9
 FLIP_THRESHOLD_MA150_PCT: float = -0.5
+
+# Flip threshold for the zero-crossing-safe normalized OBV-90d metric
+# (obv_norm_slope_pct). Same intent as FLIP_THRESHOLD_OBV_90D_PCT — a clearly
+# negative slope, not a mere nudge below zero — but expressed in normalized
+# "%-of-mean(|OBV|) per window" units. Preferred by _build_report when both the
+# entry and current traces carry `obv_90d_norm_slope_pct`; the legacy unstable
+# pair + FLIP_THRESHOLD_OBV_90D_PCT remain the fallback for older entry traces
+# so existing positions keep a like-for-like entry-vs-current comparison.
+# Tunable once offline calibration data is available.
+FLIP_THRESHOLD_OBV_90D_NORM_PCT: float = -3.0
 
 # --------------------------------------------------------------------------- #
 # Divergent-entry ("Pocket-Pivot / No-Supply-Test") exit rules — B1 override.
@@ -255,6 +266,9 @@ def _current_features_from_df(df) -> dict:
     adv50 = adv(volume, 50)
     return {
         "obv_90d_slope_pct": obv_slope_pct(obv_series, 90),
+        # Zero-crossing-safe companion (see _build_report — preferred when both
+        # entry and current traces carry it; legacy metric is the fallback).
+        "obv_90d_norm_slope_pct": obv_norm_slope_pct(obv_series, 90),
         "up_down_vol_ratio_90d": up_down_vol_ratio(close, volume, 90),
         "ma150_slope_pct": sma_slope_pct(close, 150, 50),
         "volume_event_kind": event.kind,
@@ -518,6 +532,7 @@ def trajectory_between_traces(
     # their windowed indicators "unknown" — the 3 LT signals drive the verdict.
     current = {
         "obv_90d_slope_pct": cur_lt.get("obv_90d_slope_pct"),
+        "obv_90d_norm_slope_pct": cur_lt.get("obv_90d_norm_slope_pct"),
         "up_down_vol_ratio_90d": cur_lt.get("up_down_vol_ratio_90d"),
         "ma150_slope_pct": cur_lt.get("ma150_slope_pct"),
         "obv_flow_inflection": cur_vd.get("obv_flow_inflection"),
@@ -544,15 +559,30 @@ def _build_report(
     """Pure classifier — no I/O. Tests can drive this directly."""
     indicators: list[IndicatorDelta] = []
 
-    # 1. OBV-90d slope — flip mirrors LT.OBV_90D_SLOPE_MIN (3.0)
-    e = entry_lt.get("obv_90d_slope_pct")
-    c = current.get("obv_90d_slope_pct")
-    state = _classify_positive(e, c, flip_threshold=FLIP_THRESHOLD_OBV_90D_PCT)
+    # 1. OBV-90d slope. Prefer the zero-crossing-safe normalized metric when
+    #    BOTH the entry and current traces expose it (positions entered after
+    #    the 2026-08-23 additive change). Fall back to the legacy obv_slope_pct
+    #    pair for older entry traces — mixing the two units would be worse than
+    #    keeping a consistent, if unstable, like-for-like comparison. The legacy
+    #    metric can blow up near an OBV zero-crossing, which is exactly why new
+    #    entries migrate to the normalized one.
+    e_norm = entry_lt.get("obv_90d_norm_slope_pct")
+    c_norm = current.get("obv_90d_norm_slope_pct")
+    if e_norm is not None and c_norm is not None:
+        e, c = e_norm, c_norm
+        obv_name, obv_label = "obv_90d_norm_slope_pct", "OBV-90d slope (norm)"
+        obv_flip = FLIP_THRESHOLD_OBV_90D_NORM_PCT
+    else:
+        e = entry_lt.get("obv_90d_slope_pct")
+        c = current.get("obv_90d_slope_pct")
+        obv_name, obv_label = "obv_90d_slope_pct", "OBV-90d slope"
+        obv_flip = FLIP_THRESHOLD_OBV_90D_PCT
+    state = _classify_positive(e, c, flip_threshold=obv_flip)
     indicators.append(IndicatorDelta(
-        name="obv_90d_slope_pct",
-        label="OBV-90d slope",
+        name=obv_name,
+        label=obv_label,
         entry_value=e, current_value=c, state=state,
-        description=_fmt_pct_delta("OBV-90d", e, c),
+        description=_fmt_pct_delta(obv_label, e, c),
     ))
 
     # 2. Up/down vol ratio 90d — flip mirrors LT.UPDOWN_90D_MIN (1.1)

@@ -274,6 +274,7 @@ export type PositionAction =
   | 'exit_time_stop'
   | 'exit_final'
   | 'exit_distribution'
+  | 'data_unavailable'
 
 export type SignalState =
   | 'strong'
@@ -501,6 +502,22 @@ export interface DeliveryAnalysisRow {
   in_picks: boolean           // also a volume pick today?
 }
 
+// Why a pick was moved out of the main (enter-today) buy list.
+export interface NotActionableReason {
+  category: string          // late_entry | extended_breakout | distribution | timing_unclear
+  entry_timing: string
+  broke_out?: boolean
+  weinstein_stage?: string | null
+  why: string
+}
+
+export interface NotActionableRow {
+  symbol: string
+  company?: string | null
+  rank?: number | null
+  reason: NotActionableReason
+}
+
 export interface PicksResponse {
   date: string
   generated_at: string
@@ -511,6 +528,8 @@ export interface PicksResponse {
   picks: Pick[]
   closest_to_firing?: ClosestToFiring
   delivery_analysis?: DeliveryAnalysisRow[]
+  // Picks moved out of the main (enter-today) buy list into the awareness section.
+  not_actionable?: NotActionableRow[]
 }
 
 // --------------------------------------------------------------------------

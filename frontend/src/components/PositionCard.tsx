@@ -76,6 +76,21 @@ const ACTION_META: Record<PositionAction, {
     tone: 'rose',
     icon: <AlertTriangle className="h-4 w-4" />,
   },
+  data_unavailable: {
+    label: 'Data unavailable — recheck',
+    tone: 'amber',
+    icon: <AlertCircle className="h-4 w-4" />,
+  },
+}
+
+// Fallback for any action string the backend emits that this map doesn't know.
+// Deliberately NOT `hold`: an unrecognized action must never render as a
+// healthy hold (it could be a new exit/warning state the UI hasn't caught up
+// with yet). Surfacing it as "recheck" fails safe.
+const UNKNOWN_META = {
+  label: 'Unknown — recheck',
+  tone: 'amber' as const,
+  icon: <AlertCircle className="h-4 w-4" />,
 }
 
 const TRAJECTORY_META: Record<
@@ -119,7 +134,7 @@ const TONE_PILL = {
 }
 
 export function PositionCard({ position: p }: { position: Position }) {
-  const meta = ACTION_META[p.action] ?? ACTION_META.hold
+  const meta = ACTION_META[p.action] ?? UNKNOWN_META
   const current = p.current_price ?? null
   const pnl = p.pnl_pct ?? null
   const isSuggested = p.ownership === 'suggested'

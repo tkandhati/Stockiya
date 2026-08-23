@@ -1,5 +1,90 @@
 # Changelog
 
+## 2026-08-23 — Data-health surfacing, pre-breakout precision guard, monitor stability
+
+Four additive, reversible changes. None bumps `PICKS_SCHEMA_VERSION` (a bump
+would make `catchup.py` try to re-run the pipeline for every historical file —
+network, which is unavailable). New picks-JSON keys are optional; readers tolerate
+their absence.
+
+### 1. Per-run data-health block (read-only observability)
+`backend/data_health.py` (new). The orchestrator already computed an
+`ingest_failed` count but used it only for the ">=90% failed = misconfigured"
+alarm and then discarded it — so partial yfinance failures (a timeout on, say,
+30 of 300 tickers) left no durable trace and nobody was notified. Now every run
+persists `data_health` into the picks JSON and the per-day summary:
+`attempted / ingested_ok / crashed / failed_by_reason {network,empty,no_price,
+missing_source,short_history,crashed} / silent_failures / failed_symbols /
+coverage_pct`. `run_summary.py` renders an honest funnel
+(`N universe → scanned → ingested → cleared hard gates → composite → picked`)
+and a ⚠️/✓ data-health line; the previously **mislabeled** `data_clean`
+(it was hard-gate survivors, not data-complete tickers) is corrected to
+`hard_gate_survivors`. Never touches selection.
+
+### 2. Entry-readiness router — main list = "enterable today" only (reversible)
+`backend/entry_readiness.py` (new), wired in `orchestrator.py`. Owner rule: the
+main BUY list must contain only setups a user can act on *today*. Everything else
+is routed to a separate `not_actionable` awareness section (still visible, with a
+reason; kept out of the portfolio journal, but every ticker's FINAL trace row is
+still written so outcome evaluation is unaffected). Pattern-based, NOT a sector
+list — it keys on signals the engine already computes:
+
+- **Main (stays):** `entry_timing ∈ {early, mid}` — a base still coiling, or a
+  fresh breakout not yet extended = still room to enter.
+- **Awareness (moves), with category:** `late` → `late_entry` (chasing);
+  `late` + already broke out → `extended_breakout`; `missed` → `distribution`;
+  `unknown`/absent → `timing_unclear`.
+- **`stale_base`:** a recurring-but-going-nowhere base — appeared
+  `>= STALE_MIN_PRIORS` (2) times in the 30-day `pick_history` trail, still
+  pre-breakout, and `|net price move| <= STALE_FLAT_PCT` (3%). This is the
+  "IndusInd keeps showing up but never works" case; it fires for ANY repeat
+  offender (the top recurrer in the data was ABB, not a bank). Checked before the
+  timing verdict so a flat recurring `mid` base is still caught.
+
+**Honesty:** timing routing is a clean product rule; `stale_base` is a heuristic
+whose thresholds (`STALE_MIN_PRIORS`, `STALE_FLAT_PCT`) are a first cut — the
+offline replay is unreliable for it (historical picks carry old-schema entries
+without `entry_timing` and embedded `pick_history` trails of mixed provenance),
+so it will be validated on clean live data. A weak day can legitimately end with
+0 main picks (e.g. 08-17: 3 late + 1 extended + 1 stale) — capital preserved, with
+the awareness panel explaining every name. Reversible: `STOCKYA_ENTERABLE_ONLY=0`.
+Offline replay: `python -m backend.entry_readiness_report`.
+
+(Supersedes the earlier narrow "pre-breakout late demote" guard, which this
+generalizes and replaces.)
+
+### 3. Live-position monitor OBV stability (additive, no regression)
+`obv_slope_pct` is zero-crossing-unstable (documented in `indicators.py`). The
+trajectory monitor compared entry-vs-current OBV-90d in those unstable units.
+Now `lt_flow.py` additively stores `obv_90d_norm_slope_pct` at entry, and
+`signal_trajectory._build_report` **prefers the normalized, zero-crossing-safe
+metric when both entry and current traces carry it**, falling back to the legacy
+pair for older positions (`FLIP_THRESHOLD_OBV_90D_NORM_PCT`, tunable). The LT
+gate's admission threshold (`OBV_90D_SLOPE_MIN`) is unchanged.
+
+### 4. DATA_UNAVAILABLE — missing price no longer masquerades as HOLD
+`positions_view._action_for` returns a distinct `data_unavailable` action on a
+missing close (was `hold`); `action_labels.py` maps it to the existing
+`DATA_UNAVAILABLE` label; `types.ts`/`PositionCard.tsx` render it explicitly and
+an **unknown** action now falls back to "recheck", never to "Hold"
+(`UNKNOWN_META`). No enforcement runs on missing data — the position is neither
+exited nor confirmed healthy.
+
+**Frontend:** `NotActionablePanel.tsx` (new) renders the `not_actionable` picks
+as their own amber "for awareness — not actionable today" section at the bottom
+of the picks page, each with its category (late entry / extended breakout /
+distribution / stale base / timing unclear) and reason.
+
+**Not done (deferred, with reason):** the WATCH → EXIT_PENDING → EXIT_CONFIRMED
+hysteresis ladder. It requires persisting a per-position warning count in
+`portfolio.csv` (parked in `ideas.md`); faking it without persistence is worse
+than the honest current behavior.
+
+**Tests:** `backend/tests/test_data_health.py`,
+`test_entry_readiness.py` (incl. stale-base), `test_monitor_stability.py`
+(18 tests). Existing touched suites (83 tests) still pass. Frontend
+`tsc --noEmit` clean.
+
 ## 2026-08-13 — Guaranteed daily pre-breakout LEAD (never-empty, still calm)
 
 Follow-on to the pick-quality guards below. Those guards (ATR ceiling +

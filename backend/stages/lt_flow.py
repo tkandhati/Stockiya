@@ -20,7 +20,13 @@ Fix points:
 
 from __future__ import annotations
 
-from ..indicators import obv, obv_slope_pct, sma_slope_pct, up_down_vol_ratio
+from ..indicators import (
+    obv,
+    obv_norm_slope_pct,
+    obv_slope_pct,
+    sma_slope_pct,
+    up_down_vol_ratio,
+)
 from ..pipeline import PipelineContext, StageResult
 
 stage_id = "LT"
@@ -53,11 +59,17 @@ def run(ctx: PipelineContext) -> StageResult:
 
     obv_series = obv(close, volume)
     obv90 = obv_slope_pct(obv_series, 90)
+    # Zero-crossing-safe companion metric, stored additively so the live-position
+    # trajectory monitor can compare entry-vs-current on a metric that doesn't
+    # blow up near an OBV zero-crossing. The gate itself still admits on `obv90`
+    # (the documented OBV_90D_SLOPE_MIN threshold is in those units).
+    obv90n = obv_norm_slope_pct(obv_series, 90)
     ud90 = up_down_vol_ratio(close, volume, 90)
     ma_slope = sma_slope_pct(close, 150, MA150_SLOPE_LOOKBACK)
 
     features = {
         "obv_90d_slope_pct": round(obv90, 2) if obv90 is not None else None,
+        "obv_90d_norm_slope_pct": round(obv90n, 2) if obv90n is not None else None,
         "up_down_vol_ratio_90d": round(ud90, 3) if ud90 is not None else None,
         "ma150_slope_pct": round(ma_slope, 3) if ma_slope is not None else None,
     }

@@ -121,20 +121,30 @@ def _funnel_block(funnel: dict) -> list[str]:
     """Render the elimination funnel. Rich when per-gate counts are present,
     coarse otherwise."""
     screened = funnel.get("screened")
-    data_clean = funnel.get("data_clean")
+    # Back-compat: older callers passed "data_clean" (== hard-gate survivors).
+    hard_gate_survivors = funnel.get("hard_gate_survivors")
+    if hard_gate_survivors is None:
+        hard_gate_survivors = funnel.get("data_clean")
     survivors = funnel.get("composite_survivors")
     selected = funnel.get("selected")
     tau = funnel.get("tau")
     per_gate: dict[str, Any] = funnel.get("per_gate") or {}
+    dh: dict[str, Any] = funnel.get("data_health") or {}
 
     lines: list[str] = ["## How the field narrowed", ""]
 
     # Sequential spine (always honest — these are true subsets).
     spine: list[str] = []
+    attempted = dh.get("attempted")
+    ingested_ok = dh.get("ingested_ok")
+    if attempted is not None:
+        spine.append(f"{attempted} universe")
     if screened is not None:
-        spine.append(f"{screened} screened")
-    if data_clean is not None:
-        spine.append(f"{data_clean} data-clean")
+        spine.append(f"{screened} scanned")
+    if ingested_ok is not None:
+        spine.append(f"{ingested_ok} ingested")
+    if hard_gate_survivors is not None:
+        spine.append(f"{hard_gate_survivors} cleared hard gates")
     if survivors is not None:
         tau_txt = f" S≥{tau:.2f}" if isinstance(tau, (int, float)) else ""
         spine.append(f"{survivors} passed composite{tau_txt}")
@@ -142,6 +152,31 @@ def _funnel_block(funnel: dict) -> list[str]:
         spine.append(f"{selected} picked")
     if spine:
         lines.append(" → ".join(spine))
+
+    # Data-health caveat — makes silent ingest failures visible instead of
+    # letting them masquerade as legitimate rejections.
+    if dh:
+        silent = dh.get("silent_failures") or 0
+        cov = dh.get("coverage_pct")
+        by = dh.get("failed_by_reason") or {}
+        if silent:
+            detail = " · ".join(
+                f"{v} {k}" for k, v in by.items() if k != "short_history"
+            )
+            lines.append("")
+            lines.append(
+                f"⚠️ Data health: {ingested_ok}/{attempted} ingested "
+                f"({cov}% coverage) — **{silent} lost to silent failure** "
+                f"({detail}). These are NOT market rejections."
+            )
+        else:
+            short = (by or {}).get("short_history", 0)
+            short_txt = f" ({short} too new to score)" if short else ""
+            lines.append("")
+            lines.append(
+                f"✓ Data health: {ingested_ok}/{attempted} ingested "
+                f"({cov}% coverage){short_txt}."
+            )
 
     # Per-gate pass-rates (independent screens, not a strict sequence).
     if per_gate:
@@ -232,6 +267,7 @@ def summarize_live(
     visible_picks: list[dict],
     tau: Optional[float],
     closest: Optional[dict] = None,
+    data_health: Optional[dict] = None,
 ) -> Path:
     """Called by the orchestrator with in-scope run objects. Computes the rich
     per-gate funnel from ``results`` and writes the file. Best-effort: the
@@ -250,11 +286,15 @@ def summarize_live(
 
     funnel = {
         "screened": len(results),
-        "data_clean": len(hard_survivors),
+        # NOTE: `hard_gate_survivors` (previously mislabeled "data_clean") is the
+        # count that CLEARED THE HARD GATES, not the count with complete data.
+        # True data-completeness now comes from `data_health` (below).
+        "hard_gate_survivors": len(hard_survivors),
         "composite_survivors": len(survivors),
         "selected": len(visible_picks),
         "tau": tau,
         "per_gate": per_gate,
+        "data_health": data_health,
     }
     md = build_summary_md(
         date=today_iso,

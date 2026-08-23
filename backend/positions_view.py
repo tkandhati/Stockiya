@@ -129,11 +129,19 @@ def _action_for(
     horizon_extension (int days) is set when trajectory is healthy and the
     horizon estimator recommends extending — used to phrase the note.
     """
-    # 1. Data safety — never invent an action when the tape is missing.
-    #    Anti-flip rules (parked): should return the prior confirmed state,
-    #    not "hold". For now "hold" is the safe default.
+    # 1. Data safety — never invent an action when the tape is missing, and
+    #    never let missing data masquerade as a healthy HOLD. A distinct
+    #    `data_unavailable` action makes the gap explicit in the UI (the raw
+    #    action drives the pill; the 9-state label also resolves to
+    #    DATA_UNAVAILABLE via close_available=False). No enforcement runs — the
+    #    position is neither exited nor confirmed healthy until data returns.
     if close is None:
-        return ("hold", "Price unavailable today — hold and recheck.", None)
+        return (
+            "data_unavailable",
+            "Price unavailable today — data source returned nothing. "
+            "This is NOT a hold: recheck when data is restored.",
+            None,
+        )
 
     # 2. Stop hit — hardest exit.
     if close <= stop:
@@ -562,7 +570,10 @@ def list_active_positions(
         "exit_stop": 0, "exit_distribution": 1, "exit_final": 2,
         "exit_time_stop": 3, "exit_end_date": 4,
         "exit_t2": 5, "exit_t1": 6,
-        "extend_horizon": 7, "tighten_stop_45": 8, "hold": 9,
+        "extend_horizon": 7, "tighten_stop_45": 8,
+        # data_unavailable needs attention (recheck) so it sorts just above a
+        # healthy hold, but it is not an exit.
+        "data_unavailable": 8, "hold": 9,
     }
     out.sort(key=lambda x: (urgency.get(x["action"], 99), -x["days_held"]))
     return out

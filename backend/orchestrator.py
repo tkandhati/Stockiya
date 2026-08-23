@@ -404,6 +404,29 @@ def run_universe(
         log.error("  Then restart start.bat. No strategy can produce picks without data.")
         log.error("=" * 76)
 
+    # ---- Per-run data-health snapshot (read-only observability) ----
+    # Turns the per-ticker [I] Ingest outcomes into a durable record of how many
+    # of the universe actually produced a complete indicator set, and where the
+    # rest went (network / empty / short-history / crashed). Answers "how many of
+    # the N I scanned succeeded?" — a number previously computed only for the
+    # >=90% alarm and then discarded. Never touches selection (data_health.py).
+    from .data_health import summarize_data_health
+    data_health = summarize_data_health(results, len(VOLUME_UNIVERSE))
+    if data_health["silent_failures"]:
+        log.warning(
+            "  [Phase 1/4] Data health: %d/%d ingested OK (%.1f%%); "
+            "%d silent failure(s): %s",
+            data_health["ingested_ok"], data_health["attempted"],
+            data_health["coverage_pct"] or 0.0,
+            data_health["silent_failures"], data_health["failed_by_reason"],
+        )
+    else:
+        log.info(
+            "  [Phase 1/4] Data health: %d/%d ingested OK (%.1f%%).",
+            data_health["ingested_ok"], data_health["attempted"],
+            data_health["coverage_pct"] or 0.0,
+        )
+
     # ---- Soft-gate composite selection (v3 spine) ----
     # A survivor must: (a) clear all hard gates that ran, and (b) score
     # composite S = Σ wᵢ·mᵢ  >=  τ. That's it. The old "all-AND-gates"
@@ -634,6 +657,30 @@ def run_universe(
     # suggested rows alongside the taken position with the exit signal.
     visible_picks, suppressed_picks = split_visible_from_suppressed(pick_payloads)
 
+    # Entry-readiness router — the main BUY list keeps only setups enterable
+    # TODAY (entry_timing early/mid); late / extended / distribution / unclear
+    # picks move to `not_actionable` (a for-awareness section, still visible, the
+    # human decides). Reversible via STOCKYA_ENTERABLE_ONLY=0. See
+    # backend/entry_readiness.py.
+    from .entry_readiness import split_enterable
+    visible_picks, not_actionable = split_enterable(visible_picks)
+    if not_actionable:
+        _moved_ids = {id(p) for p in not_actionable}
+        # Keep non-enterable picks out of the portfolio recommendation journal
+        # too — they are awareness items, not buys. Every ticker's FINAL trace
+        # row was already written (append_final_trace above), so outcome
+        # evaluation is unaffected.
+        pick_payloads = [p for p in pick_payloads if id(p) not in _moved_ids]
+        log.info(
+            "  [Phase 4/4] Entry-readiness: %d pick(s) not enterable today -> "
+            "awareness section: %s",
+            len(not_actionable),
+            ", ".join(
+                f"{p.get('symbol', '?')}({(p.get('not_actionable') or {}).get('category')})"
+                for p in not_actionable
+            ),
+        )
+
     # Institutional-accumulation WATCHLIST (Use 1 — scoring-neutral guidance on
     # which stocks to analyze). Built from the deals/delivery corpora, never
     # enters the scan. Empty when no flow data is on disk.
@@ -654,6 +701,22 @@ def run_universe(
         closest_to_firing=closest_to_firing,
         watchlist=watchlist,
     )
+
+    # Read-only per-run data-health block (how many of the universe ingested).
+    response["data_health"] = data_health
+    # Picks moved out of the buy list because they are not enterable today
+    # (late / extended / distribution / unclear timing). Shown in a separate
+    # for-awareness section with a reason. Additive/optional; absent when empty.
+    if not_actionable:
+        response["not_actionable"] = [
+            {
+                "symbol": p.get("symbol"),
+                "company": p.get("company"),
+                "rank": p.get("rank"),
+                "reason": p.get("not_actionable"),
+            }
+            for p in not_actionable
+        ]
 
     # Fresh, delivery-LED analysis over TODAY'S ELIGIBLE FIELD (every hard-gate
     # survivor) — SCORING-NEUTRAL and purely additive. Its own ranking (a
@@ -713,6 +776,8 @@ def run_universe(
         from .daily_diagnostic import write_daily_diagnostic
         orchestrator_summary = {
             "universe_count": len(results),
+            "ingested_ok": data_health["ingested_ok"],
+            "silent_failures": data_health["silent_failures"],
             "survivors_passed_gates": sum(1 for r in results if r.passed_gates),
             "visible_picks": len(visible_picks),
             "suppressed_picks": len(suppressed_picks),
@@ -740,6 +805,7 @@ def run_universe(
             visible_picks=visible_picks,
             tau=COMPOSITE_TAU,
             closest=closest_to_firing,
+            data_health=data_health,
         )
         log.info("  [Phase 7] Wrote selection summary %s", summary_path.name)
     except Exception:

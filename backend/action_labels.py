@@ -59,6 +59,7 @@ _ACTION_TO_LABEL: dict[str, str] = {
     "extend_horizon":    EXTEND_5D,
     "tighten_stop_45":   MONITOR_EARLY_WEAKNESS,
     "hold":              MAINTAIN_HEALTHY,
+    "data_unavailable":  DATA_UNAVAILABLE,
 }
 
 
