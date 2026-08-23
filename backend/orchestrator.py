@@ -410,7 +410,7 @@ def run_universe(
     # rest went (network / empty / short-history / crashed). Answers "how many of
     # the N I scanned succeeded?" — a number previously computed only for the
     # >=90% alarm and then discarded. Never touches selection (data_health.py).
-    from .data_health import summarize_data_health
+    from .ingest_health import summarize_data_health
     data_health = summarize_data_health(results, len(VOLUME_UNIVERSE))
     if data_health["silent_failures"]:
         log.warning(
@@ -702,7 +702,9 @@ def run_universe(
         watchlist=watchlist,
     )
 
-    # Read-only per-run data-health block (how many of the universe ingested).
+    # Read-only per-run ingest-health block (how many of the universe ingested;
+    # from backend/ingest_health.py — distinct from the data_health.py service
+    # probe behind /api/health/data).
     response["data_health"] = data_health
     # Picks moved out of the buy list because they are not enterable today
     # (late / extended / distribution / unclear timing). Shown in a separate

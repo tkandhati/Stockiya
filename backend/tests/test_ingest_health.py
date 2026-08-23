@@ -8,7 +8,7 @@ from __future__ import annotations
 import unittest
 from types import SimpleNamespace
 
-from backend.data_health import classify_ingest_failure, summarize_data_health
+from backend.ingest_health import classify_ingest_failure, summarize_data_health
 
 
 def _result(symbol: str, passed: bool, reason: str | None = None):

@@ -7,8 +7,10 @@ would make `catchup.py` try to re-run the pipeline for every historical file —
 network, which is unavailable). New picks-JSON keys are optional; readers tolerate
 their absence.
 
-### 1. Per-run data-health block (read-only observability)
-`backend/data_health.py` (new). The orchestrator already computed an
+### 1. Per-run ingest-health block (read-only observability)
+`backend/ingest_health.py` (new — named distinctly from the pre-existing
+`backend/data_health.py` service-file probe, which it does NOT touch). The
+orchestrator already computed an
 `ingest_failed` count but used it only for the ">=90% failed = misconfigured"
 alarm and then discarded it — so partial yfinance failures (a timeout on, say,
 30 of 300 tickers) left no durable trace and nobody was notified. Now every run
@@ -80,7 +82,7 @@ hysteresis ladder. It requires persisting a per-position warning count in
 `portfolio.csv` (parked in `ideas.md`); faking it without persistence is worse
 than the honest current behavior.
 
-**Tests:** `backend/tests/test_data_health.py`,
+**Tests:** `backend/tests/test_ingest_health.py`,
 `test_entry_readiness.py` (incl. stale-base), `test_monitor_stability.py`
 (18 tests). Existing touched suites (83 tests) still pass. Frontend
 `tsc --noEmit` clean.
