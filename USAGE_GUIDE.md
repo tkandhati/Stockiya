@@ -44,6 +44,22 @@ The app runs **two separate systems.** Confusing them is the #1 source of bad de
 
 ## Part 1 — Identifying the right pick
 
+### The readiness badge — read it first
+
+The picks grid now shows **every** name the scan selected (up to 5), each with a
+coloured **readiness badge**. Read it before anything else — it tells you whether
+the card is even a buy:
+
+| Badge | Colour | Meaning |
+|---|---|---|
+| **Enter today · early/mid** | green | Enterable now — a base still coiling or a fresh, un-extended breakout. These are your actual buy candidates. |
+| **Watch · late / extended / stale base / timing unclear** | amber | Surfaced for awareness, **not** a buy today — the timely entry has passed or the base is going nowhere. |
+| **Avoid · distribution** | rose | The tape is being distributed into strength. Do not enter. |
+
+Only **green** cards are buys. Amber/rose cards are shown so you can see the whole
+field and the engine's reasoning — they are deliberately kept out of the portfolio
+journal. (To hide non-enterable names entirely, set `STOCKYA_MAIN_SHOW_ALL=0`.)
+
 ### Read top-to-bottom; stop at the first red
 
 ```
@@ -120,6 +136,26 @@ When a symbol is picked again on a later day, the app attaches two things you sh
 - **Enter near the pivot** (`AT_PIVOT` / fresh `BREAKOUT_CONFIRMED_TODAY`) — **not** once it's `POST_BREAKOUT_EXTENDED` or `LATE_CHASE`.
 - **Size off the app's plan, don't freelance:** `entry_price`, `stop_price` (8%, or 2× ATR if wider), `t1_price` (+1R ≈ +8%), `t2_price` (+2R ≈ +16%), and `shares_total` / `shares_at_t1` (50% at T1) / `shares_at_t2`. The plan is sized to risk **1% of account** per trade — respect it.
 
+### Coiled Accumulators — the "loaded spring" watch panel
+
+Below the picks sits the **Coiled Accumulators** panel (emerald): bases that
+quietly banked volume, are **still** absorbing at the right edge, and have **not**
+broken out yet — sideways coils that haven't fired. It's a *monitor*, not a buy
+list (it even re-surfaces strong coils the readiness router tagged "late"/"stale").
+Each row shows:
+
+- **coiling Nd** — how long the base has coiled (≈15d+ to qualify).
+- **flow chips** — OBV-90d/180d, up/down-90d, and the right-edge ratio (the
+  "still absorbing" discriminator vs a dead base).
+- **Enter on / before ₹X** — the **support point** (the coil floor). Buy on a
+  pullback toward it, not by chasing above the buy-zone top shown next to it.
+- **The volume caveat is not optional:** the support level is live *only while the
+  right-edge volume keeps confirming*. If flow rolls over, the coil is voided —
+  the level means nothing without the volume behind it.
+
+This is watch-only (conversion "coiled → breakout" is not yet measured). Toggle
+off with `STOCKYA_COILED_WATCH=0`.
+
 ---
 
 ## Part 4 — Holding confidently
@@ -170,13 +206,20 @@ Pair it with `trajectory.overall` (`strong`/`stable` = hold) and `action_label` 
 ## Field cheat-sheet
 
 **Picks list (buy candidates)**
+- `readiness` — badge shown on every card: `enter` (green, buy today) / `watch` (amber, awareness only) / `avoid` (rose, distribution). Only green is a buy.
 - `selection_tier` — `confirmed` (buy) vs `lead_watch` (watchlist only)
-- `rank` / confirmation strength — #1 best; top 3 selected (up to 5 with a pre-breakout name)
+- `rank` / confirmation strength — #1 best; top 3 selected (up to 5 with a pre-breakout name), all shown
 - `bonuses_fired` — the strength signals; more = stronger; genuine-early earns two
 - `entry_stage` — where in the base/breakout it is (green vs bearish states above)
 - accumulation `level` — `ready` > `strong` > `building` > `emerging`; `distribution` = avoid
 - `participant_evidence` — `disclosed_large_client` (high confidence) vs `inferred`
 - `change_since_prev_pick` / `pick_history` — reappearance deltas & trail (Part 2)
+
+**Coiled Accumulators (watch panel)**
+- `coil_age_days` — sessions the base has coiled (≈15+ to qualify)
+- `support_point` / `entry_reference` — enter on/before the coil floor; don't chase above the buy-zone top
+- `volume_gate` — the support is live **only while** the right-edge volume keeps confirming
+- `flow` (OBV-90d/180d, up/down-90d, right-edge ratio) — the "still absorbing" evidence
 
 **Portfolio (holdings)**
 - `action` — `hold`, `tighten_stop_45`, `exit_t1`, `exit_t2`, `exit_stop`, `exit_distribution`, `exit_final`, `exit_time_stop`, `exit_end_date`, `extend_horizon`

@@ -6,6 +6,7 @@ import { DemoBanner } from '../components/DemoBanner'
 import { DataHealthPill } from '../components/DataHealthPill'
 import { ClosestToFiringPanel } from '../components/ClosestToFiringPanel'
 import { NotActionablePanel } from '../components/NotActionablePanel'
+import { CoiledAccumulatorsPanel } from '../components/CoiledAccumulatorsPanel'
 import { PickCard } from '../components/PickCard'
 import { DeliveryWeightedPicks } from '../components/DeliveryWeightedPicks'
 import { RegimeBanner } from '../components/RegimeBanner'
@@ -31,12 +32,22 @@ export function PicksPage() {
         <div>
           <h1 className="flex items-center gap-2 text-2xl font-bold text-slate-900">
             <Sparkles className="h-5 w-5 text-amber-500" />
-            Today&apos;s Top 3
+            Today&apos;s Picks{data && data.picks.length > 0 ? ` (${data.picks.length})` : ''}
           </h1>
           <p className="mt-1 text-sm text-slate-700">
             <span className="font-medium">Don&apos;t invent. Follow the institutions.
             Pick one.</span>
           </p>
+          {/* Readiness legend — shown when any pick carries a badge (STOCKYA_MAIN_
+              SHOW_ALL on). Green = enter today, amber = watch, rose = avoid. */}
+          {data?.picks?.some((p) => p.readiness) && (
+            <p className="mt-0.5 text-xs text-slate-500">
+              <span className="font-medium text-emerald-700">Enter today</span> ·{' '}
+              <span className="font-medium text-amber-700">Watch</span> (surfaced, not
+              enterable yet) ·{' '}
+              <span className="font-medium text-rose-700">Avoid</span> (distribution)
+            </p>
+          )}
           <p className="mt-0.5 text-xs text-slate-500">
             Swing trading · 3-week to 3-month typical hold · daily review ·{' '}
             <span className="font-mono">{data?.date ?? '—'}</span>
@@ -155,6 +166,12 @@ export function PicksPage() {
           distribution). Own section below the buy list, for awareness only. */}
       {data?.not_actionable && data.not_actionable.length > 0 && (
         <NotActionablePanel rows={data.not_actionable} />
+      )}
+
+      {/* "Loaded spring" WATCH cohort — coiling bases still absorbing volume that
+          have not broken out yet. Monitor only; renders null when empty. */}
+      {data?.coiled_accumulators && data.coiled_accumulators.length > 0 && (
+        <CoiledAccumulatorsPanel rows={data.coiled_accumulators} />
       )}
 
       {/* The full candidate pool — moved to the very bottom and shown on EVERY

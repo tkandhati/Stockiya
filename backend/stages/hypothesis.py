@@ -291,6 +291,11 @@ def build_pick_payload(
     close_vs_sma20_val: Optional[float] = None
     vol_ratio_10_50_val: Optional[float] = None
     tightness_25bar_val: Optional[float] = None
+    # Coil geometry (25-bar base floor / ceiling). Persisted so presentation-only
+    # readers (e.g. coiled_accumulators.py) can show a *support point to enter on
+    # or before* without re-touching the OHLCV frame. Both None when unavailable.
+    base_low_25_val: Optional[float] = None
+    base_high_25_val: Optional[float] = None
     df = result.ohlcv
     if df is not None and not df.empty:
         try:
@@ -310,6 +315,8 @@ def build_pick_payload(
         try:
             hi_25 = float(df["High"].iloc[-25:].max())
             lo_25 = float(df["Low"].iloc[-25:].min())
+            base_high_25_val = round(hi_25, 2)
+            base_low_25_val = round(lo_25, 2)
             if lo_25 > 0:
                 tightness_25bar_val = round((hi_25 / lo_25 - 1) * 100, 2)
         except Exception:  # noqa: BLE001
@@ -330,6 +337,10 @@ def build_pick_payload(
         "vol_ratio_10d_50d": vol_ratio_10_50_val,
         "tightness_25bar_pct": tightness_25bar_val,
         "br_passed_today": br_passed_today_flag,
+        # 25-bar coil floor/ceiling — the support the pullback should hold and the
+        # pivot it must clear. Read by the Coiled Accumulators watch section.
+        "base_low_25": base_low_25_val,
+        "base_high_25": base_high_25_val,
     }
 
     # ---- Early-accumulation label — advisory metadata for "genuine early

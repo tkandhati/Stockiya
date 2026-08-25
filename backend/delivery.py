@@ -253,7 +253,12 @@ def fetch_and_cache_delivery(days_back: int = 55) -> list[str]:
     fetched: list[str] = []
     today = date.today()
 
-    for i in range(1, max(1, days_back) + 1):
+    # Start at i=0 so *today's* MTO is requested too. NSE publishes the file in
+    # the evening after close, so an early (post-close) run will 404 on today —
+    # that's already handled below as a quiet skip, and a later run (or the next
+    # day) picks it up. Starting at i=1, as before, guaranteed a permanent
+    # one-day lag: the newest date ever fetched was always yesterday.
+    for i in range(0, max(1, days_back) + 1):
         d = today - timedelta(days=i)
         if d.weekday() >= 5:        # skip Sat/Sun — NSE publishes no MTO
             continue
@@ -450,7 +455,10 @@ def _advisory_from_series(series: list[tuple[str, float]]) -> dict:
         f"; ≥{STREAK_MIN_PCT:.0f}% for {accum_streak}d (quiet accumulation)"
         if accum_streak >= STREAK_NOTE_MIN else ""
     )
-    note = f"Delivery today {latest_pct:.0f}% ({level_txt}){roll_txt}{trend_txt}{streak_txt}"
+    # Label with the file's actual trade date — never the word "today", which
+    # was misleading whenever the freshest MTO on disk was an earlier session
+    # (NSE publishes in the evening; a post-close run sees the prior day).
+    note = f"Delivery {latest_date} {latest_pct:.0f}% ({level_txt}){roll_txt}{trend_txt}{streak_txt}"
 
     return {
         "available": True,

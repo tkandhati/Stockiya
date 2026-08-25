@@ -95,5 +95,41 @@ class TestSplit(unittest.TestCase):
         self.assertEqual(aware, [])
 
 
+class TestReadiness(unittest.TestCase):
+    def test_enterable_pick_gets_enter_badge(self):
+        p = _p("A.NS", "early")
+        r = er.stamp_readiness(p)
+        self.assertTrue(r["enterable"])
+        self.assertEqual(r["category"], "enterable")
+        self.assertEqual(r["tone"], "enter")
+        self.assertIn("early", r["label"])
+        self.assertIs(p["readiness"], r)  # stamped onto the payload
+
+    def test_awareness_pick_mirrors_category_and_tone(self):
+        # Route it first so it carries not_actionable, then stamp.
+        p = _p("MOVE.NS", "late")
+        p["not_actionable"] = er.entry_readiness(p)   # category=late_entry
+        r = er.stamp_readiness(p)
+        self.assertFalse(r["enterable"])
+        self.assertEqual(r["category"], "late_entry")
+        self.assertEqual(r["tone"], "watch")
+        self.assertTrue(r["why"])
+
+    def test_distribution_is_avoid_tone(self):
+        p = _p("D.NS", "missed")
+        p["not_actionable"] = er.entry_readiness(p)   # category=distribution
+        r = er.stamp_readiness(p)
+        self.assertEqual(r["tone"], "avoid")
+
+    def test_main_show_all_default_on_and_reversible(self):
+        os.environ.pop("STOCKYA_MAIN_SHOW_ALL", None)
+        self.assertTrue(er.main_show_all())
+        os.environ["STOCKYA_MAIN_SHOW_ALL"] = "0"
+        try:
+            self.assertFalse(er.main_show_all())
+        finally:
+            os.environ.pop("STOCKYA_MAIN_SHOW_ALL", None)
+
+
 if __name__ == "__main__":
     unittest.main()

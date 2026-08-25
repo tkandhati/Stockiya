@@ -811,9 +811,25 @@ pick.change_since_prev_pick = { prev_date, days_ago, ... deltas ... }
         │  4. split_visible_from_suppressed
         │     Two lists: visible (→ picks_<date>.json) and
         │     full (→ portfolio.record_picks).
+        │
+        │  5. split_enterable (backend/entry_readiness.py)
+        │     Classify each visible pick: entry_timing early/mid = enterable;
+        │     late/extended/distribution/stale = not_actionable (kept out of
+        │     the portfolio journal). Reversible: STOCKYA_ENTERABLE_ONLY=0.
+        │
+        │  6. build_coiled_accumulators (backend/coiled_accumulators.py)
+        │     Presentation-only watch cohort over visible + not_actionable:
+        │     still-absorbing coils, no breakout, + a support point to enter
+        │     on/before. Reversible: STOCKYA_COILED_WATCH=0.
+        │
+        │  7. stamp_readiness + main_show_all (backend/entry_readiness.py)
+        │     Badge every pick (enter/watch/avoid). Default: render the FULL
+        │     selected set in the main list; STOCKYA_MAIN_SHOW_ALL=0 falls back
+        │     to enterable-only + a separate awareness section.
         ▼
-render_picks_response(visible_picks, ...) → picks_<date>.json
-record_picks(full pick list)              → portfolio.csv
+render_picks_response(main_for_render, ...) → picks_<date>.json
+        (+ optional keys: not_actionable, coiled_accumulators, delivery_analysis)
+record_picks(full pick list)                → portfolio.csv
 ```
 
 **Why the split**: the UI must never show "sell ABB" and "buy ABB" on

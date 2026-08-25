@@ -66,6 +66,23 @@ export function PickCard({ pick }: { pick: Pick }) {
                 ⏳ Lead · Watch
               </span>
             )}
+            {/* Entry-readiness badge — with STOCKYA_MAIN_SHOW_ALL on, the main
+                list carries every selected pick, so this separates enter-today
+                (green) from watch (amber) / avoid (rose). */}
+            {pick.readiness && (
+              <span
+                className={`rounded-full px-2 py-0.5 text-xs font-semibold ${
+                  pick.readiness.tone === 'enter'
+                    ? 'bg-emerald-600 text-white'
+                    : pick.readiness.tone === 'avoid'
+                    ? 'bg-rose-100 text-rose-800'
+                    : 'bg-amber-100 text-amber-900'
+                }`}
+                title={pick.readiness.why || undefined}
+              >
+                {pick.readiness.label}
+              </span>
+            )}
             <h2 className="text-xl font-semibold leading-tight text-slate-900">
               {pick.company || pick.symbol}
             </h2>

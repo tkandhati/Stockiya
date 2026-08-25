@@ -109,6 +109,18 @@ def _print_report(report: dict) -> None:
         print("Action: edit backend/universe.py to remove or replace the symbols above.")
         print("        For NSE-listed companies, try alternate Yahoo suffixes (.BO for BSE)")
         print("        or look up the new symbol after a corporate action.")
+        # Paste-ready blocks so the report can be handed straight to whoever
+        # edits universe.py (empty/stale are almost always delisted/renamed;
+        # low_bars is usually a recent listing to KEEP, listed separately).
+        remove = [s for s, _ in report["empty"]] + [s for s, _ in report["stale"]]
+        if remove:
+            print()
+            print("--- PASTE-READY: remove from VOLUME_UNIVERSE (empty/stale) ---")
+            print("  " + " ".join(remove))
+        if report["low_bars"]:
+            print()
+            print("--- REVIEW: low_bars (likely recent listings — verify before removing) ---")
+            print("  " + " ".join(s for s, _ in report["low_bars"]))
     else:
         print("\nAll tickers healthy.")
 

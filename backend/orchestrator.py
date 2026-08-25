@@ -681,6 +681,27 @@ def run_universe(
             ),
         )
 
+    # Coiled Accumulators — the "loaded spring" WATCH cohort (owner ask,
+    # 2026-08-24). Bases that absorbed volume for a while, are STILL absorbing at
+    # the right edge, and have NOT broken out yet — sideways coils, not dead
+    # bases. PRESENTATION/MONITORING ONLY: never touches selection/score/rank/
+    # sizing/exits. Scans BOTH the main buy list and the awareness
+    # (`not_actionable`) payloads, so a strong coil that entry_timing routed to
+    # "late" is still surfaced. Reversible via STOCKYA_COILED_WATCH=0. See
+    # backend/coiled_accumulators.py.
+    try:
+        from .coiled_accumulators import build_coiled_accumulators
+        coiled_accumulators = build_coiled_accumulators(visible_picks + not_actionable)
+        if coiled_accumulators:
+            log.info(
+                "  [Phase 4/4] Coiled accumulators: %d name(s) still absorbing, "
+                "no breakout yet",
+                len(coiled_accumulators),
+            )
+    except Exception:
+        log.exception("build_coiled_accumulators failed")
+        coiled_accumulators = []
+
     # Institutional-accumulation WATCHLIST (Use 1 — scoring-neutral guidance on
     # which stocks to analyze). Built from the deals/delivery corpora, never
     # enters the scan. Empty when no flow data is on disk.
@@ -693,8 +714,30 @@ def run_universe(
         log.exception("build_watchlist failed")
         watchlist = []
 
+    # Readiness badges + "show all 5" main list (owner ask, 2026-08-25). The
+    # router above already classified every pick; here we STAMP that verdict onto
+    # each payload as a `readiness` badge and — when STOCKYA_MAIN_SHOW_ALL is on
+    # (default) — render the FULL selected set in the main grid instead of hiding
+    # the non-enterable ones below. The classification is preserved as a visible
+    # tag, never discarded, and non-enterable picks were already dropped from the
+    # portfolio journal (`pick_payloads`) above, so nothing here recommends a buy.
+    # Reversible: STOCKYA_MAIN_SHOW_ALL=0 restores the enterable-only split view.
+    from .entry_readiness import stamp_readiness, main_show_all
+    for _p in visible_picks:
+        stamp_readiness(_p)
+    for _p in not_actionable:
+        stamp_readiness(_p)
+    show_all = main_show_all()
+    if show_all and not_actionable:
+        main_for_render = sorted(
+            visible_picks + not_actionable,
+            key=lambda p: (p.get("rank") if isinstance(p.get("rank"), int) else 999),
+        )
+    else:
+        main_for_render = visible_picks
+
     response = render_picks_response(
-        visible_picks, today_iso,
+        main_for_render, today_iso,
         demo_mode=demo_mode,
         regime=regime.as_dict(),
         message=message,
@@ -709,7 +752,10 @@ def run_universe(
     # Picks moved out of the buy list because they are not enterable today
     # (late / extended / distribution / unclear timing). Shown in a separate
     # for-awareness section with a reason. Additive/optional; absent when empty.
-    if not_actionable:
+    # Split view only. When show-all is on the non-enterable picks are already in
+    # `picks` (each carrying its readiness badge), so re-emitting them here would
+    # double-render them in the separate awareness section.
+    if not_actionable and not show_all:
         response["not_actionable"] = [
             {
                 "symbol": p.get("symbol"),
@@ -719,6 +765,13 @@ def run_universe(
             }
             for p in not_actionable
         ]
+
+    # Coiled Accumulators watch cohort (see the Phase-4 note above). Additive/
+    # optional; absent when empty or disabled. Persisted into picks_<date>.json
+    # so the cohort can be replayed offline to measure "coiled -> breakout"
+    # conversion over time (observation-first; owner choice 2026-08-24).
+    if coiled_accumulators:
+        response["coiled_accumulators"] = coiled_accumulators
 
     # Fresh, delivery-LED analysis over TODAY'S ELIGIBLE FIELD (every hard-gate
     # survivor) — SCORING-NEUTRAL and purely additive. Its own ranking (a

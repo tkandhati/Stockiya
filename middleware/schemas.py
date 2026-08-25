@@ -151,6 +151,13 @@ class Pick(BaseModel):
     entry_stage_features: Optional[dict] = None
     date_labels: Optional[dict] = None
 
+    # Entry-readiness badge (2026-08-25). {enterable, category, timing, label,
+    # tone, why} from backend/entry_readiness.py:stamp_readiness. With
+    # STOCKYA_MAIN_SHOW_ALL on, the main list shows every selected pick and this
+    # badge tells enter-today apart from watch/avoid. Loose dict → older picks
+    # files (no readiness) still validate. Frontend has the Readiness type.
+    readiness: Optional[dict] = None
+
     # Legacy aliases — populated by build_pick_payload for transition-period
     # frontends that still expect the old field names.
     best_buy_at: Optional[float] = None
@@ -236,6 +243,10 @@ class PicksResponse(BaseModel):
     # additive — its own ranking, independent of `picks`). Untyped dicts so inner
     # keys pass through untouched; None/absent on older payloads.
     delivery_analysis: Optional[list[dict]] = None
+    # Coiled Accumulators watch cohort (loaded springs — coiling bases still
+    # absorbing volume, no breakout yet). PRESENTATION/MONITORING ONLY, additive.
+    # Untyped dicts so inner keys pass through; None/absent when empty/disabled.
+    coiled_accumulators: Optional[list[dict]] = None
 
 
 # --------------------------------------------------------------------------- #

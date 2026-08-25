@@ -150,9 +150,30 @@ export interface PickHistoryEntry {
   score_delta: number | null     // vs the older entry immediately below
 }
 
+// Entry-readiness badge (2026-08-25). With STOCKYA_MAIN_SHOW_ALL on, the main
+// list shows every selected pick; this badge separates enter-today from
+// watch/avoid. Presentation-only — the router still owns the classification.
+export interface Readiness {
+  enterable: boolean
+  category:
+    | 'enterable'
+    | 'late_entry'
+    | 'extended_breakout'
+    | 'timing_unclear'
+    | 'stale_base'
+    | 'distribution'
+    | string
+  timing?: string | null
+  label: string
+  tone: 'enter' | 'watch' | 'avoid' | string
+  why?: string | null
+}
+
 export interface Pick {
   symbol: string
   rank?: number | null
+  // Entry-readiness badge (see Readiness). Absent on older payloads.
+  readiness?: Readiness | null
   // Selection confidence tier (2026-08-13). 'confirmed' = cleared every strict
   // guard; 'lead_watch' = guaranteed daily pre-breakout lead surfaced just under
   // the confirmation threshold (lead_note explains it). Absent on older payloads.
@@ -518,6 +539,44 @@ export interface NotActionableRow {
   reason: NotActionableReason
 }
 
+// Coiled Accumulators — the "loaded spring" watch cohort: coiling bases still
+// absorbing volume that have NOT broken out yet. Monitoring only, never a buy.
+export interface CoiledAccumulatorFlow {
+  obv_90d_norm_slope_pct?: number | null
+  obv_180d_norm_slope_pct?: number | null
+  up_down_vol_ratio_90d?: number | null
+  obv_10d_norm_slope_pct?: number | null
+  inflection?: string | null
+  stealth_ratio?: number | null
+  in_dryup?: boolean
+}
+
+export interface CoiledAccumulatorPrior {
+  prior_appearances: number
+  appearances_incl_today: number
+  first_seen?: string | null
+}
+
+export interface CoiledAccumulatorRow {
+  symbol: string
+  company?: string | null
+  rank?: number | null
+  coil_age_days?: number | null
+  flow: CoiledAccumulatorFlow
+  flow_strengthening: boolean
+  // Support point to enter on or before (coil floor), the top of the buy zone,
+  // and the volume condition that keeps the level live.
+  support_point?: number | null
+  support_basis?: string | null
+  entry_reference?: number | null
+  volume_gate?: string | null
+  also_pre_breakout: boolean
+  source_section: 'main' | 'awareness'
+  also_flagged?: string | null   // e.g. stale_base / late_entry when re-surfaced
+  prior: CoiledAccumulatorPrior
+  why: string
+}
+
 export interface PicksResponse {
   date: string
   generated_at: string
@@ -530,6 +589,8 @@ export interface PicksResponse {
   delivery_analysis?: DeliveryAnalysisRow[]
   // Picks moved out of the main (enter-today) buy list into the awareness section.
   not_actionable?: NotActionableRow[]
+  // "Loaded spring" watch cohort — coiling bases still absorbing, no breakout yet.
+  coiled_accumulators?: CoiledAccumulatorRow[]
 }
 
 // --------------------------------------------------------------------------

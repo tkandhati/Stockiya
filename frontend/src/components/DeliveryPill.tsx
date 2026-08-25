@@ -22,7 +22,7 @@ export function DeliveryPill({ delivery }: { delivery?: DeliveryInfo | null }) {
   // Accumulation ladder: today, week, 15d, 30d.
   const longAvg = delivery.avg_30d ?? delivery.avg_20d
   const title = [
-    `Delivery today ${delivery.latest_pct}% on ${delivery.latest_date}`,
+    `Delivery ${delivery.latest_pct}% on ${delivery.latest_date}`,
     delivery.avg_5d != null ? `week avg ${delivery.avg_5d}%` : '',
     delivery.avg_15d != null ? `15-day avg ${delivery.avg_15d}%` : '',
     delivery.avg_30d != null ? `30-day avg ${delivery.avg_30d}%` : '',

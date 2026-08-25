@@ -62,6 +62,79 @@ def _enabled() -> bool:
     return os.environ.get("STOCKYA_ENTERABLE_ONLY", "1") != "0"
 
 
+def main_show_all() -> bool:
+    """Show ALL selected picks in the main buy list (owner ask, 2026-08-25)?
+
+    On by default. When on, the router still classifies every pick (early / mid
+    stay enterable; late / extended / distribution / stale are tagged), but ALL
+    of them are rendered as cards in the main grid — each stamped with a
+    ``readiness`` badge instead of being hidden in a below-the-fold section. The
+    router's judgment is preserved as a visible tag, never discarded, and
+    non-enterable picks are STILL kept out of the portfolio journal upstream.
+
+    STOCKYA_MAIN_SHOW_ALL=0 restores the split view (enterable-only main list +
+    a separate awareness section).
+    """
+    return os.environ.get("STOCKYA_MAIN_SHOW_ALL", "1") != "0"
+
+
+# Short badge label + tone per readiness category. Tone drives the card colour:
+# "enter" (green) = act today, "watch" (amber) = surfaced for awareness,
+# "avoid" (rose) = do not enter.
+_READINESS_BADGE: dict[str, tuple[str, str]] = {
+    "enterable": ("Enter today", "enter"),
+    "late_entry": ("Watch · late", "watch"),
+    "extended_breakout": ("Watch · extended", "watch"),
+    "timing_unclear": ("Watch · timing unclear", "watch"),
+    "stale_base": ("Watch · stale base", "watch"),
+    "distribution": ("Avoid · distribution", "avoid"),
+}
+
+
+def stamp_readiness(payload: dict) -> dict:
+    """Attach a ``readiness`` badge dict onto ``payload`` and return it.
+
+    Pure/deterministic; reads only persisted fields. A pick already routed to the
+    awareness bin carries ``payload["not_actionable"]`` (set by split_enterable) —
+    we mirror its category/why. Anything else is enterable today.
+
+        readiness = {
+          "enterable": bool,
+          "category":  str,    # enterable | late_entry | extended_breakout | ...
+          "timing":    str|None,  # early / mid / late / missed / unknown
+          "label":     str,    # short badge text
+          "tone":      str,    # enter | watch | avoid  (drives the card colour)
+          "why":       str|None,  # reason (non-enterable only)
+        }
+    """
+    if not isinstance(payload, dict):
+        return {}
+    na = payload.get("not_actionable")
+    if isinstance(na, dict) and na.get("category"):
+        category = str(na.get("category"))
+        timing = na.get("entry_timing")
+        why = na.get("why")
+        enterable = False
+    else:
+        category = "enterable"
+        timing = (payload.get("confirmation") or {}).get("entry_timing")
+        why = None
+        enterable = True
+    label, tone = _READINESS_BADGE.get(category, _READINESS_BADGE["timing_unclear"])
+    if enterable and timing:
+        label = f"Enter today · {timing}"
+    readiness = {
+        "enterable": enterable,
+        "category": category,
+        "timing": timing,
+        "label": label,
+        "tone": tone,
+        "why": why,
+    }
+    payload["readiness"] = readiness
+    return readiness
+
+
 def _stale_base_reason(payload: dict) -> Optional[dict]:
     """Detect a recurring pre-breakout base that is going nowhere.
 

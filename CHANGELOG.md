@@ -1,5 +1,83 @@
 # Changelog
 
+## 2026-08-25 — Coiled Accumulators, show-all picks + readiness badges, same-day delivery, universe check
+
+Four additive, reversible changes. None bumps `PICKS_SCHEMA_VERSION` — every new
+picks-JSON key is optional and readers tolerate its absence (per
+`feedback_data_survives_code_changes`). All four are presentation/observability
+only; none touches selection, scoring, ranking, sizing, or exits.
+
+### 1. Coiled Accumulators — the "loaded spring" watch cohort
+`backend/coiled_accumulators.py` (new), wired in `orchestrator.py` Phase-4 over
+`visible_picks + not_actionable` (spans both the main and awareness bins).
+Surfaces bases that absorbed volume a while ago, are **still** absorbing at the
+right edge, and have **not** broken out yet — a coiling spring that hasn't fired.
+The discriminator vs a *dead* base (which `entry_readiness._stale_base_reason`
+bins as "goes nowhere") is the same observable with the opposite verdict: **is
+flow still rising?** Flat + flow rising = loaded spring (surface it); flat + flow
+flat/falling = dead base.
+
+Qualifier (all must hold, read from persisted payload fields only): base/coil
+stage; BR gate still failing; `volume_event.base_days >= COIL_MIN_BASE_DAYS` (15);
+`obv_90d_norm_slope_pct > 0` and durable (`obv_180d > 0` or `up/down-90d >= 1.0`);
+**still absorbing** = `stealth_demand.ratio >= COIL_STEALTH_MIN_RATIO` (1.3 —
+looser than the pre-breakout badge's 1.5, a wider watch net); no distribution
+self-veto. Pure function, no I/O (tuner-importable). Fix points at top of file.
+
+Each row now also carries a **support point to enter on or before** (owner ask):
+`support_point` = the coil floor (`entry_stage_features.base_low_25`, the 25-bar
+base low newly persisted in `stages/hypothesis.py` — it was already computed there
+as `lo_25`, just never saved; fallback = `price_plan.stop`), `entry_reference` =
+the buy-zone top (`price_plan.entry` — don't chase above), and a `volume_gate`
+string. The support is **never shown in isolation** — it is live only while
+right-edge volume keeps confirming; if volume rolls over the coil is voided.
+
+Attached as optional response key `coiled_accumulators`; persisted into
+`picks_<date>.json` so "coiled → breakout" conversion can be replayed offline
+later (observation-first — not yet measured; treat as watch-only, do not wire into
+trading). UI: `frontend/src/components/CoiledAccumulatorsPanel.tsx` (emerald Radar
+panel, renders null when empty). Reversible: `STOCKYA_COILED_WATCH=0`.
+
+### 2. Main list shows ALL selected picks, with a readiness badge (reversible)
+Owner ask: "show all picks — currently only early accumulators is shown." The
+`entry_readiness` router (2026-08-23) had been hiding non-enterable picks in a
+below-the-fold awareness section, so the main grid only showed `early`/`mid`
+names. It now renders the **full** selected set as cards, each stamped with a
+`readiness` badge — `enter` (green, enterable today) / `watch` (amber, surfaced
+for awareness) / `avoid` (rose, distribution). This **overlays** the router, it
+does **not** revert it: the router still classifies every pick (the Polycab /
+IndusInd judgment is preserved as a visible tag), and non-enterable picks are
+still kept out of the portfolio journal — nothing here recommends a buy, it only
+makes the names visible with an honest badge.
+
+`entry_readiness.stamp_readiness()` builds the badge; `entry_readiness.main_show_all()`
+gates the merge (default on). `orchestrator.py` renders the rank-sorted union and
+suppresses the separate `not_actionable` block to avoid double-rendering.
+`readiness: Optional[dict]` added to `middleware/schemas.py:Pick` (required for
+round-trip — Pydantic v2 drops undeclared keys). Frontend `Readiness` type + badge
+on `PickCard.tsx`; legend on `PicksPage.tsx` ("Today's Top 3" → "Today's Picks").
+Reversible: `STOCKYA_MAIN_SHOW_ALL=0` restores the enterable-only split view.
+
+### 3. Delivery % — request today's file, label it with the real trade date
+`backend/delivery.py`. Two fixes to the NSE MTO loader (delivery % is
+deliverable÷traded — an **NSE-only** metric; Yahoo carries traded volume only, so
+it can never supply it). `fetch_and_cache_delivery` now starts the per-day scan at
+`i=0` so **today's** MTO is requested too (NSE publishes it in the evening; a
+post-close run 404s on today and a later run/next day picks it up) — previously
+starting at `i=1` guaranteed a permanent one-day lag. The advisory note and the
+`DeliveryPill` tooltip now label the figure with the file's actual trade date
+instead of the word "today", which was misleading whenever the freshest MTO on
+disk was an earlier session.
+
+### 4. Universe health check — paste-ready output
+`backend/check_universe.py` now prints a copy-paste-ready block of the exact
+symbols to remove from `VOLUME_UNIVERSE` (empty/stale — almost always
+delisted/renamed) and a separate `low_bars` review block (usually recent listings
+to keep). Addresses the "many NSE-300 symbols fail as delisted" report: run
+`python -m backend.check_universe` where Yahoo is reachable, then hand the block
+to whoever edits `universe.py`. (No `universe.py` edit here — that needs live data
+the firewall blocks.)
+
 ## 2026-08-23 — Data-health surfacing, pre-breakout precision guard, monitor stability
 
 Four additive, reversible changes. None bumps `PICKS_SCHEMA_VERSION` (a bump
