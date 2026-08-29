@@ -247,6 +247,12 @@ class PicksResponse(BaseModel):
     # absorbing volume, no breakout yet). PRESENTATION/MONITORING ONLY, additive.
     # Untyped dicts so inner keys pass through; None/absent when empty/disabled.
     coiled_accumulators: Optional[list[dict]] = None
+    # Persistent pick FOLLOW-UP tracker — a continuous eye on PREVIOUS picks (the
+    # open portfolio cohort), ranked by accumulation strength, each with a
+    # day-by-day strength trajectory from the day it was suggested to today.
+    # PRESENTATION/MONITORING ONLY, additive. Untyped dicts so inner keys pass
+    # through; None/absent when empty or disabled (STOCKYA_FOLLOWUP_WATCH=0).
+    pick_followup: Optional[list[dict]] = None
 
 
 # --------------------------------------------------------------------------- #

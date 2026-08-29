@@ -577,6 +577,63 @@ export interface CoiledAccumulatorRow {
   why: string
 }
 
+// Persistent pick FOLLOW-UP tracker — a continuous eye on previous picks (the
+// open portfolio cohort), ranked by accumulation strength, each with a
+// day-by-day strength trajectory from the day it was suggested to today.
+export interface AccumStrength {
+  score: number          // 0-100
+  level: number          // 1 (weak) .. 5 (strong)
+  color: string          // hex, matches the accumulation gauge palette
+  label: string          // FLIPPED | WARNING | CAUTION | HEALTHY | STRONG
+}
+
+export interface AccumTrajectoryPoint {
+  date: string
+  score: number
+  level: number
+  color: string
+  label: string
+  close?: number | null
+}
+
+export interface PickFollowupConsolidation {
+  size?: 'small' | 'big' | null   // tight coil vs wide/deep base (best-effort)
+  range_pct?: number | null
+  days?: number
+}
+
+// coiling = volume still accumulating while price stayed flat (loaded spring);
+// firing = price moving off the base; weakening = accumulation faded;
+// broke_down = price fell through the base; watch / no-data otherwise.
+export type PickFollowupStatus =
+  | 'coiling' | 'firing' | 'weakening' | 'broke_down' | 'watch' | 'no-data'
+
+export interface PickFollowupRow {
+  symbol: string
+  company?: string | null
+  pick_id?: string
+  suggested_date: string
+  days_tracked: number
+  entry_price?: number | null
+  stop_price?: number | null
+  expected_price?: number | null      // planned target — "the expected" move
+  reached_expected?: boolean | null
+  current_price?: number | null
+  price_change_pct?: number | null
+  accum_now?: AccumStrength | null
+  accum_at_suggest?: AccumStrength | null
+  strength_change?: number | null
+  volume_still_building?: boolean      // accumulation maintained/rising since suggestion
+  status: PickFollowupStatus
+  consolidation: PickFollowupConsolidation
+  support1?: number | null
+  support1_basis?: string | null
+  support2?: number | null
+  support2_basis?: string | null
+  trajectory: AccumTrajectoryPoint[]
+  why: string
+}
+
 export interface PicksResponse {
   date: string
   generated_at: string
@@ -591,6 +648,8 @@ export interface PicksResponse {
   not_actionable?: NotActionableRow[]
   // "Loaded spring" watch cohort — coiling bases still absorbing, no breakout yet.
   coiled_accumulators?: CoiledAccumulatorRow[]
+  // Persistent follow-up tracker over previous picks, ranked by accumulation strength.
+  pick_followup?: PickFollowupRow[]
 }
 
 // --------------------------------------------------------------------------

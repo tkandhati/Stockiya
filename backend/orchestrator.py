@@ -702,6 +702,26 @@ def run_universe(
         log.exception("build_coiled_accumulators failed")
         coiled_accumulators = []
 
+    # Persistent pick FOLLOW-UP tracker (owner ask, 2026-08-29): a continuous
+    # eye on PREVIOUS picks (the open portfolio cohort), ranked by accumulation
+    # strength, each with a day-by-day strength trajectory from the day we
+    # suggested it to today. Answers "did volume keep accumulating while price
+    # stayed flat?" over the last ~month. PRESENTATION/MONITORING ONLY: reads
+    # portfolio.csv + per-day traces, never touches selection/score/rank/sizing/
+    # exits. Reversible via STOCKYA_FOLLOWUP_WATCH=0. See backend/pick_followup.py.
+    try:
+        from .pick_followup import build_pick_followup
+        pick_followup = build_pick_followup(today_iso)
+        if pick_followup:
+            log.info(
+                "  [Phase 4/4] Pick follow-up: %d previous pick(s) tracked "
+                "(ranked by accumulation strength)",
+                len(pick_followup),
+            )
+    except Exception:
+        log.exception("build_pick_followup failed")
+        pick_followup = []
+
     # Institutional-accumulation WATCHLIST (Use 1 — scoring-neutral guidance on
     # which stocks to analyze). Built from the deals/delivery corpora, never
     # enters the scan. Empty when no flow data is on disk.
@@ -772,6 +792,12 @@ def run_universe(
     # conversion over time (observation-first; owner choice 2026-08-24).
     if coiled_accumulators:
         response["coiled_accumulators"] = coiled_accumulators
+
+    # Persistent pick follow-up tracker (see the Phase-4 note above). Additive/
+    # optional; absent when empty or disabled. Persisted into picks_<date>.json
+    # so the tracked cohort + strength trajectories can be replayed offline.
+    if pick_followup:
+        response["pick_followup"] = pick_followup
 
     # Fresh, delivery-LED analysis over TODAY'S ELIGIBLE FIELD (every hard-gate
     # survivor) — SCORING-NEUTRAL and purely additive. Its own ranking (a

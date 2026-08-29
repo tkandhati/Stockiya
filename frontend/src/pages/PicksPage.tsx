@@ -7,6 +7,7 @@ import { DataHealthPill } from '../components/DataHealthPill'
 import { ClosestToFiringPanel } from '../components/ClosestToFiringPanel'
 import { NotActionablePanel } from '../components/NotActionablePanel'
 import { CoiledAccumulatorsPanel } from '../components/CoiledAccumulatorsPanel'
+import { PickFollowupTable } from '../components/PickFollowupTable'
 import { PickCard } from '../components/PickCard'
 import { DeliveryWeightedPicks } from '../components/DeliveryWeightedPicks'
 import { RegimeBanner } from '../components/RegimeBanner'
@@ -141,26 +142,54 @@ export function PicksPage() {
           <DeliveryWeightedPicks rows={data.delivery_analysis} />
         )}
 
+        {/* Empty pick set — NO blank page. A slim, non-blocking WARNING banner
+            (empty days are normal for a 300-name universe) and, when the regime
+            is on, promote the best-accumulators follow-up table as the main
+            content so there is always something actionable to watch. */}
         {data && data.picks.length === 0 && (
-          <div className="rounded-2xl border border-slate-200 bg-white p-10 text-center">
-            <div className="mx-auto h-12 w-12 rounded-full bg-slate-100 leading-[3rem] text-2xl">
-              ⏸️
+          <div className="space-y-4">
+            <div
+              className={`rounded-xl border px-4 py-3 text-sm ${
+                data.regime && !data.regime.passed
+                  ? 'border-rose-200 bg-rose-50 text-rose-900'
+                  : 'border-amber-200 bg-amber-50 text-amber-900'
+              }`}
+            >
+              <span className="font-semibold">
+                {data.regime && !data.regime.passed
+                  ? 'Buy alerts halted'
+                  : 'No breakout cleared the bar today'}
+              </span>{' '}
+              <span className="opacity-90">
+                {data.message ||
+                  (data.regime && !data.regime.passed
+                    ? 'Market regime is off. No alerts will issue until NIFTY 100 closes above its 50-day moving average.'
+                    : 'Normal for a 300-name universe — quality over quantity. Your strongest accumulators to watch are below.')}
+              </span>
             </div>
-            <h2 className="mt-4 text-lg font-semibold text-slate-900">
-              {data.regime && !data.regime.passed
-                ? 'Buy alerts halted'
-                : 'Nothing actionable today'}
-            </h2>
-            <p className="mx-auto mt-2 max-w-xl text-sm text-slate-600">
-              {data.message ||
-                (data.regime && !data.regime.passed
-                  ? 'Market regime is off. No alerts will issue until NIFTY 100 closes above its 50-day moving average.'
-                  : 'Nothing cleared the composite score threshold today. Check the panel below for the tickers closest to firing.')}
-            </p>
+
+            {/* Best accumulators promoted as the day's watch list. */}
+            {!(data.regime && !data.regime.passed) &&
+              data.pick_followup &&
+              data.pick_followup.length > 0 && (
+                <PickFollowupTable
+                  rows={data.pick_followup}
+                  title="Strongest accumulators to watch"
+                  subtitle="No pick fired today — these previous picks are still accumulating"
+                />
+              )}
           </div>
         )}
 
       </main>
+
+      {/* Persistent follow-up on previous picks — a continuous eye on what we
+          suggested, ranked by accumulation strength, with a day-by-day strength
+          trajectory on expand. Shown on NON-empty days (on empty days it is
+          promoted into <main> above). Monitor only; renders null when empty. */}
+      {data && data.picks.length > 0 && data.pick_followup && data.pick_followup.length > 0 && (
+        <PickFollowupTable rows={data.pick_followup} />
+      )}
 
       {/* Picks the scan surfaced that are NOT enterable today (late / extended /
           distribution). Own section below the buy list, for awareness only. */}
