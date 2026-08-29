@@ -1,12 +1,12 @@
 import { Fragment, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Activity, ChevronDown, ChevronRight, Crosshair } from 'lucide-react'
+import { Activity, ChevronDown, ChevronRight, Crosshair, Star, Zap } from 'lucide-react'
 import { fmtINR, fmtPct } from '../api'
 import type {
-  AccumStrength,
   AccumTrajectoryPoint,
   PickFollowupRow,
   PickFollowupStatus,
+  TractionLevel,
 } from '../types'
 
 /**
@@ -56,6 +56,14 @@ const STATUS_META: Record<PickFollowupStatus, { label: string; cls: string; hint
 
 const CONS_LABEL: Record<string, string> = { small: 'tight', big: 'wide' }
 
+const TRACTION_META: Record<TractionLevel, { label: string; cls: string }> = {
+  breaking_out: { label: '▲ Firing', cls: 'bg-sky-100 text-sky-900' },
+  building: { label: 'Building', cls: 'bg-emerald-100 text-emerald-900' },
+  early: { label: 'Early', cls: 'bg-amber-100 text-amber-900' },
+  quiet: { label: 'Quiet', cls: 'bg-slate-100 text-slate-500' },
+  unknown: { label: '—', cls: 'bg-transparent text-slate-300' },
+}
+
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 
 /** '2026-07-21' -> '21 Jul' (no Date parsing, so no timezone drift). */
@@ -65,90 +73,136 @@ function shortDate(iso: string): string {
   return `${Number(d)} ${MONTHS[mi] ?? m}`
 }
 
-function StrengthBar({ accum }: { accum?: AccumStrength | null }) {
-  if (!accum || typeof accum.score !== 'number') {
+/** Colour by coil quality value (not the saturating gauge): green=strong coil. */
+function coilColor(score: number): string {
+  if (score >= 70) return '#059669' // emerald — strong coil
+  if (score >= 45) return '#f59e0b' // amber — moderate
+  return '#94a3b8' // slate — weak
+}
+
+/** Coil-quality bar (0-100, continuous). Replaces the pegged gauge score. */
+function CoilBar({ score }: { score?: number | null }) {
+  if (typeof score !== 'number') {
     return <span className="text-xs text-slate-400">—</span>
   }
-  const pct = Math.max(0, Math.min(100, accum.score))
+  const pct = Math.max(0, Math.min(100, score))
   return (
     <div className="flex items-center gap-2">
       <div className="h-2 w-20 overflow-hidden rounded-full bg-slate-100">
         <div
           className="h-full rounded-full"
-          style={{ width: `${pct}%`, backgroundColor: accum.color }}
+          style={{ width: `${pct}%`, backgroundColor: coilColor(score) }}
         />
       </div>
-      <span className="tabular-nums text-xs font-semibold text-slate-800">{accum.score}</span>
-      <span className="hidden text-[10px] font-medium uppercase tracking-wide text-slate-500 sm:inline">
-        {accum.label}
-      </span>
+      <span className="tabular-nums text-xs font-semibold text-slate-800">{score}</span>
     </div>
   )
 }
 
 /**
- * Day-by-day accumulation-strength chart since the recommend date. Each dot is
- * labelled with its score (0-100) above and its date below, plus a native hover
- * tooltip. Scrolls horizontally when there are many scan-days so labels never
- * overlap.
+ * Volume-accumulation vs price since the recommend date. The indigo line is the
+ * CONTINUOUS OBV-90d accumulation figure (each dot labelled with its value +
+ * date, plus a hover tooltip); the faint grey line is price indexed to 100 at
+ * the suggestion day. When volume rises while price stays flat, the two lines
+ * diverge — that is the coil. Each series is auto-scaled to its own range so the
+ * shape is visible (this is a divergence view, not an absolute-level chart).
+ * Scrolls horizontally when there are many scan-days so labels never overlap.
  */
 function TrajectoryChart({ points }: { points: AccumTrajectoryPoint[] }) {
-  const scored = points.filter((p) => typeof p.score === 'number')
-  if (scored.length < 1) {
+  const pts = points.filter((p) => typeof p.obv90 === 'number')
+  if (pts.length < 1) {
     return <span className="text-xs text-slate-400">Not enough scan-days to chart</span>
   }
-  const SP = 48 // px between dots
-  const PAD_X = 26
-  const PAD_TOP = 20 // room for the score label above the highest dot
-  const CHART_H = 72
-  const PAD_BOTTOM = 34 // room for the rotated date labels below
-  const W = PAD_X * 2 + Math.max(1, scored.length - 1) * SP
+  const SP = 52 // px between dots
+  const PAD_X = 30
+  const PAD_TOP = 20
+  const CHART_H = 74
+  const PAD_BOTTOM = 34
+  const W = PAD_X * 2 + Math.max(1, pts.length - 1) * SP
   const H = PAD_TOP + CHART_H + PAD_BOTTOM
   const x = (i: number) => PAD_X + i * SP
-  const y = (s: number) => PAD_TOP + (1 - Math.max(0, Math.min(100, s)) / 100) * CHART_H
-  const path = scored
-    .map((p, i) => `${i === 0 ? 'M' : 'L'} ${x(i).toFixed(1)} ${y(p.score).toFixed(1)}`)
+
+  // Volume (OBV-90d %) — auto-scaled to its own min/max.
+  const vVals = pts.map((p) => p.obv90 as number)
+  const vMin = Math.min(...vVals)
+  const vMax = Math.max(...vVals)
+  const vRange = vMax - vMin || 1
+  const yV = (v: number) => PAD_TOP + (1 - (v - vMin) / vRange) * CHART_H
+
+  // Price indexed to 100 at the first available close — auto-scaled.
+  const base = pts.find((p) => typeof p.close === 'number')?.close ?? null
+  const pIdx = pts.map((p) =>
+    typeof p.close === 'number' && base ? (p.close / base) * 100 : null,
+  )
+  const pClean = pIdx.filter((v): v is number => v != null)
+  const pMin = pClean.length ? Math.min(...pClean) : 100
+  const pMax = pClean.length ? Math.max(...pClean) : 100
+  const pRange = pMax - pMin || 1
+  const yP = (v: number) => PAD_TOP + (1 - (v - pMin) / pRange) * CHART_H
+
+  const volPath = pts
+    .map((p, i) => `${i === 0 ? 'M' : 'L'} ${x(i).toFixed(1)} ${yV(p.obv90 as number).toFixed(1)}`)
     .join(' ')
-  const lastColor = scored[scored.length - 1].color || '#6366f1'
+  let pricePath = ''
+  pIdx.forEach((v, i) => {
+    if (v == null) return
+    pricePath += `${pricePath ? 'L' : 'M'} ${x(i).toFixed(1)} ${yP(v).toFixed(1)} `
+  })
   const yLabels = PAD_TOP + CHART_H + 12
+
   return (
-    <div className="max-w-full overflow-x-auto">
-      <svg width={W} height={H} className="block">
-        {/* healthy reference line at level-4 threshold (65) */}
-        <line x1={PAD_X} y1={y(65)} x2={W - PAD_X} y2={y(65)} stroke="#e2e8f0" strokeDasharray="2 3" />
-        {scored.length >= 2 && (
-          <path d={path} fill="none" stroke={lastColor} strokeWidth={2} strokeLinejoin="round" />
-        )}
-        {scored.map((p, i) => (
-          <g key={p.date}>
-            <circle cx={x(i)} cy={y(p.score)} r={3} fill={p.color || lastColor}>
-              <title>{`${p.date} · score ${p.score}/100`}</title>
-            </circle>
-            {/* score above the dot */}
-            <text
-              x={x(i)}
-              y={y(p.score) - 7}
-              textAnchor="middle"
-              fontSize="10"
-              fontWeight={600}
-              fill="#0f172a"
-            >
-              {p.score}
-            </text>
-            {/* date below, rotated so it never collides with its neighbour */}
-            <text
-              x={x(i)}
-              y={yLabels}
-              textAnchor="end"
-              fontSize="9"
-              fill="#64748b"
-              transform={`rotate(-40 ${x(i)} ${yLabels})`}
-            >
-              {shortDate(p.date)}
-            </text>
-          </g>
-        ))}
-      </svg>
+    <div>
+      <div className="mb-1 flex items-center gap-4 text-[10px] text-slate-500">
+        <span className="flex items-center gap-1">
+          <span className="inline-block h-2 w-2 rounded-full bg-indigo-500" /> volume (OBV-90d %)
+        </span>
+        <span className="flex items-center gap-1">
+          <span className="inline-block h-[2px] w-4 bg-slate-400" /> price (indexed to 100)
+        </span>
+      </div>
+      <div className="max-w-full overflow-x-auto">
+        <svg width={W} height={H} className="block">
+          {/* price line — faint, no labels (context for the divergence) */}
+          {pricePath && <path d={pricePath.trim()} fill="none" stroke="#94a3b8" strokeWidth={1.5} />}
+          {/* volume line — primary */}
+          {pts.length >= 2 && (
+            <path d={volPath} fill="none" stroke="#6366f1" strokeWidth={2} strokeLinejoin="round" />
+          )}
+          {pts.map((p, i) => {
+            const priceIdx = pIdx[i]
+            return (
+              <g key={p.date}>
+                <circle cx={x(i)} cy={yV(p.obv90 as number)} r={3} fill="#6366f1">
+                  <title>
+                    {`${p.date} · OBV-90d ${p.obv90}%` +
+                      (priceIdx != null ? ` · price ${priceIdx.toFixed(1)}` : '')}
+                  </title>
+                </circle>
+                <text
+                  x={x(i)}
+                  y={yV(p.obv90 as number) - 7}
+                  textAnchor="middle"
+                  fontSize="10"
+                  fontWeight={600}
+                  fill="#312e81"
+                >
+                  {Math.round(p.obv90 as number)}
+                </text>
+                <text
+                  x={x(i)}
+                  y={yLabels}
+                  textAnchor="end"
+                  fontSize="9"
+                  fill="#64748b"
+                  transform={`rotate(-40 ${x(i)} ${yLabels})`}
+                >
+                  {shortDate(p.date)}
+                </text>
+              </g>
+            )
+          })}
+        </svg>
+      </div>
     </div>
   )
 }
@@ -162,30 +216,55 @@ function ExpandedRow({ row }: { row: PickFollowupRow }) {
       <div>
         <div className="flex items-center gap-2 text-xs font-semibold text-slate-700">
           <Activity className="h-3.5 w-3.5 text-indigo-600" />
-          Volume accumulation strength (0–100) since {row.suggested_date}
+          Volume accumulation (OBV-90d) vs price since {row.suggested_date}
         </div>
         <div className="mt-2">
           <TrajectoryChart points={traj} />
         </div>
-        {first && last && (
-          <div className="mt-1 flex gap-4 text-[11px] text-slate-500">
+        <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-slate-500">
+          {typeof row.coil_score === 'number' && (
             <span>
-              {first.date}: <span className="font-medium text-slate-700">{first.score}</span>
+              coil quality <span className="font-semibold text-slate-800">{row.coil_score}</span>/100
             </span>
+          )}
+          {typeof row.volume_add === 'number' && (
             <span>
-              {last.date}: <span className="font-medium text-slate-700">{last.score}</span>
+              volume-add <span className="font-medium text-slate-700">{Math.round(row.volume_add * 100)}%</span>
             </span>
-            {typeof row.strength_change === 'number' && (
-              <span className={row.strength_change >= 0 ? 'text-emerald-700' : 'text-rose-700'}>
-                {row.strength_change >= 0 ? '+' : ''}
-                {row.strength_change} pts
-              </span>
-            )}
-          </div>
-        )}
+          )}
+          {typeof row.price_stillness === 'number' && (
+            <span>
+              price-stillness <span className="font-medium text-slate-700">{Math.round(row.price_stillness * 100)}%</span>
+            </span>
+          )}
+          {first && last && typeof first.obv90 === 'number' && typeof last.obv90 === 'number' && (
+            <span>
+              OBV-90d {first.obv90} → <span className="font-medium text-slate-700">{last.obv90}</span>
+            </span>
+          )}
+        </div>
       </div>
       <div className="text-xs text-slate-600">
         <p>{row.why}</p>
+
+        {/* Traction — leading clues that the coil is starting to fire. */}
+        {row.traction && row.traction.level !== 'unknown' && (
+          <div className="mt-2 rounded-lg border border-indigo-100 bg-indigo-50/50 px-3 py-2">
+            <div className="flex items-center gap-1.5 font-semibold text-indigo-900">
+              <Zap className="h-3.5 w-3.5" />
+              Traction — clues to watch for the trigger
+            </div>
+            <p className="mt-0.5 text-slate-700">{row.traction.note}</p>
+            {row.traction.clues.length > 0 && (
+              <ul className="mt-1 list-disc pl-4 text-slate-600">
+                {row.traction.clues.map((c) => (
+                  <li key={c}>{c}</li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
+
         <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1">
           {typeof row.support1 === 'number' && (
             <span className="flex items-center gap-1">
@@ -234,7 +313,7 @@ function ExpandedRow({ row }: { row: PickFollowupRow }) {
 export function PickFollowupTable({
   rows,
   title = 'Follow-up on previous picks',
-  subtitle = 'Continuous eye on what we suggested — ranked by accumulation strength',
+  subtitle = 'Ranked by coil quality — volume still adding + price barely moved on top',
 }: {
   rows: PickFollowupRow[]
   title?: string
@@ -267,7 +346,12 @@ export function PickFollowupTable({
             <tr className="border-b border-slate-200 text-left text-[11px] uppercase tracking-wide text-slate-500">
               <th className="py-2 pr-3 font-medium">#</th>
               <th className="py-2 pr-3 font-medium">Symbol</th>
-              <th className="py-2 pr-3 font-medium">Accumulation strength</th>
+              <th className="py-2 pr-3 font-medium" title="Volume still adding x price barely moved (0-100)">
+                Coil quality
+              </th>
+              <th className="py-2 pr-3 font-medium" title="Leading clues the coil is starting to fire">
+                Traction
+              </th>
               <th className="py-2 pr-3 font-medium">Since suggested</th>
               <th className="py-2 pr-3 font-medium">Base</th>
               <th className="py-2 pr-3 font-medium">Support 1 / 2</th>
@@ -287,18 +371,31 @@ export function PickFollowupTable({
               return (
                 <Fragment key={r.symbol}>
                   <tr
-                    className="cursor-pointer border-b border-slate-100 align-middle hover:bg-slate-50"
+                    className={`cursor-pointer border-b border-slate-100 align-middle hover:bg-slate-50 ${
+                      r.is_top_pick ? 'bg-emerald-50/60' : ''
+                    }`}
                     onClick={() => toggle(r.symbol)}
                   >
                     <td className="py-2.5 pr-3 tabular-nums text-slate-400">{i + 1}</td>
                     <td className="py-2.5 pr-3">
-                      <Link
-                        to={`/stock/${encodeURIComponent(r.symbol)}`}
-                        onClick={(e) => e.stopPropagation()}
-                        className="font-mono text-sm font-semibold text-slate-900 hover:underline"
-                      >
-                        {r.symbol.replace(/\.NS$/, '')}
-                      </Link>
+                      <div className="flex items-center gap-1.5">
+                        {r.is_top_pick && (
+                          <span
+                            title="Best coil to act on — strongest volume-add with the flattest price"
+                            className="flex items-center gap-0.5 rounded bg-emerald-600 px-1 py-0.5 text-[9px] font-bold uppercase tracking-wide text-white"
+                          >
+                            <Star className="h-2.5 w-2.5" fill="currentColor" />
+                            Best
+                          </span>
+                        )}
+                        <Link
+                          to={`/stock/${encodeURIComponent(r.symbol)}`}
+                          onClick={(e) => e.stopPropagation()}
+                          className="font-mono text-sm font-semibold text-slate-900 hover:underline"
+                        >
+                          {r.symbol.replace(/\.NS$/, '')}
+                        </Link>
+                      </div>
                       {r.company && (
                         <div className="max-w-[160px] truncate text-[11px] text-slate-400">
                           {r.company}
@@ -306,7 +403,31 @@ export function PickFollowupTable({
                       )}
                     </td>
                     <td className="py-2.5 pr-3">
-                      <StrengthBar accum={r.accum_now} />
+                      <CoilBar score={r.coil_score} />
+                    </td>
+                    <td className="py-2.5 pr-3">
+                      {(() => {
+                        const t = r.traction
+                        const tm = TRACTION_META[t?.level ?? 'unknown']
+                        if (!t || t.level === 'unknown') {
+                          return <span className="text-xs text-slate-300">—</span>
+                        }
+                        return (
+                          <span
+                            title={t.note}
+                            className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${tm.cls}`}
+                          >
+                            {tm.label}
+                            {t.level !== 'breaking_out' &&
+                              typeof t.distance_to_pivot_pct === 'number' &&
+                              t.distance_to_pivot_pct > 0 && (
+                                <span className="font-normal normal-case opacity-80">
+                                  {t.distance_to_pivot_pct}% to pivot
+                                </span>
+                              )}
+                          </span>
+                        )
+                      })()}
                     </td>
                     <td className="py-2.5 pr-3 tabular-nums">
                       {typeof r.price_change_pct === 'number' ? (
@@ -346,7 +467,7 @@ export function PickFollowupTable({
                   </tr>
                   {isOpen && (
                     <tr>
-                      <td colSpan={8} className="p-0">
+                      <td colSpan={9} className="p-0">
                         <ExpandedRow row={r} />
                       </td>
                     </tr>
@@ -359,9 +480,11 @@ export function PickFollowupTable({
       </div>
 
       <p className="mt-3 text-[11px] text-slate-400">
-        Monitoring only — not a buy list. Accumulation strength is the volume/OBV
-        gauge recomputed for each scan-day since we suggested the name. Click a row
-        for its day-by-day trajectory.
+        Monitoring only — not a buy list. <strong>Coil quality</strong> blends how
+        strongly volume is still accumulating with how little price has moved since
+        we suggested it, so the tightest coils rank first and{' '}
+        <span className="font-semibold text-emerald-700">★ Best</span> flags the one
+        to focus on. Click a row for its day-by-day volume-vs-price trajectory.
       </p>
     </section>
   )

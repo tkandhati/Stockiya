@@ -200,7 +200,12 @@ def accumulation_trajectory(symbol: str, since_date: str) -> list[dict]:
     One point per trace day that carries scorable flow features (shallow days —
     where the symbol was rejected before the flow stages ran — are skipped, not
     plotted as a fake flat). Each point:
-        {date, score(0-100), level(1-5), color, label, close}
+        {date, score(0-100), level(1-5), color, label, close,
+         obv90(continuous OBV-90d slope %), ud90(up/down-vol ratio 90d)}
+
+    NOTE: `score` is the coarse 0-100 health gauge — it saturates at 100 for any
+    strong name, so it is NOT a good discriminator. `obv90` is the CONTINUOUS
+    accumulation figure the chart plots and the coil-quality ranker uses.
 
     Pure + file-only. Returns [] when there are no usable traces.
     """
@@ -216,6 +221,8 @@ def accumulation_trajectory(symbol: str, since_date: str) -> list[dict]:
         # No scorable features that day -> skip rather than record a default 3.
         if g.get("score") is None:
             continue
+        obv90 = _to_float(feat.get("obv_90d_slope_pct"))
+        ud90 = _to_float(feat.get("up_down_vol_ratio_90d"))
         out.append({
             "date": d,
             "score": g["score"],
@@ -223,8 +230,167 @@ def accumulation_trajectory(symbol: str, since_date: str) -> list[dict]:
             "color": g["color"],
             "label": g["label"],
             "close": round(close, 2) if close is not None else None,
+            "obv90": round(obv90, 1) if obv90 is not None else None,
+            "ud90": round(ud90, 2) if ud90 is not None else None,
         })
     return out
+
+
+# --------------------------------------------------------------------------- #
+# Coil quality — the CONTINUOUS ranking metric (fixes the saturating gauge).
+#
+# The owner ask (2026-08-29): put "volume still being added but price barely
+# moved" on top. The 0-100 health gauge pegs at 100 for every strong name and
+# cannot order them. This blends two continuous axes instead:
+#   * volume_add    — how strongly volume is still accumulating (OBV-90d + up/down)
+#   * price_stillness — how little price has moved since we suggested it
+# so the tightest coils (strong accumulation, flat price) score highest, and a
+# name that already ran is discounted even if its volume is strong.
+# --------------------------------------------------------------------------- #
+
+# Price move (%) at/above which "stillness" is fully spent — a name that has
+# moved this much off the suggestion is no longer a slight-change coil.
+COIL_PRICE_FLAT_REF_PCT: float = 10.0
+# OBV-90d slope (%) that maps to full volume-add credit. Scaled (not stepped) so
+# strong names still spread out instead of all pegging at the top.
+COIL_OBV_FULL_PCT: float = 25.0
+# up/down-vol-90d that maps to full credit (1.0 = balanced buying/selling).
+COIL_UD_FULL: float = 1.4
+# Weights on the two axes of the coil score (sum to 1.0). Stillness is weighted
+# a touch higher so "price barely moved" is the tie-breaker among strong-volume
+# names — exactly the owner's ordering ask.
+COIL_W_VOLUME: float = 0.45
+COIL_W_STILLNESS: float = 0.55
+
+
+def _clamp01(x: float) -> float:
+    return 0.0 if x < 0 else (1.0 if x > 1 else x)
+
+
+def coil_quality(
+    obv90: Optional[float],
+    ud90: Optional[float],
+    price_change_pct: Optional[float],
+) -> dict:
+    """Continuous coil-quality: {score(0-100)|None, volume_add(0-1), price_stillness(0-1)}.
+
+    None score when we cannot measure volume (no obv90/ud90) — such rows sort
+    last rather than faking a number.
+    """
+    if not _is_num(obv90) and not _is_num(ud90):
+        return {"score": None, "volume_add": None, "price_stillness": None}
+
+    f_obv = _clamp01((obv90 / COIL_OBV_FULL_PCT)) if _is_num(obv90) else 0.0
+    f_ud = _clamp01(((ud90 - 1.0) / (COIL_UD_FULL - 1.0))) if _is_num(ud90) else 0.0
+    # Blend the two volume signals; if only one is present, use it alone.
+    if _is_num(obv90) and _is_num(ud90):
+        volume_add = 0.65 * f_obv + 0.35 * f_ud
+    else:
+        volume_add = f_obv if _is_num(obv90) else f_ud
+
+    if _is_num(price_change_pct):
+        price_stillness = _clamp01(1.0 - abs(price_change_pct) / COIL_PRICE_FLAT_REF_PCT)
+    else:
+        price_stillness = 0.5  # unknown price move -> neutral, don't over-reward
+
+    score = 100.0 * (COIL_W_VOLUME * volume_add + COIL_W_STILLNESS * price_stillness)
+    return {
+        "score": round(score),
+        "volume_add": round(volume_add, 2),
+        "price_stillness": round(price_stillness, 2),
+    }
+
+
+# --------------------------------------------------------------------------- #
+# Traction — leading clues that a loaded coil is starting to FIRE.
+#
+# Coil quality says "is this a loaded spring?"; traction says "is it starting to
+# go off?" — the early, volume-based tells that precede the breakout, read from
+# the latest scan trace (owner ask, 2026-08-29 "some clue to find traction").
+# All file-only, presentation-only.
+# --------------------------------------------------------------------------- #
+
+# Within this % below the 20d breakout counts as "coiled right under the pivot".
+TRACTION_NEAR_PIVOT_PCT: float = 4.0
+# Today's / 5d volume vs its 50d average at/above which demand is "expanding".
+TRACTION_VOL_EXPAND: float = 1.3
+# Close-in-upper-third ratio at/above which price is "closing strong".
+TRACTION_UPPER_THIRD: float = 0.5
+
+
+def assess_traction(feat: dict) -> dict:
+    """Leading traction clues from the latest scan trace.
+
+    Returns {level, distance_to_pivot_pct, pivot_price, clues:[str], note}.
+    level: breaking_out | building | early | quiet | unknown.
+    Never raises; unknown when the trace has no breakout stage.
+    """
+    feat = feat or {}
+    break_pct = _to_float(feat.get("break_pct"))
+    pivot = _to_float(feat.get("resistance_20d"))
+    infl = feat.get("obv_flow_inflection")
+    s_short = _to_float(feat.get("obv_slope_short_pct"))
+    s_long = _to_float(feat.get("obv_slope_long_pct"))
+    vol_today = _to_float(feat.get("vol_ratio_today_50d"))
+    vol_5_50 = _to_float(feat.get("vol_ratio_5_50"))
+    upper = _to_float(feat.get("upper_third_ratio"))
+    anomalies = _to_float(feat.get("anomaly_cluster_count_15d"))
+
+    if not _is_num(break_pct) and not _is_num(s_short):
+        return {
+            "level": "unknown",
+            "distance_to_pivot_pct": None,
+            "pivot_price": round(pivot, 2) if _is_num(pivot) else None,
+            "clues": [],
+            "note": "No recent breakout trace to read traction from.",
+        }
+
+    clues: list[str] = []
+    flow_up = (infl == "healing") or (
+        _is_num(s_short) and _is_num(s_long) and s_short > s_long and s_short > 0
+    )
+    if flow_up:
+        clues.append("OBV flow turning up (short-term accelerating)")
+    if (_is_num(vol_today) and vol_today >= TRACTION_VOL_EXPAND) or (
+        _is_num(vol_5_50) and vol_5_50 >= TRACTION_VOL_EXPAND
+    ):
+        clues.append("volume expanding vs its 50-day average")
+    if _is_num(upper) and upper >= TRACTION_UPPER_THIRD:
+        clues.append("closing in the upper part of its range")
+    if _is_num(anomalies) and anomalies >= 1:
+        n = int(anomalies)
+        clues.append(f"{n} volume-spike day{'s' if n != 1 else ''} in the last 15")
+
+    near_pivot = _is_num(break_pct) and -TRACTION_NEAR_PIVOT_PCT <= break_pct < 0
+    dist = round(-break_pct, 1) if (_is_num(break_pct) and break_pct < 0) else 0.0
+
+    if _is_num(break_pct) and break_pct >= 0:
+        level = "breaking_out"
+    elif near_pivot and len(clues) >= 2:
+        level = "building"
+    elif clues:
+        level = "early"
+    else:
+        level = "quiet"
+
+    if level == "breaking_out":
+        note = (
+            f"Above its 20-day breakout"
+            + (f" (~{pivot:.0f})" if _is_num(pivot) else "")
+            + " — the trigger is firing now."
+        )
+    elif _is_num(pivot):
+        note = f"Trigger: a close above ~{pivot:.0f} ({dist:.1f}% away)."
+    else:
+        note = "Watch for a close above the recent 20-day high."
+
+    return {
+        "level": level,
+        "distance_to_pivot_pct": dist,
+        "pivot_price": round(pivot, 2) if _is_num(pivot) else None,
+        "clues": clues,
+        "note": note,
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -344,8 +510,10 @@ def build_pick_followup(today_iso: Optional[str] = None) -> list[dict]:
     """Build the persistent follow-up table from the portfolio cohort.
 
     One row per open previous pick suggested within FOLLOWUP_LOOKBACK_DAYS,
-    ranked by current accumulation strength (strongest first). Env-gated: []
-    when STOCKYA_FOLLOWUP_WATCH=0. Never raises — a single bad row is skipped.
+    ranked by CONTINUOUS coil quality (volume-add x price-stillness), strongest
+    first, so "volume still adding, price barely moved" tops the list and one row
+    is flagged is_top_pick. Env-gated: [] when STOCKYA_FOLLOWUP_WATCH=0. Never
+    raises — a single bad row is skipped.
 
     Each row:
         {
@@ -353,15 +521,19 @@ def build_pick_followup(today_iso: Optional[str] = None) -> list[dict]:
           suggested_date, days_tracked,
           entry_price, stop_price, expected_price, reached_expected,
           current_price, price_change_pct,
-          accum_now:   {score, level, color, label} | None,
+          coil_score(0-100)|None,          # THE ranking metric (continuous)
+          volume_add(0-1), price_stillness(0-1),   # its two components
+          obv90_now, obv90_start, ud90_now,        # continuous accumulation figures
+          is_top_pick,                     # the single best live coil to act on
+          accum_now:   {score, level, color, label} | None,  # coarse health gauge
           accum_at_suggest: {score, level, ...} | None,
-          strength_change,                 # score now - score at suggestion
-          volume_still_building,           # accumulation maintained/rising since D
+          strength_change,                 # gauge score now - at suggestion
+          volume_still_building,           # OBV-90d positive and not falling since D
           status,                          # coiling | firing | weakening | broke_down | watch | no-data
           consolidation: {size, range_pct, days},
           support1, support1_basis,        # 25-bar base low
           support2, support2_basis,        # protective stop
-          trajectory: [ {date, score, level, color, label, close}, ... ],
+          trajectory: [ {date, score, level, color, label, close, obv90, ud90}, ... ],
           why,
         }
     """
@@ -393,6 +565,9 @@ def build_pick_followup(today_iso: Optional[str] = None) -> list[dict]:
             accum_now = None
             accum_at_suggest = None
             current_price = None
+            obv90_now = None
+            obv90_start = None
+            ud90_now = None
             if series:
                 last = series[-1]
                 first = series[0]
@@ -403,6 +578,11 @@ def build_pick_followup(today_iso: Optional[str] = None) -> list[dict]:
                     if _is_num(p.get("close")):
                         current_price = p["close"]
                         break
+                # Continuous accumulation figures (first vs latest) — these drive
+                # the coil-quality ranker and the chart, not the saturating gauge.
+                obv90_now = last.get("obv90")
+                obv90_start = first.get("obv90")
+                ud90_now = last.get("ud90")
 
             price_change_pct = None
             if _is_num(current_price) and _is_num(entry_price) and entry_price > 0:
@@ -414,6 +594,25 @@ def build_pick_followup(today_iso: Optional[str] = None) -> list[dict]:
 
             level_now = accum_now["level"] if accum_now else None
 
+            # Continuous coil quality — the real ranking metric (volume-add x
+            # price-stillness). Replaces the pegged 0-100 gauge for ordering.
+            coil = coil_quality(obv90_now, ud90_now, price_change_pct)
+
+            # Traction — leading clues the coil is starting to fire, from the
+            # latest scan trace (distance to the 20d pivot, flow turning up,
+            # volume expanding, closing strong, recent volume spikes).
+            latest_feat = (
+                _merge_trace_features(symbol, series[-1]["date"]) if series else {}
+            )
+            traction = assess_traction(latest_feat)
+            # "Volume still adding up" now reads the CONTINUOUS OBV trend, not the
+            # saturating gauge: accumulation is building if the 90d OBV slope is
+            # positive and has not fallen since we suggested it.
+            volume_still_building = bool(
+                _is_num(obv90_now) and obv90_now > 0
+                and (not _is_num(obv90_start) or obv90_now >= obv90_start - 2.0)
+            )
+
             # Has price delivered the expected move? Prefer the concrete target;
             # fall back to a % move only when no target is on file.
             if _is_num(current_price) and _is_num(expected_price):
@@ -422,12 +621,6 @@ def build_pick_followup(today_iso: Optional[str] = None) -> list[dict]:
                 reached_expected = price_change_pct >= FIRING_FALLBACK_PCT
             else:
                 reached_expected = None
-
-            # Is volume still adding up since we suggested it? (maintained/rising)
-            volume_still_building = (
-                _is_num(strength_change) and strength_change >= 0
-                and (level_now is not None and level_now >= 3)
-            )
 
             status = _classify(level_now, price_change_pct, strength_change, reached_expected)
             cons = _consolidation(series)
@@ -450,7 +643,16 @@ def build_pick_followup(today_iso: Optional[str] = None) -> list[dict]:
                 "accum_now": accum_now,
                 "accum_at_suggest": accum_at_suggest,
                 "strength_change": strength_change,
-                "volume_still_building": bool(volume_still_building),
+                "volume_still_building": volume_still_building,
+                # Continuous coil ranking metric + its two components, plus the
+                # raw OBV-90d figures so the UI can show real numbers, not 100s.
+                "coil_score": coil["score"],
+                "volume_add": coil["volume_add"],
+                "price_stillness": coil["price_stillness"],
+                "obv90_now": obv90_now,
+                "obv90_start": obv90_start,
+                "ud90_now": ud90_now,
+                "traction": traction,
                 "status": status,
                 "consolidation": cons,
                 "support1": support1,
@@ -463,17 +665,29 @@ def build_pick_followup(today_iso: Optional[str] = None) -> list[dict]:
         except Exception:  # never let one bad row break the section
             continue
 
-    # Rank strongest-accumulation-first; coiling springs float above firing/weak.
+    # Rank by CONTINUOUS coil quality (volume-add x price-stillness), so
+    # "volume still adding, price barely moved" floats to the top — the owner's
+    # ordering ask. The coarse gauge score is NOT used for ordering (it pegs at
+    # 100). Status only breaks ties (coiling above firing/weak).
     _status_rank = {"coiling": 3, "firing": 2, "watch": 1, "weakening": 0, "broke_down": -1, "no-data": -2}
 
     def _sort_key(row: dict):
-        an = row.get("accum_now") or {}
-        score = an.get("score")
+        cs = row.get("coil_score")
         return (
-            score if _is_num(score) else -1.0,
+            cs if _is_num(cs) else -1.0,
             _status_rank.get(row.get("status"), -3),
             row.get("days_tracked") or 0,
         )
 
     rows.sort(key=_sort_key, reverse=True)
+
+    # Direct the user to the single best one: the top-ranked row that is a live
+    # coil (still accumulating, not yet fired/broken) with a real score.
+    for row in rows:
+        row["is_top_pick"] = False
+    for row in rows:
+        if row.get("status") in ("coiling", "watch") and _is_num(row.get("coil_score")):
+            row["is_top_pick"] = True
+            break
+
     return rows

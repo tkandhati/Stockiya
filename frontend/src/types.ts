@@ -594,12 +594,26 @@ export interface AccumTrajectoryPoint {
   color: string
   label: string
   close?: number | null
+  obv90?: number | null   // continuous OBV-90d slope % — the volume-accumulation figure
+  ud90?: number | null    // up/down volume ratio (90d)
 }
 
 export interface PickFollowupConsolidation {
   size?: 'small' | 'big' | null   // tight coil vs wide/deep base (best-effort)
   range_pct?: number | null
   days?: number
+}
+
+// Leading clues that a loaded coil is starting to fire (distance to the 20d
+// pivot, flow turning up, volume expanding, closing strong, recent spikes).
+export type TractionLevel = 'breaking_out' | 'building' | 'early' | 'quiet' | 'unknown'
+
+export interface PickTraction {
+  level: TractionLevel
+  distance_to_pivot_pct?: number | null
+  pivot_price?: number | null
+  clues: string[]
+  note: string
 }
 
 // coiling = volume still accumulating while price stayed flat (loaded spring);
@@ -620,10 +634,20 @@ export interface PickFollowupRow {
   reached_expected?: boolean | null
   current_price?: number | null
   price_change_pct?: number | null
+  // Continuous coil-quality ranking metric (volume-add x price-stillness) and
+  // its parts — this, not the saturating gauge, orders the table.
+  coil_score?: number | null           // 0-100, higher = better coil
+  volume_add?: number | null           // 0-1, how strongly volume is still accumulating
+  price_stillness?: number | null      // 0-1, how little price has moved
+  obv90_now?: number | null            // latest OBV-90d slope %
+  obv90_start?: number | null          // OBV-90d slope % at suggestion
+  ud90_now?: number | null             // latest up/down volume ratio (90d)
+  is_top_pick?: boolean                // the single best live coil to act on
+  traction?: PickTraction              // leading clues the coil is starting to fire
   accum_now?: AccumStrength | null
   accum_at_suggest?: AccumStrength | null
   strength_change?: number | null
-  volume_still_building?: boolean      // accumulation maintained/rising since suggestion
+  volume_still_building?: boolean      // OBV-90d positive and not falling since suggestion
   status: PickFollowupStatus
   consolidation: PickFollowupConsolidation
   support1?: number | null

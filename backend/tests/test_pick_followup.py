@@ -114,6 +114,70 @@ class TrajectoryTests(unittest.TestCase):
         series = F.accumulation_trajectory("X.NS", "2026-07-01")
         self.assertEqual([p["date"] for p in series], ["2026-07-20", "2026-07-21"])
 
+    def test_points_carry_continuous_obv90(self):
+        series = F.accumulation_trajectory("X.NS", "2026-07-01")
+        # obv_90d_slope_pct from _STRONG_FEAT (8.0) is carried through as obv90.
+        self.assertEqual(series[0]["obv90"], 8.0)
+        self.assertEqual(series[0]["ud90"], 1.4)
+
+
+class CoilQualityTests(unittest.TestCase):
+    def test_strong_volume_flat_price_scores_high(self):
+        q = F.coil_quality(obv90=30.0, ud90=1.4, price_change_pct=0.0)
+        self.assertGreaterEqual(q["score"], 95)
+        self.assertEqual(q["volume_add"], 1.0)
+        self.assertEqual(q["price_stillness"], 1.0)
+
+    def test_same_volume_but_price_moved_scores_lower(self):
+        flat = F.coil_quality(30.0, 1.4, 0.0)["score"]
+        moved = F.coil_quality(30.0, 1.4, 8.0)["score"]   # up 8% -> stillness spent
+        self.assertLess(moved, flat)
+
+    def test_weak_volume_scores_low(self):
+        q = F.coil_quality(obv90=-50.0, ud90=0.7, price_change_pct=0.0)
+        self.assertEqual(q["volume_add"], 0.0)
+        self.assertLess(q["score"], 60)
+
+    def test_no_volume_data_is_none(self):
+        q = F.coil_quality(obv90=None, ud90=None, price_change_pct=0.0)
+        self.assertIsNone(q["score"])
+
+
+class TractionTests(unittest.TestCase):
+    def test_breaking_out_when_above_pivot(self):
+        t = F.assess_traction({"break_pct": 1.0, "resistance_20d": 100.0, "vol_ratio_today_50d": 1.5})
+        self.assertEqual(t["level"], "breaking_out")
+        self.assertEqual(t["distance_to_pivot_pct"], 0.0)
+
+    def test_building_near_pivot_with_clues(self):
+        t = F.assess_traction({
+            "break_pct": -2.0, "resistance_20d": 100.0,
+            "obv_flow_inflection": "healing",
+            "vol_ratio_today_50d": 1.6, "anomaly_cluster_count_15d": 2,
+        })
+        self.assertEqual(t["level"], "building")
+        self.assertEqual(t["distance_to_pivot_pct"], 2.0)
+        self.assertGreaterEqual(len(t["clues"]), 2)
+
+    def test_early_when_one_clue_far_from_pivot(self):
+        t = F.assess_traction({
+            "break_pct": -8.0, "resistance_20d": 100.0,
+            "obv_slope_short_pct": 5.0, "obv_slope_long_pct": 3.0,
+        })
+        self.assertEqual(t["level"], "early")
+
+    def test_quiet_when_no_clues(self):
+        t = F.assess_traction({
+            "break_pct": -8.0, "resistance_20d": 100.0,
+            "obv_slope_short_pct": 1.0, "obv_slope_long_pct": 2.0,
+            "vol_ratio_today_50d": 0.9, "upper_third_ratio": 0.2,
+            "anomaly_cluster_count_15d": 0,
+        })
+        self.assertEqual(t["level"], "quiet")
+
+    def test_unknown_without_trace(self):
+        self.assertEqual(F.assess_traction({})["level"], "unknown")
+
 
 class BuildTests(unittest.TestCase):
     def setUp(self):
@@ -127,8 +191,10 @@ class BuildTests(unittest.TestCase):
             "status": "open", "ownership": "suggested",
         }]
         F.accumulation_trajectory = lambda sym, since: [
-            {"date": "2026-08-01", "score": 85, "level": 5, "color": "#059669", "label": "STRONG", "close": 100.0},
-            {"date": "2026-08-10", "score": 90, "level": 5, "color": "#059669", "label": "STRONG", "close": 100.5},
+            {"date": "2026-08-01", "score": 85, "level": 5, "color": "#059669", "label": "STRONG",
+             "close": 100.0, "obv90": 28.0, "ud90": 1.4},
+            {"date": "2026-08-10", "score": 90, "level": 5, "color": "#059669", "label": "STRONG",
+             "close": 100.5, "obv90": 30.0, "ud90": 1.4},
         ]
         F._base_low_from_pick = lambda sym, d: 96.0
 
@@ -152,6 +218,12 @@ class BuildTests(unittest.TestCase):
         self.assertEqual(r["support1"], 96.0)          # base low
         self.assertEqual(r["support2"], 92.0)          # protective stop
         self.assertEqual(r["days_tracked"], 2)
+        # Continuous coil quality computed + this row flagged the best pick.
+        self.assertIsInstance(r["coil_score"], int)
+        self.assertGreaterEqual(r["coil_score"], 90)
+        self.assertEqual(r["obv90_now"], 30.0)
+        self.assertTrue(r["is_top_pick"])
+        self.assertTrue(r["volume_still_building"])   # OBV-90d positive and rising
 
     def test_env_gate_disables(self):
         os.environ["STOCKYA_FOLLOWUP_WATCH"] = "0"
