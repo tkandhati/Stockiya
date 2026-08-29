@@ -56,6 +56,15 @@ const STATUS_META: Record<PickFollowupStatus, { label: string; cls: string; hint
 
 const CONS_LABEL: Record<string, string> = { small: 'tight', big: 'wide' }
 
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+
+/** '2026-07-21' -> '21 Jul' (no Date parsing, so no timezone drift). */
+function shortDate(iso: string): string {
+  const [, m, d] = iso.split('-')
+  const mi = Number(m) - 1
+  return `${Number(d)} ${MONTHS[mi] ?? m}`
+}
+
 function StrengthBar({ accum }: { accum?: AccumStrength | null }) {
   if (!accum || typeof accum.score !== 'number') {
     return <span className="text-xs text-slate-400">—</span>
@@ -77,29 +86,70 @@ function StrengthBar({ accum }: { accum?: AccumStrength | null }) {
   )
 }
 
-/** Compact SVG sparkline of the day-by-day accumulation-strength scores (0-100). */
-function TrajectorySparkline({ points }: { points: AccumTrajectoryPoint[] }) {
+/**
+ * Day-by-day accumulation-strength chart since the recommend date. Each dot is
+ * labelled with its score (0-100) above and its date below, plus a native hover
+ * tooltip. Scrolls horizontally when there are many scan-days so labels never
+ * overlap.
+ */
+function TrajectoryChart({ points }: { points: AccumTrajectoryPoint[] }) {
   const scored = points.filter((p) => typeof p.score === 'number')
-  if (scored.length < 2) {
+  if (scored.length < 1) {
     return <span className="text-xs text-slate-400">Not enough scan-days to chart</span>
   }
-  const W = 260
-  const H = 48
-  const pad = 4
-  const n = scored.length
-  const x = (i: number) => pad + (i * (W - 2 * pad)) / (n - 1)
-  const y = (s: number) => pad + (1 - s / 100) * (H - 2 * pad)
-  const path = scored.map((p, i) => `${i === 0 ? 'M' : 'L'} ${x(i).toFixed(1)} ${y(p.score).toFixed(1)}`).join(' ')
+  const SP = 48 // px between dots
+  const PAD_X = 26
+  const PAD_TOP = 20 // room for the score label above the highest dot
+  const CHART_H = 72
+  const PAD_BOTTOM = 34 // room for the rotated date labels below
+  const W = PAD_X * 2 + Math.max(1, scored.length - 1) * SP
+  const H = PAD_TOP + CHART_H + PAD_BOTTOM
+  const x = (i: number) => PAD_X + i * SP
+  const y = (s: number) => PAD_TOP + (1 - Math.max(0, Math.min(100, s)) / 100) * CHART_H
+  const path = scored
+    .map((p, i) => `${i === 0 ? 'M' : 'L'} ${x(i).toFixed(1)} ${y(p.score).toFixed(1)}`)
+    .join(' ')
   const lastColor = scored[scored.length - 1].color || '#6366f1'
+  const yLabels = PAD_TOP + CHART_H + 12
   return (
-    <svg width={W} height={H} className="overflow-visible">
-      {/* healthy line at level-4 threshold (65) for reference */}
-      <line x1={pad} y1={y(65)} x2={W - pad} y2={y(65)} stroke="#e2e8f0" strokeDasharray="2 3" />
-      <path d={path} fill="none" stroke={lastColor} strokeWidth={2} strokeLinejoin="round" />
-      {scored.map((p, i) => (
-        <circle key={p.date} cx={x(i)} cy={y(p.score)} r={1.8} fill={p.color || lastColor} />
-      ))}
-    </svg>
+    <div className="max-w-full overflow-x-auto">
+      <svg width={W} height={H} className="block">
+        {/* healthy reference line at level-4 threshold (65) */}
+        <line x1={PAD_X} y1={y(65)} x2={W - PAD_X} y2={y(65)} stroke="#e2e8f0" strokeDasharray="2 3" />
+        {scored.length >= 2 && (
+          <path d={path} fill="none" stroke={lastColor} strokeWidth={2} strokeLinejoin="round" />
+        )}
+        {scored.map((p, i) => (
+          <g key={p.date}>
+            <circle cx={x(i)} cy={y(p.score)} r={3} fill={p.color || lastColor}>
+              <title>{`${p.date} · score ${p.score}/100`}</title>
+            </circle>
+            {/* score above the dot */}
+            <text
+              x={x(i)}
+              y={y(p.score) - 7}
+              textAnchor="middle"
+              fontSize="10"
+              fontWeight={600}
+              fill="#0f172a"
+            >
+              {p.score}
+            </text>
+            {/* date below, rotated so it never collides with its neighbour */}
+            <text
+              x={x(i)}
+              y={yLabels}
+              textAnchor="end"
+              fontSize="9"
+              fill="#64748b"
+              transform={`rotate(-40 ${x(i)} ${yLabels})`}
+            >
+              {shortDate(p.date)}
+            </text>
+          </g>
+        ))}
+      </svg>
+    </div>
   )
 }
 
@@ -112,10 +162,10 @@ function ExpandedRow({ row }: { row: PickFollowupRow }) {
       <div>
         <div className="flex items-center gap-2 text-xs font-semibold text-slate-700">
           <Activity className="h-3.5 w-3.5 text-indigo-600" />
-          Accumulation strength since {row.suggested_date}
+          Volume accumulation strength (0–100) since {row.suggested_date}
         </div>
         <div className="mt-2">
-          <TrajectorySparkline points={traj} />
+          <TrajectoryChart points={traj} />
         </div>
         {first && last && (
           <div className="mt-1 flex gap-4 text-[11px] text-slate-500">
