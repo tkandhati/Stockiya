@@ -604,6 +604,35 @@ export interface PickFollowupConsolidation {
   days?: number
 }
 
+// Scoring-neutral conviction context (US correlation/tailwind, sector
+// leadership, export exposure). CONTEXT-ONLY — never changes the coil ranking.
+export interface PickContextUS {
+  sp500_corr?: number | null
+  nasdaq_corr?: number | null
+  regime?: 'tailwind' | 'headwind' | 'neutral' | null
+  note?: string
+}
+
+export interface PickContextLeadership {
+  stock_return_pct: number
+  bench_return_pct: number
+  rel_pct: number
+  label: 'leader' | 'inline' | 'laggard'
+}
+
+export interface PickContextExport {
+  exposure: 'high' | 'medium' | 'low' | 'unknown'
+  basis?: string | null
+}
+
+export interface PickContext {
+  us?: PickContextUS
+  leadership?: PickContextLeadership | null
+  sector?: string | null
+  export?: PickContextExport
+  disclaimer?: string
+}
+
 // Leading clues that a loaded coil is starting to fire (distance to the 20d
 // pivot, flow turning up, volume expanding, closing strong, recent spikes).
 export type TractionLevel = 'breaking_out' | 'building' | 'early' | 'quiet' | 'unknown'
@@ -644,6 +673,7 @@ export interface PickFollowupRow {
   ud90_now?: number | null             // latest up/down volume ratio (90d)
   is_top_pick?: boolean                // the single best live coil to act on
   traction?: PickTraction              // leading clues the coil is starting to fire
+  context?: PickContext | null         // scoring-neutral conviction context (US/sector/export)
   accum_now?: AccumStrength | null
   accum_at_suggest?: AccumStrength | null
   strength_change?: number | null

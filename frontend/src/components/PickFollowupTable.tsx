@@ -1,9 +1,10 @@
 import { Fragment, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Activity, ChevronDown, ChevronRight, Crosshair, Star, Zap } from 'lucide-react'
+import { Activity, ChevronDown, ChevronRight, Crosshair, Globe, Star, Zap } from 'lucide-react'
 import { fmtINR, fmtPct } from '../api'
 import type {
   AccumTrajectoryPoint,
+  PickContext,
   PickFollowupRow,
   PickFollowupStatus,
   TractionLevel,
@@ -207,6 +208,67 @@ function TrajectoryChart({ points }: { points: AccumTrajectoryPoint[] }) {
   )
 }
 
+const CHIP = 'rounded px-1.5 py-0.5 text-[10px] font-medium'
+
+/** Scoring-neutral conviction context — US linkage, leadership, sector, export. */
+function ContextBlock({ context }: { context?: PickContext | null }) {
+  if (!context) return null
+  const us = context.us
+  const lead = context.leadership
+  const exp = context.export
+  const hasUS = !!us && (typeof us.sp500_corr === 'number' || !!us.regime)
+  if (!hasUS && !lead && !context.sector) return null
+
+  const regimeCls =
+    us?.regime === 'tailwind'
+      ? 'bg-emerald-100 text-emerald-900'
+      : us?.regime === 'headwind'
+      ? 'bg-rose-100 text-rose-900'
+      : 'bg-slate-100 text-slate-600'
+  const leadCls =
+    lead?.label === 'leader'
+      ? 'bg-emerald-100 text-emerald-900'
+      : lead?.label === 'laggard'
+      ? 'bg-rose-100 text-rose-900'
+      : 'bg-slate-100 text-slate-600'
+  const expCls =
+    exp?.exposure === 'high'
+      ? 'bg-indigo-100 text-indigo-900'
+      : exp?.exposure === 'medium'
+      ? 'bg-amber-100 text-amber-900'
+      : 'bg-slate-100 text-slate-500'
+
+  return (
+    <div className="mt-2 rounded-lg border border-slate-200 bg-white px-3 py-2">
+      <div className="flex items-center gap-1.5 font-semibold text-slate-700">
+        <Globe className="h-3.5 w-3.5 text-slate-500" />
+        Conviction context{' '}
+        <span className="font-normal text-slate-400">· doesn&apos;t change the ranking</span>
+      </div>
+      <div className="mt-1.5 flex flex-wrap gap-1.5">
+        {context.sector && (
+          <span className={`${CHIP} bg-slate-100 text-slate-700`}>Sector: {context.sector}</span>
+        )}
+        {exp && exp.exposure !== 'unknown' && (
+          <span className={`${CHIP} ${expCls}`}>Export: {exp.exposure}</span>
+        )}
+        {lead && (
+          <span className={`${CHIP} ${leadCls}`}>
+            {lead.label === 'leader' ? 'Leader' : lead.label === 'laggard' ? 'Laggard' : 'In-line'} vs
+            Nifty {lead.rel_pct >= 0 ? '+' : ''}
+            {lead.rel_pct}%
+          </span>
+        )}
+        {us?.regime && <span className={`${CHIP} ${regimeCls}`}>US {us.regime}</span>}
+        {us && typeof us.sp500_corr === 'number' && (
+          <span className={`${CHIP} bg-slate-100 text-slate-700`}>S&amp;P corr {us.sp500_corr}</span>
+        )}
+      </div>
+      {us?.note && <p className="mt-1 text-[11px] text-slate-500">{us.note}</p>}
+    </div>
+  )
+}
+
 function ExpandedRow({ row }: { row: PickFollowupRow }) {
   const traj = row.trajectory || []
   const first = traj[0]
@@ -305,6 +367,8 @@ function ExpandedRow({ row }: { row: PickFollowupRow }) {
             </span>
           )}
         </div>
+
+        <ContextBlock context={row.context} />
       </div>
     </div>
   )

@@ -541,6 +541,24 @@ def build_pick_followup(today_iso: Optional[str] = None) -> list[dict]:
         return []
 
     today_iso = today_iso or datetime.now().date().isoformat()
+
+    # Scoring-neutral conviction context (US correlation/tailwind, sector
+    # leadership, export tag). Loaded ONCE per build; best-effort + network-
+    # optional. CONTEXT-ONLY — never touches coil_score / traction / status /
+    # ranking (PRINCIPLES §8). Absent/None when disabled or offline.
+    _macro = None
+    _sector_map: dict = {}
+    _market: dict = {}
+    try:
+        from . import macro_context as _macro
+        if _macro._enabled():
+            _sector_map = _macro.load_sector_map()
+            _market = _macro.fetch_market_series()
+        else:
+            _macro = None
+    except Exception:
+        _macro = None
+
     rows: list[dict] = []
 
     for r in _tracked_rows(today_iso):
@@ -605,6 +623,14 @@ def build_pick_followup(today_iso: Optional[str] = None) -> list[dict]:
                 _merge_trace_features(symbol, series[-1]["date"]) if series else {}
             )
             traction = assess_traction(latest_feat)
+
+            # Scoring-neutral conviction context (context-only; never ranks).
+            context = None
+            if _macro is not None:
+                try:
+                    context = _macro.build_context(symbol, _market, _sector_map)
+                except Exception:
+                    context = None
             # "Volume still adding up" now reads the CONTINUOUS OBV trend, not the
             # saturating gauge: accumulation is building if the 90d OBV slope is
             # positive and has not fallen since we suggested it.
@@ -653,6 +679,7 @@ def build_pick_followup(today_iso: Optional[str] = None) -> list[dict]:
                 "obv90_start": obv90_start,
                 "ud90_now": ud90_now,
                 "traction": traction,
+                "context": context,
                 "status": status,
                 "consolidation": cons,
                 "support1": support1,
