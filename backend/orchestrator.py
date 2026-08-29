@@ -303,31 +303,20 @@ def run_universe(
     log.info("  [Phase 0/4] Market regime gate ...")
     regime = check_regime()
     log.info("  [Phase 0/4] %s", regime.summary)
-    if not regime.passed:
-        response = render_picks_response(
-            [], today_iso,
-            demo_mode=demo_mode,
-            regime=regime.as_dict(),
-            message=regime.summary,
+    # Regime OFF is now a WARNING, not a full abort (owner ask, 2026-08-29).
+    # Previously we returned an empty response here, leaving the page blank. We
+    # no longer abort: the pipeline still runs so the MONITORING content (the
+    # follow-up tracker on previous picks, closest-to-firing, delivery analysis)
+    # renders as usual, under a regime warning banner. What regime-off still
+    # enforces is the HARD rule "never issue a BUY alert when the index is below
+    # its 50d MA" (PRINCIPLES §7) — so Phase 2 selection is suppressed below and
+    # the buy list stays empty (no portfolio rows recorded, since pick_payloads
+    # is empty). The regime dict is threaded into the response for the banner.
+    regime_halted = not regime.passed
+    if regime_halted:
+        log.info(
+            "  [Phase 0/4] Regime OFF — buys suppressed; monitoring panels still built."
         )
-        path = write_picks_file(response)
-        log.info("  ABORT: regime halted -> wrote empty %s", path.name)
-        # Still emit a per-day summary so every trading day has one; nothing
-        # was screened, so the funnel is empty and it just records regime OFF.
-        try:
-            from .run_summary import build_summary_md, write_summary
-            md = build_summary_md(
-                date=today_iso,
-                generated_at=response.get("generated_at"),
-                regime=regime.as_dict(),
-                funnel={"selected": 0},
-                picks=[],
-            )
-            write_summary(today_iso, md)
-        except Exception:
-            log.exception("run_summary (regime-off) write failed (non-fatal)")
-        log.info("=" * 76)
-        return response
 
     # ---- Phase 1: per-ticker pipeline (parallel) ----
     log.info("  [Phase 1/4] Running per-ticker chain over %d tickers (%d workers) ...",
@@ -451,19 +440,26 @@ def run_universe(
     _log_gate_breakdown(results)
 
     # ---- Phase 2: rank + select ----
-    log.info("  [Phase 2/4] Confirmation ranking over %d survivors ...", len(survivors))
-    selected = rank_survivors(survivors, top_n=top_n)
-    # Guaranteed daily pre-breakout LEAD: if nothing cleared confirmation, surface
-    # the single best calm, accumulation-confirmed base that is coiling just under
-    # τ (ATR ceiling + accumulation + day-0 coherence still enforced — see
-    # rank.rank_lead_fallback). Never leaves the day empty when a genuine
-    # pre-breakout candidate exists; badged watch-grade downstream.
     lead_fallback_fired = False
-    if not selected:
-        lead = rank_lead_fallback(hard_survivors)
-        if lead is not None:
-            selected = [lead]
-            lead_fallback_fired = True
+    if regime_halted:
+        # Regime OFF -> never issue a BUY alert (PRINCIPLES §7). Selection and the
+        # pre-breakout LEAD fallback are both skipped; the monitoring panels below
+        # still build so the page shows content under a regime warning.
+        selected = []
+        log.info("  [Phase 2/4] Regime OFF — selection skipped (0 buy picks today).")
+    else:
+        log.info("  [Phase 2/4] Confirmation ranking over %d survivors ...", len(survivors))
+        selected = rank_survivors(survivors, top_n=top_n)
+        # Guaranteed daily pre-breakout LEAD: if nothing cleared confirmation,
+        # surface the single best calm, accumulation-confirmed base coiling just
+        # under τ (ATR ceiling + accumulation + day-0 coherence still enforced —
+        # see rank.rank_lead_fallback). Never leaves the day empty when a genuine
+        # pre-breakout candidate exists; badged watch-grade downstream.
+        if not selected:
+            lead = rank_lead_fallback(hard_survivors)
+            if lead is not None:
+                selected = [lead]
+                lead_fallback_fired = True
     if selected:
         if lead_fallback_fired:
             log.info(
@@ -596,7 +592,11 @@ def run_universe(
         results, tau=COMPOSITE_TAU, n_per_tab=5
     )
     if not pick_payloads:
-        if data_misconfigured:
+        if regime_halted:
+            # Regime OFF: buys are suppressed by design. Say so as a warning —
+            # the monitoring panels below still populate.
+            message = regime.summary
+        elif data_misconfigured:
             # Don't lie to the user with "nothing actionable" when the real
             # issue is upstream. Tell them exactly what to fix.
             message = (
