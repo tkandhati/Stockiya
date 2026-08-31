@@ -257,11 +257,17 @@ More bonuses = more independent confirmations = less-likely false trigger.
 
 ## 7. Hard rejects — never alert
 
-- Regime index below its 50d MA
 - Parabolic 30-day move (> +25 %) — institutions are selling to retail
 - Extended > 15 % above 50d MA — chasing chase
 - Auditor exit / open SEBI action / promoter pledge > 50 %
 - Failed [VSA] trigger today (no valid entry bar)
+
+> **Market regime is a caution, not a hard reject (owner ask 2026-08-31).**
+> A regime index below its 50d MA no longer halts the picker or suppresses buys.
+> The picker functions normally and picks what it can; the regime read is shown
+> as a warning banner ("Regime caution") advising smaller size / tighter stops.
+> The old master-switch behaviour (suppress every BUY when the index is below
+> its 50d MA) is opt-in only via `STOCKYA_REGIME_HALT=1`.
 
 ---
 
@@ -273,6 +279,16 @@ More bonuses = more independent confirmations = less-likely false trigger.
 - Trade outside the scan universe.
 - Use leverage, options, or shorts.
 - Hide outcomes — every pick is logged with realised return at T+90 and T+180.
+
+> **Note on delivery % (2026-08-31):** NSE delivery % is a **volume-quality**
+> signal (deliverable qty / traded qty — real accumulation vs intraday churn), not
+> a fundamental, so using it is *not* "overriding volume with fundamentals." The
+> monitoring-only coiling follow-up may therefore fold a **bounded** delivery/VPA
+> smart-money read into its *volume-add* rank axis (`backend/smart_money.py`,
+> `SMART_MONEY_MAX_TILT`; Anna Coulling: moderate volume + high delivery =
+> structural accumulation). This is distinct from the strictly context-only macro
+> layer (`macro_context.py`), which never ranks. Selection/composite/sizing/exits
+> are untouched.
 
 ---
 

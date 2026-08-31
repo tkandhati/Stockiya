@@ -142,44 +142,30 @@ export function PicksPage() {
           <DeliveryWeightedPicks rows={data.delivery_analysis} />
         )}
 
-        {/* Empty pick set — NO blank page (including regime-off). A slim,
-            non-blocking WARNING banner, then promote the best-accumulators
-            follow-up table as the main content so there is always something to
-            watch. On regime-off the banner is a warning (buys paused), but the
-            monitoring content still shows as usual. */}
+        {/* Empty pick set — NO blank page. A slim, non-blocking WARNING banner,
+            then promote the best-accumulators follow-up table as the main content
+            so there is always something to watch. Regime-off no longer pauses
+            buys (owner ask 2026-08-31) — it's a caution shown by the banner above;
+            an empty list here means nothing cleared the bar today. */}
         {data && data.picks.length === 0 && (
           <div className="space-y-4">
-            <div
-              className={`rounded-xl border px-4 py-3 text-sm ${
-                data.regime && !data.regime.passed
-                  ? 'border-amber-300 bg-amber-50 text-amber-900'
-                  : 'border-amber-200 bg-amber-50 text-amber-900'
-              }`}
-            >
+            <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
               <span className="font-semibold">
-                {data.regime && !data.regime.passed
-                  ? '⚠ Buys paused — market regime is off'
-                  : 'No breakout cleared the bar today'}
+                No breakout cleared the bar today
               </span>{' '}
               <span className="opacity-90">
                 {data.message ||
-                  (data.regime && !data.regime.passed
-                    ? 'No buy alerts will issue until NIFTY 100 closes above its 50-day moving average. Your accumulators are still being tracked below.'
-                    : 'Normal for a 300-name universe — quality over quantity. Your strongest accumulators to watch are below.')}
+                  'Normal for a 300-name universe — quality over quantity. Your strongest accumulators to watch are below.'}
               </span>
             </div>
 
             {/* Best accumulators promoted as the day's watch list — shown on
-                EVERY empty day, including regime-off (monitoring, not a buy). */}
+                every empty day (monitoring, not a buy). */}
             {data.pick_followup && data.pick_followup.length > 0 && (
               <PickFollowupTable
                 rows={data.pick_followup}
                 title="Strongest accumulators to watch"
-                subtitle={
-                  data.regime && !data.regime.passed
-                    ? 'Buys paused (regime off) — previous picks still tracked by accumulation strength'
-                    : 'No pick fired today — these previous picks are still accumulating'
-                }
+                subtitle="No pick fired today — these previous picks are still accumulating"
               />
             )}
           </div>

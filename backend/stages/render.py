@@ -5,7 +5,7 @@ Takes the selected list (already ranked) and per-ticker pick payloads from
 reads this file directly; no further computation is needed at request time.
 
 Now also carries the regime status and a top-level message (e.g. "Regime
-HALTED" or "Nothing actionable today") so the UI can render the banner.
+CAUTION" or "Nothing actionable today") so the UI can render the banner.
 """
 
 from __future__ import annotations

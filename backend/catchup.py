@@ -286,7 +286,7 @@ def run_catchup() -> dict:
                 }
                 log.info("[Step 2/3]   (%d/%d) %s -> %d pick(s), regime=%s",
                          i, len(missing_days), d.isoformat(), n_picks,
-                         "ON" if regime_ok else "HALTED")
+                         "ON" if regime_ok else "CAUTION")
             except Exception as e:
                 log.exception("[Step 2/3]   (%d/%d) backfill for %s failed",
                               i, len(missing_days), d.isoformat())

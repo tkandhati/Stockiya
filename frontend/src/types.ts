@@ -645,6 +645,26 @@ export interface PickTraction {
   note: string
 }
 
+// VPA smart-money read (Anna Coulling): structural accumulation (moderate volume
+// + high delivery), quiet accumulation, no-supply dry-up, and the honest
+// distribution warning. `confirmation` is the bounded volume-quality tilt already
+// applied to coil_score on the backend; here it is display context only.
+export interface SmartMoneySignal {
+  key: string
+  label: string
+  kind: 'bullish' | 'bearish' | 'neutral'
+  strength: number         // 0-1
+  note: string
+}
+
+export interface SmartMoneyRead {
+  signals: SmartMoneySignal[]
+  headline: string         // dominant read for the badge ('—' when nothing)
+  kind: 'bullish' | 'bearish' | 'neutral'
+  confirmation: number     // 0-1 bullish confidence (0 when a warning fired)
+  warning: boolean         // distribution risk flagged
+}
+
 // coiling = volume still accumulating while price stayed flat (loaded spring);
 // firing = price moving off the base; weakening = accumulation faded;
 // broke_down = price fell through the base; watch / no-data otherwise.
@@ -673,6 +693,7 @@ export interface PickFollowupRow {
   ud90_now?: number | null             // latest up/down volume ratio (90d)
   is_top_pick?: boolean                // the single best live coil to act on
   traction?: PickTraction              // leading clues the coil is starting to fire
+  smart_money?: SmartMoneyRead         // VPA smart-money read (delivery %, no-supply, distribution)
   context?: PickContext | null         // scoring-neutral conviction context (US/sector/export)
   accum_now?: AccumStrength | null
   accum_at_suggest?: AccumStrength | null

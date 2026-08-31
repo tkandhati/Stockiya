@@ -1,5 +1,81 @@
 # Changelog
 
+## 2026-08-31 — Regime-off is a warning, no longer a halt
+
+Owner ask: *"Regime halted to be removed — pick the stocks it can, warning only,
+function normally."* A market-regime read below trend (NIFTY 100 < its 50d MA)
+no longer halts the picker or suppresses the buy list. The full pipeline runs and
+Phase 2 selects as usual; the regime read is surfaced only as a caution banner.
+
+**Behaviour change (default):**
+- `backend/orchestrator.py` — new `_regime_halt_enabled()` gate. `regime_halted`
+  is now `(not regime.passed) and _regime_halt_enabled()`, so by default Phase 2
+  selection is **not** skipped on a regime-off day. `diagnostics()` no longer
+  early-returns on regime-off.
+- `backend/stages/regime.py` — regime-off summary now reads **"Regime CAUTION …
+  Picks still generated; trade smaller and tighter"** instead of "Regime HALTED …
+  No buy alerts will issue today." (strict wording retained under the opt-in).
+- `backend/backtest.py` — Mode B selection and the walk-forward loop mirror live:
+  regime-off days are scanned and selected normally by default; only the opt-in
+  counts `regime_halt_days` / skips days.
+- `frontend/src/components/RegimeBanner.tsx` — the red **"Regime HALTED"** block
+  is now an amber **"Regime caution"** warning ("picks still generated; consider
+  smaller size / tighter stops").
+- `frontend/src/pages/PicksPage.tsx` — the empty-state no longer claims "Buys
+  paused — market regime is off"; an empty list means nothing cleared the bar.
+- `PRINCIPLES.md` §7 — "Regime index below its 50d MA" removed from the hard
+  rejects; replaced by a note that regime is a caution, not a reject.
+
+**Reversible:** set `STOCKYA_REGIME_HALT=1` to restore the old strict master
+switch (suppress every BUY, and skip regime-off days in the walk-forward).
+
+## 2026-08-31 — Smart-money (VPA) read in the Coiling follow-up
+
+Additive, reversible, monitoring-only. Brings Anna Coulling's Volume Price
+Analysis into the coiling follow-up table (`backend/pick_followup.py`), the one
+view that previously ranked on traded volume alone and ignored NSE **delivery %**
+— the accumulation-vs-churn discriminator. No `PICKS_SCHEMA_VERSION` bump: the new
+`smart_money` row key is optional and readers tolerate its absence.
+
+### The read — `backend/smart_money.py` (new)
+`assess_smart_money(feat, delivery_adv, *, price_change_pct, obv90, ud90)` — a
+pure, file-free, deterministic function (posture of `pre_breakout_tag.py`) that
+recognizes four named footprints from data already on file (traces + delivery):
+
+- **structural_accumulation** — moderate (non-spiking) volume + high/decent
+  delivery % while price consolidates → *smart money quietly taking delivery*
+  (the Coulling headline).
+- **quiet_accumulation** — delivery held above band for N days and/or a rising
+  multi-horizon delivery drift (`delivery.accum_streak_days` / `accum_drift`).
+- **no_supply** — volume dried up while up-days still dominate (absorption); the
+  same dry-up with flat up/down is *apathy*, not absorption — no credit (reuses
+  the `pre_breakout_tag` stealth-demand idiom).
+- **distribution_warning** — churn delivery, ≥3 distribution days in 15
+  (`[DV].dist_day_count_15`), OBV hemorrhaging, or OBV-90d negative. Forces
+  `confirmation = 0` so a distributing name can never earn a boost, and is never
+  flagged ★ Best.
+
+Returns `{signals[], headline, kind, confirmation(0-1), warning}`.
+
+### The tilt — `backend/pick_followup.py`
+`coil_quality(...)` gains an optional `smart_money_confirmation`; it applies a
+**bounded** (`SMART_MONEY_MAX_TILT = 0.20`), reversible lift to the *volume-add*
+axis only. Delivery % is a **volume-quality** signal, not a fundamental, so
+tilting the volume leg honours PRINCIPLES §8 — this is distinct from the strictly
+context-only macro layer (`macro_context.py`), which still never ranks. Delivery
+advisories are loaded once per build via `delivery.all_advisories()`. **Offline /
+no-delivery / `STOCKYA_SMART_MONEY=0` → confirmation 0 → coil scores byte-identical
+to before** (verified: churn/no-data both return the pre-change score).
+
+### UI — `PickFollowupTable.tsx` + `types.ts`
+New **Smart money** column (emerald accumulation / rose distribution / slate
+neutral badge) and a "Smart-money read (VPA)" block in the expanded row listing
+each footprint. Types: `SmartMoneySignal`, `SmartMoneyRead`, `PickFollowupRow.smart_money`.
+
+Tests: `backend/tests/test_smart_money.py` (17 cases — each strategy, the
+warning-forces-zero rule, the env kill-switch, and the bounded-tilt regression).
+Reversible: `STOCKYA_SMART_MONEY=0`.
+
 ## 2026-08-25 — Coiled Accumulators, show-all picks + readiness badges, same-day delivery, universe check
 
 Four additive, reversible changes. None bumps `PICKS_SCHEMA_VERSION` — every new

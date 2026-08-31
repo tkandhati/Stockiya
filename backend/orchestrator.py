@@ -2,8 +2,9 @@
 
 Gates-based flow (PRINCIPLES Section 2):
 
-    Phase 0  [RG]  Market regime gate (one shot, NIFTY 100 index proxy).
-                   FAIL -> write empty picks file with regime info, return.
+    Phase 0  [RG]  Market regime read (one shot, NIFTY 100 index proxy).
+                   OFF -> WARNING only; the run continues normally (owner ask
+                   2026-08-31). Opt-in STOCKYA_REGIME_HALT=1 suppresses buys.
     Phase 1  per-ticker pipeline (parallel) over the scan universe.
     Phase 2  [RK]  Confirmation-strength ranking; select top N.
     Phase 3  [PS] + [H]  Build pick payloads for the selected.
@@ -253,6 +254,20 @@ DEFAULT_TOP_N = 5
 DEFAULT_ACCOUNT_VALUE = float(os.environ.get("STOCKYA_ACCOUNT_VALUE", "100000"))
 
 
+def _regime_halt_enabled() -> bool:
+    """Whether a regime-OFF day should still HARD-halt buys.
+
+    Owner ask (2026-08-31): "Regime halted to be removed — pick the stocks it
+    can, warning only, function normally." So regime-off is now a WARNING by
+    default: the picker runs the full chain and selects as usual, and the regime
+    banner just shows a caution. The old master switch (suppress every BUY when
+    the index closes below its 50d MA — former PRINCIPLES §7) is OFF by default
+    and only restored by setting STOCKYA_REGIME_HALT=1, for anyone who wants the
+    strict behaviour back without a code change.
+    """
+    return os.environ.get("STOCKYA_REGIME_HALT", "0") == "1"
+
+
 def run_universe(
     today_iso: Optional[str] = None,
     top_n: int = DEFAULT_TOP_N,
@@ -303,20 +318,25 @@ def run_universe(
     log.info("  [Phase 0/4] Market regime gate ...")
     regime = check_regime()
     log.info("  [Phase 0/4] %s", regime.summary)
-    # Regime OFF is now a WARNING, not a full abort (owner ask, 2026-08-29).
-    # Previously we returned an empty response here, leaving the page blank. We
-    # no longer abort: the pipeline still runs so the MONITORING content (the
-    # follow-up tracker on previous picks, closest-to-firing, delivery analysis)
-    # renders as usual, under a regime warning banner. What regime-off still
-    # enforces is the HARD rule "never issue a BUY alert when the index is below
-    # its 50d MA" (PRINCIPLES §7) — so Phase 2 selection is suppressed below and
-    # the buy list stays empty (no portfolio rows recorded, since pick_payloads
-    # is empty). The regime dict is threaded into the response for the banner.
-    regime_halted = not regime.passed
-    if regime_halted:
-        log.info(
-            "  [Phase 0/4] Regime OFF — buys suppressed; monitoring panels still built."
-        )
+    # Regime OFF is a WARNING, not a halt (owner ask, 2026-08-31: "Regime halted
+    # to be removed — pick the stocks it can, warning only, function normally").
+    # The full pipeline runs and Phase 2 selects as usual; the regime dict is
+    # threaded into the response so the banner shows a caution. The old hard rule
+    # "never issue a BUY when the index is below its 50d MA" (former PRINCIPLES
+    # §7) is OFF by default and only restored via STOCKYA_REGIME_HALT=1 — in that
+    # opt-in case Phase 2 selection is suppressed below and the buy list stays
+    # empty (no portfolio rows recorded), while the monitoring panels still build.
+    regime_halted = (not regime.passed) and _regime_halt_enabled()
+    if not regime.passed:
+        if regime_halted:
+            log.info(
+                "  [Phase 0/4] Regime OFF — STOCKYA_REGIME_HALT=1: buys suppressed; "
+                "monitoring panels still built."
+            )
+        else:
+            log.info(
+                "  [Phase 0/4] Regime OFF — WARNING only; picks generated as usual."
+            )
 
     # ---- Phase 1: per-ticker pipeline (parallel) ----
     log.info("  [Phase 1/4] Running per-ticker chain over %d tickers (%d workers) ...",
@@ -442,11 +462,14 @@ def run_universe(
     # ---- Phase 2: rank + select ----
     lead_fallback_fired = False
     if regime_halted:
-        # Regime OFF -> never issue a BUY alert (PRINCIPLES §7). Selection and the
-        # pre-breakout LEAD fallback are both skipped; the monitoring panels below
-        # still build so the page shows content under a regime warning.
+        # STOCKYA_REGIME_HALT=1 only: opt-in strict mode -> never issue a BUY
+        # alert when the index is below its 50d MA. Selection and the pre-breakout
+        # LEAD fallback are both skipped; the monitoring panels below still build
+        # so the page shows content under a regime warning. Default behaviour
+        # (regime warning-only) does NOT enter this branch.
         selected = []
-        log.info("  [Phase 2/4] Regime OFF — selection skipped (0 buy picks today).")
+        log.info("  [Phase 2/4] Regime OFF (STOCKYA_REGIME_HALT=1) — "
+                 "selection skipped (0 buy picks today).")
     else:
         log.info("  [Phase 2/4] Confirmation ranking over %d survivors ...", len(survivors))
         selected = rank_survivors(survivors, top_n=top_n)
@@ -903,12 +926,12 @@ def diagnostics(today_iso: Optional[str] = None) -> dict:
     today_iso = today_iso or datetime.now(IST).date().isoformat()
 
     regime = check_regime()
-    if not regime.passed:
+    if not regime.passed and _regime_halt_enabled():
         return {
             "date": today_iso,
             "regime": regime.as_dict(),
             "stage_counts": {},
-            "note": "regime halted; per-ticker chain not run",
+            "note": "regime halted (STOCKYA_REGIME_HALT=1); per-ticker chain not run",
         }
 
     results: list[PipelineResult] = []

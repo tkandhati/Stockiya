@@ -1,12 +1,23 @@
 import { Fragment, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Activity, ChevronDown, ChevronRight, Crosshair, Globe, Star, Zap } from 'lucide-react'
+import {
+  Activity,
+  AlertTriangle,
+  ChevronDown,
+  ChevronRight,
+  Crosshair,
+  Globe,
+  Landmark,
+  Star,
+  Zap,
+} from 'lucide-react'
 import { fmtINR, fmtPct } from '../api'
 import type {
   AccumTrajectoryPoint,
   PickContext,
   PickFollowupRow,
   PickFollowupStatus,
+  SmartMoneyRead,
   TractionLevel,
 } from '../types'
 
@@ -63,6 +74,79 @@ const TRACTION_META: Record<TractionLevel, { label: string; cls: string }> = {
   early: { label: 'Early', cls: 'bg-amber-100 text-amber-900' },
   quiet: { label: 'Quiet', cls: 'bg-slate-100 text-slate-500' },
   unknown: { label: '—', cls: 'bg-transparent text-slate-300' },
+}
+
+/** Compact label for the smart-money badge (shortened headline). */
+const SMART_MONEY_SHORT: Record<string, string> = {
+  'Structural accumulation': 'Accumulation',
+  'Quiet accumulation': 'Quiet accum.',
+  'No supply': 'No supply',
+  'Distribution risk': 'Distribution',
+  'Dry-up (apathy)': 'Dry-up',
+}
+
+/**
+ * Table-cell badge for the VPA smart-money read (Anna Coulling). Emerald = bullish
+ * accumulation footprint, rose = distribution risk, slate = neutral / none.
+ */
+function SmartMoneyBadge({ sm }: { sm?: SmartMoneyRead }) {
+  if (!sm || sm.headline === '—') return <span className="text-xs text-slate-300">—</span>
+  const label = SMART_MONEY_SHORT[sm.headline] ?? sm.headline
+  const note = sm.signals[0]?.note ?? sm.headline
+  if (sm.warning) {
+    return (
+      <span
+        title={note}
+        className="inline-flex items-center gap-1 rounded bg-rose-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-rose-900"
+      >
+        <AlertTriangle className="h-2.5 w-2.5" />
+        {label}
+      </span>
+    )
+  }
+  const cls =
+    sm.kind === 'bullish' ? 'bg-emerald-100 text-emerald-900' : 'bg-slate-100 text-slate-500'
+  return (
+    <span
+      title={note}
+      className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${cls}`}
+    >
+      {sm.kind === 'bullish' && <Landmark className="h-2.5 w-2.5" />}
+      {label}
+    </span>
+  )
+}
+
+/** Expanded "Smart-money read (VPA)" block — lists the recognized footprints. */
+function SmartMoneyBlock({ sm }: { sm?: SmartMoneyRead }) {
+  if (!sm || sm.signals.length === 0) return null
+  const warn = sm.warning
+  return (
+    <div
+      className={`mt-2 rounded-lg border px-3 py-2 ${
+        warn ? 'border-rose-100 bg-rose-50/50' : 'border-emerald-100 bg-emerald-50/40'
+      }`}
+    >
+      <div
+        className={`flex items-center gap-1.5 font-semibold ${
+          warn ? 'text-rose-900' : 'text-emerald-900'
+        }`}
+      >
+        {warn ? <AlertTriangle className="h-3.5 w-3.5" /> : <Landmark className="h-3.5 w-3.5" />}
+        Smart-money read (VPA)
+        {!warn && typeof sm.confirmation === 'number' && sm.confirmation > 0 && (
+          <span className="font-normal text-slate-400">
+            · confidence {Math.round(sm.confirmation * 100)}%
+          </span>
+        )}
+      </div>
+      <ul className="mt-1 list-disc pl-4 text-slate-600">
+        {sm.signals.map((s) => (
+          <li key={s.key}>{s.note}</li>
+        ))}
+      </ul>
+    </div>
+  )
 }
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
@@ -327,6 +411,9 @@ function ExpandedRow({ row }: { row: PickFollowupRow }) {
           </div>
         )}
 
+        {/* Smart-money read (VPA) — structural accumulation / no-supply / distribution. */}
+        <SmartMoneyBlock sm={row.smart_money} />
+
         <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1">
           {typeof row.support1 === 'number' && (
             <span className="flex items-center gap-1">
@@ -405,7 +492,7 @@ export function PickFollowupTable({
       </div>
 
       <div className="mt-3 overflow-x-auto">
-        <table className="w-full min-w-[720px] border-collapse text-sm">
+        <table className="w-full min-w-[820px] border-collapse text-sm">
           <thead>
             <tr className="border-b border-slate-200 text-left text-[11px] uppercase tracking-wide text-slate-500">
               <th className="py-2 pr-3 font-medium">#</th>
@@ -415,6 +502,12 @@ export function PickFollowupTable({
               </th>
               <th className="py-2 pr-3 font-medium" title="Leading clues the coil is starting to fire">
                 Traction
+              </th>
+              <th
+                className="py-2 pr-3 font-medium"
+                title="VPA smart-money read: structural accumulation (moderate volume + high delivery), no-supply, or distribution risk"
+              >
+                Smart money
               </th>
               <th className="py-2 pr-3 font-medium">Since suggested</th>
               <th className="py-2 pr-3 font-medium">Base</th>
@@ -493,6 +586,9 @@ export function PickFollowupTable({
                         )
                       })()}
                     </td>
+                    <td className="py-2.5 pr-3">
+                      <SmartMoneyBadge sm={r.smart_money} />
+                    </td>
                     <td className="py-2.5 pr-3 tabular-nums">
                       {typeof r.price_change_pct === 'number' ? (
                         <span
@@ -531,7 +627,7 @@ export function PickFollowupTable({
                   </tr>
                   {isOpen && (
                     <tr>
-                      <td colSpan={9} className="p-0">
+                      <td colSpan={10} className="p-0">
                         <ExpandedRow row={r} />
                       </td>
                     </tr>
@@ -548,7 +644,11 @@ export function PickFollowupTable({
         strongly volume is still accumulating with how little price has moved since
         we suggested it, so the tightest coils rank first and{' '}
         <span className="font-semibold text-emerald-700">★ Best</span> flags the one
-        to focus on. Click a row for its day-by-day volume-vs-price trajectory.
+        to focus on. The <strong>Smart money</strong> column reads the volume tape
+        the way Anna Coulling does — moderate volume with a high delivery % while
+        price consolidates is structural accumulation; it nudges the coil rank
+        (bounded) and honestly flags distribution. Click a row for its day-by-day
+        volume-vs-price trajectory.
       </p>
     </section>
   )

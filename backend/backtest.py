@@ -29,6 +29,7 @@ Honest defaults (declared, see PRINCIPLES.md and the design conversation):
 from __future__ import annotations
 
 import logging
+import os
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date as _date, timedelta as _td
@@ -544,7 +545,15 @@ def run_backtest(
             results_for_rank.append(entry["result"])
 
     # ---- Rank survivors and build payloads ----
-    selected = rank_survivors(results_for_rank, top_n=top_n) if regime.passed else []
+    # Regime-off is warning-only by default (owner ask 2026-08-31) — selection
+    # runs as usual so the backtest mirrors the live picker. Only the opt-in
+    # strict mode (STOCKYA_REGIME_HALT=1) suppresses buys on a regime-off day.
+    _regime_halt = os.environ.get("STOCKYA_REGIME_HALT", "0") == "1"
+    selected = (
+        rank_survivors(results_for_rank, top_n=top_n)
+        if (regime.passed or not _regime_halt)
+        else []
+    )
 
     # ---- Assemble response shape ----
     if mode == "A":
@@ -1464,14 +1473,18 @@ def scan_universe(
     picks_chronological: list[dict] = []
     regime_halt_days = 0
     days_with_picks = 0
+    # Regime-off is warning-only by default (owner ask 2026-08-31): the day is
+    # still scanned and picks are still made. Only the opt-in strict mode
+    # (STOCKYA_REGIME_HALT=1) skips regime-off days (and counts them as halted).
+    regime_halt_enabled = os.environ.get("STOCKYA_REGIME_HALT", "0") == "1"
 
     for ts in trading_days:
         as_of = ts.date()
         as_of_iso = as_of.isoformat()
 
-        # Regime check using the as_of date — same gate live picks must pass
+        # Regime read using the as_of date — same read live picks use
         regime = check_regime(as_of=as_of_iso)
-        if not regime.passed:
+        if not regime.passed and regime_halt_enabled:
             regime_halt_days += 1
             continue
 

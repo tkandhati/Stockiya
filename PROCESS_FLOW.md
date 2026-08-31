@@ -175,10 +175,13 @@ Trace `schema_version: 2` (new gates spine). Old `schema_version: 1` rows are st
 ```
 
 At the top of every page is a regime banner:
-- **Regime ON** (green) — today's picks are shown
-- **Regime HALTED** (red) — *"No buy alerts will issue until NIFTY 100 closes above its 50-day MA."*
+- **Regime ON** (green) — market is above trend; today's picks are shown
+- **Regime caution** (amber) — NIFTY 100 is below its 50-day MA. This is a
+  **warning only** (owner ask 2026-08-31): picks are still generated normally;
+  the banner advises smaller size / tighter stops. The old hard-halt is opt-in
+  via `STOCKYA_REGIME_HALT=1`.
 
-If zero tickers cleared all four gates on a regime-on day, the page shows *"Nothing actionable today — quality over quantity."*
+If zero tickers cleared the composite bar, the page shows *"Nothing actionable today — quality over quantity."*
 
 **Truth-in-labelling (2026-07-12):** the stock-detail page no longer hardcodes *"Why all four gates passed"*. It reads `pick_today.gate_confirmation_status.status` (emitted by `build_pick_payload`) and shows:
 

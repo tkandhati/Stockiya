@@ -1112,7 +1112,7 @@ function SelectedPicks({
       {selected.length === 0 ? (
         <p className="mt-3 text-sm text-slate-600">
           No picks on this date. {resp.regime?.passed === false
-            ? 'Regime was halted — no buys issue.'
+            ? 'Market was below trend (regime caution) — no survivors cleared the gates.'
             : 'No survivors cleared all gates.'}
         </p>
       ) : (
@@ -1748,8 +1748,8 @@ function ModeCUniverse({ resp }: { resp: BacktestResponse }) {
         </div>
         {picks.length === 0 ? (
           <p className="mt-3 text-sm text-slate-600">
-            No picks in this window. Either the regime was halted on most days,
-            or no symbol passed all gates. Try a wider date range.
+            No picks in this window. No symbol passed all gates on these days.
+            Try a wider date range.
           </p>
         ) : (
           <ul className="mt-3 divide-y divide-slate-100">

@@ -1,8 +1,13 @@
-"""[RG] Market Regime gate.
+"""[RG] Market Regime read.
 
-Runs ONCE per day at the start of the orchestrator — NOT per ticker. Halts
-all per-ticker work if the configured index benchmark closes below its
-50-day moving average. The master switch from PRINCIPLES Section 2.
+Runs ONCE per day at the start of the orchestrator — NOT per ticker. Reads
+whether the configured index benchmark closes above its 50-day moving average.
+
+Owner ask (2026-08-31): this is a WARNING, not a halt. A regime-OFF day no
+longer stops the picker — the full chain runs and picks are selected as usual;
+the regime read is surfaced as a caution banner. The old hard-halt (suppress
+every BUY when the index is below its 50d MA) is opt-in only via
+STOCKYA_REGIME_HALT=1 (see orchestrator._regime_halt_enabled).
 
 Default: NIFTY 100 index (^CNX100) — a broad large-cap market-direction proxy.
 This is the regime INDEX and is deliberately independent of (and typically
@@ -97,9 +102,10 @@ def check_regime(as_of: Optional[str] = None) -> RegimeStatus:
     to bars <= as_of, so the regime decision matches what would have been
     known on that historical EOD.
 
-    Conservative: if ANY index fails fetch, has missing data, or closes at
-    or below its MA, the regime is HALTED. We never assume an unknown-state
-    market is safe.
+    Conservative read: if ANY index fails fetch, has missing data, or closes
+    at or below its MA, the regime is marked OFF (`passed=False`). We never
+    assume an unknown-state market is safe. OFF is a CAUTION, not a halt — see
+    the module docstring; picks are still generated unless STOCKYA_REGIME_HALT=1.
 
     DEMO_MODE=1 short-circuits with an auto-pass; demo fixtures don't include
     the index tickers, and forcing the demo run to permanently halt is not
@@ -181,9 +187,18 @@ def check_regime(as_of: Optional[str] = None) -> RegimeStatus:
         summary = f"Regime ON — {passing} all above {MA_PERIOD}d MA"
     else:
         failed = ", ".join(c.symbol for c in checks if not c.passed) or "all"
-        summary = (
-            f"Regime HALTED — {failed} at/below {MA_PERIOD}d MA "
-            f"(or unavailable). No buy alerts will issue today."
-        )
+        if os.environ.get("STOCKYA_REGIME_HALT", "0") == "1":
+            # Opt-in strict mode: regime-off hard-halts all buys for the day.
+            summary = (
+                f"Regime HALTED — {failed} at/below {MA_PERIOD}d MA "
+                f"(or unavailable). No buy alerts will issue today."
+            )
+        else:
+            # Default (owner ask 2026-08-31): warning only, picker runs normally.
+            summary = (
+                f"Regime CAUTION — {failed} at/below {MA_PERIOD}d MA "
+                f"(or unavailable). Picks still generated; trade smaller and "
+                f"tighter while the market is below trend."
+            )
 
     return RegimeStatus(passed=all_pass, checks=checks, summary=summary)

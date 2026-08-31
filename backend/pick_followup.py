@@ -262,6 +262,15 @@ COIL_UD_FULL: float = 1.4
 COIL_W_VOLUME: float = 0.45
 COIL_W_STILLNESS: float = 0.55
 
+# Max additive lift the smart-money (VPA) read may add to the volume-add axis
+# (0-1). BOUNDED + reversible: at full bullish confirmation a delivery-backed
+# structural-accumulation coil gains at most this much volume-add, so the read can
+# reorder real coils but cannot manufacture one. Delivery % is a VOLUME-quality
+# signal (not a fundamental), so tilting volume-add honours PRINCIPLES §8. When the
+# smart-money read is off / no delivery on disk, confirmation is 0 and the coil
+# score is byte-identical to the pre-change value. Disable via STOCKYA_SMART_MONEY=0.
+SMART_MONEY_MAX_TILT: float = 0.20
+
 
 def _clamp01(x: float) -> float:
     return 0.0 if x < 0 else (1.0 if x > 1 else x)
@@ -271,11 +280,18 @@ def coil_quality(
     obv90: Optional[float],
     ud90: Optional[float],
     price_change_pct: Optional[float],
+    smart_money_confirmation: float = 0.0,
 ) -> dict:
     """Continuous coil-quality: {score(0-100)|None, volume_add(0-1), price_stillness(0-1)}.
 
     None score when we cannot measure volume (no obv90/ud90) — such rows sort
     last rather than faking a number.
+
+    `smart_money_confirmation` (0-1, default 0) is the VPA smart-money read's
+    bullish confidence (see backend/smart_money.py). It applies a BOUNDED,
+    reversible lift of at most SMART_MONEY_MAX_TILT to the volume-add axis —
+    delivery % is a volume-quality signal, so this stays inside the volume leg
+    (PRINCIPLES §8). At confirmation 0 the returned numbers are unchanged.
     """
     if not _is_num(obv90) and not _is_num(ud90):
         return {"score": None, "volume_add": None, "price_stillness": None}
@@ -287,6 +303,11 @@ def coil_quality(
         volume_add = 0.65 * f_obv + 0.35 * f_ud
     else:
         volume_add = f_obv if _is_num(obv90) else f_ud
+
+    # Bounded, reversible smart-money tilt (delivery-quality is a volume signal).
+    conf = smart_money_confirmation if _is_num(smart_money_confirmation) else 0.0
+    if conf > 0:
+        volume_add = _clamp01(volume_add + SMART_MONEY_MAX_TILT * _clamp01(conf))
 
     if _is_num(price_change_pct):
         price_stillness = _clamp01(1.0 - abs(price_change_pct) / COIL_PRICE_FLAT_REF_PCT)
@@ -478,7 +499,7 @@ def _classify(
 
 
 def _why(status: str, strength_change: Optional[float], price_change_pct: Optional[float],
-         cons: dict, expected_price: Optional[float]) -> str:
+         cons: dict, expected_price: Optional[float], smart_money: Optional[dict] = None) -> str:
     days = cons.get("days") or 0
     size = cons.get("size")
     size_txt = {"small": "tight", "big": "wide"}.get(size or "", "")
@@ -499,7 +520,14 @@ def _why(status: str, strength_change: Optional[float], price_change_pct: Option
         "watch": " Building — not yet conclusive.",
         "no-data": " No recent scan data to score.",
     }.get(status, "")
-    return base + tail
+    # Fold in the dominant VPA smart-money read when it says something concrete.
+    sm_txt = ""
+    if smart_money:
+        sig = (smart_money.get("signals") or [])
+        headline = smart_money.get("headline")
+        if sig and headline and headline != "—":
+            sm_txt = " " + sig[0].get("note", "")
+    return base + tail + sm_txt
 
 
 # --------------------------------------------------------------------------- #
@@ -523,6 +551,7 @@ def build_pick_followup(today_iso: Optional[str] = None) -> list[dict]:
           current_price, price_change_pct,
           coil_score(0-100)|None,          # THE ranking metric (continuous)
           volume_add(0-1), price_stillness(0-1),   # its two components
+          smart_money: {signals[], headline, kind, confirmation, warning},  # VPA read
           obv90_now, obv90_start, ud90_now,        # continuous accumulation figures
           is_top_pick,                     # the single best live coil to act on
           accum_now:   {score, level, color, label} | None,  # coarse health gauge
@@ -558,6 +587,18 @@ def build_pick_followup(today_iso: Optional[str] = None) -> list[dict]:
             _macro = None
     except Exception:
         _macro = None
+
+    # NSE delivery advisories — the accumulation-vs-churn discriminator the VPA
+    # smart-money read needs (Coulling: moderate volume + high delivery = smart
+    # money taking delivery). Loaded ONCE per build (one corpus parse, not one per
+    # symbol) and file-only: {} behind a firewall / offline, so the smart-money
+    # tilt degrades to 0 and the ranking is unchanged.
+    _advs: dict = {}
+    try:
+        from .delivery import all_advisories
+        _advs = all_advisories()
+    except Exception:
+        _advs = {}
 
     rows: list[dict] = []
 
@@ -612,16 +653,37 @@ def build_pick_followup(today_iso: Optional[str] = None) -> list[dict]:
 
             level_now = accum_now["level"] if accum_now else None
 
+            # Latest scan trace, read once — feeds both traction and the VPA
+            # smart-money read below.
+            latest_feat = (
+                _merge_trace_features(symbol, series[-1]["date"]) if series else {}
+            )
+
+            # VPA smart-money read (Anna Coulling): structural accumulation
+            # (moderate volume + high delivery), quiet accumulation, no-supply
+            # dry-up, and the honest distribution warning. Its bullish confidence
+            # tilts the coil ranking (bounded/reversible); a distribution warning
+            # forces confirmation to 0. File-only via the delivery advisory — 0
+            # tilt when no delivery on disk, so ranking is unchanged offline.
+            from .smart_money import assess_smart_money
+            smart_money = assess_smart_money(
+                latest_feat,
+                _advs.get(symbol),
+                price_change_pct=price_change_pct,
+                obv90=obv90_now,
+                ud90=ud90_now,
+            )
+
             # Continuous coil quality — the real ranking metric (volume-add x
-            # price-stillness). Replaces the pegged 0-100 gauge for ordering.
-            coil = coil_quality(obv90_now, ud90_now, price_change_pct)
+            # price-stillness), with the bounded smart-money tilt on the volume leg.
+            coil = coil_quality(
+                obv90_now, ud90_now, price_change_pct,
+                smart_money_confirmation=smart_money.get("confirmation", 0.0),
+            )
 
             # Traction — leading clues the coil is starting to fire, from the
             # latest scan trace (distance to the 20d pivot, flow turning up,
             # volume expanding, closing strong, recent volume spikes).
-            latest_feat = (
-                _merge_trace_features(symbol, series[-1]["date"]) if series else {}
-            )
             traction = assess_traction(latest_feat)
 
             # Scoring-neutral conviction context (context-only; never ranks).
@@ -679,6 +741,7 @@ def build_pick_followup(today_iso: Optional[str] = None) -> list[dict]:
                 "obv90_start": obv90_start,
                 "ud90_now": ud90_now,
                 "traction": traction,
+                "smart_money": smart_money,
                 "context": context,
                 "status": status,
                 "consolidation": cons,
@@ -687,7 +750,7 @@ def build_pick_followup(today_iso: Optional[str] = None) -> list[dict]:
                 "support2": support2,
                 "support2_basis": "protective stop" if support2 is not None else None,
                 "trajectory": series,
-                "why": _why(status, strength_change, price_change_pct, cons, expected_price),
+                "why": _why(status, strength_change, price_change_pct, cons, expected_price, smart_money),
             })
         except Exception:  # never let one bad row break the section
             continue
@@ -709,10 +772,13 @@ def build_pick_followup(today_iso: Optional[str] = None) -> list[dict]:
     rows.sort(key=_sort_key, reverse=True)
 
     # Direct the user to the single best one: the top-ranked row that is a live
-    # coil (still accumulating, not yet fired/broken) with a real score.
+    # coil (still accumulating, not yet fired/broken) with a real score. A row the
+    # smart-money read flags as distribution risk is never the headline coil.
     for row in rows:
         row["is_top_pick"] = False
     for row in rows:
+        if (row.get("smart_money") or {}).get("warning"):
+            continue
         if row.get("status") in ("coiling", "watch") and _is_num(row.get("coil_score")):
             row["is_top_pick"] = True
             break
