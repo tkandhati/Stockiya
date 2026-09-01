@@ -1,5 +1,33 @@
 # Changelog
 
+## 2026-09-01 — Coil ranking: volume-led, price scored as variance (not stillness)
+
+Owner ask: *"give importance to volume accumulating but price variance."* The
+coil-quality ranker (`backend/pick_followup.py:coil_quality`) is reweighted and
+its price axis redefined so it matches the owner's own definition of a coil —
+*volume still accumulating while price merely fluctuates in a consolidation.*
+
+- **Volume is now the primary driver.** Axis weights `COIL_W_VOLUME 0.45 → 0.65`,
+  price `0.55 → 0.35` (`COIL_W_STILLNESS` renamed `COIL_W_PRICE`). Strong volume
+  in a wide base now outscores weak volume in a tight one.
+- **Price axis = variance (tightness), not displacement from entry.** New
+  `_price_variance_pct()` computes the coefficient of variation (std/mean, %) of
+  the tracked closes; `coil_quality` maps it via `COIL_PRICE_VAR_TIGHT_PCT 3.0`
+  → full credit, `…_WIDE_PCT 12.0` → none. **Drift-tolerant:** a name that
+  drifted up/down but still rings tight keeps full credit; only a wide/whippy
+  base is discounted. (Old `1 − |move-from-entry| / 10%` wrongly punished a
+  healthy up-drift the same as a drop.)
+- Signature change: `coil_quality(obv90, ud90, price_variance_pct, …)` (was
+  `price_change_pct`). Return/row key `price_stillness → price_containment`, plus
+  new `price_variance_pct`. `frontend/types.ts` + `PickFollowupTable.tsx` updated
+  (labels, ★ Best tooltip, column title, footer copy).
+- The bounded, reversible smart-money tilt (`SMART_MONEY_MAX_TILT`) is unchanged
+  and still rides the volume leg.
+
+Observed calibration (strong volume unless noted): dead-flat tight = 100;
+drifted-up-but-tight = 100; wide/whippy base = 73; weak-volume tight = 41.
+Tests updated (`test_pick_followup.py`); full suite green (275).
+
 ## 2026-08-31 — Regime-off is a warning, no longer a halt
 
 Owner ask: *"Regime halted to be removed — pick the stocks it can, warning only,

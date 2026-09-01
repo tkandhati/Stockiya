@@ -122,24 +122,33 @@ class TrajectoryTests(unittest.TestCase):
 
 
 class CoilQualityTests(unittest.TestCase):
-    def test_strong_volume_flat_price_scores_high(self):
-        q = F.coil_quality(obv90=30.0, ud90=1.4, price_change_pct=0.0)
+    def test_strong_volume_tight_price_scores_high(self):
+        # Tight range (variance 0) + strong volume -> near-max coil quality.
+        q = F.coil_quality(obv90=30.0, ud90=1.4, price_variance_pct=0.0)
         self.assertGreaterEqual(q["score"], 95)
         self.assertEqual(q["volume_add"], 1.0)
-        self.assertEqual(q["price_stillness"], 1.0)
+        self.assertEqual(q["price_containment"], 1.0)
 
-    def test_same_volume_but_price_moved_scores_lower(self):
-        flat = F.coil_quality(30.0, 1.4, 0.0)["score"]
-        moved = F.coil_quality(30.0, 1.4, 8.0)["score"]   # up 8% -> stillness spent
-        self.assertLess(moved, flat)
+    def test_wider_price_variance_scores_lower(self):
+        # Same (full) volume; a wide/whippy range is discounted vs a tight one.
+        tight = F.coil_quality(30.0, 1.4, 1.0)["score"]
+        wide = F.coil_quality(30.0, 1.4, 12.0)["score"]   # wide range -> containment spent
+        self.assertLess(wide, tight)
+
+    def test_volume_leads_over_price(self):
+        # Owner ask 2026-09-01: volume is the PRIMARY driver. Strong volume with a
+        # wide range must still outscore weak volume in a tight range.
+        strong_vol_wide = F.coil_quality(30.0, 1.4, 12.0)["score"]
+        weak_vol_tight = F.coil_quality(0.0, 1.0, 0.0)["score"]
+        self.assertGreater(strong_vol_wide, weak_vol_tight)
 
     def test_weak_volume_scores_low(self):
-        q = F.coil_quality(obv90=-50.0, ud90=0.7, price_change_pct=0.0)
+        q = F.coil_quality(obv90=-50.0, ud90=0.7, price_variance_pct=0.0)
         self.assertEqual(q["volume_add"], 0.0)
         self.assertLess(q["score"], 60)
 
     def test_no_volume_data_is_none(self):
-        q = F.coil_quality(obv90=None, ud90=None, price_change_pct=0.0)
+        q = F.coil_quality(obv90=None, ud90=None, price_variance_pct=0.0)
         self.assertIsNone(q["score"])
 
 

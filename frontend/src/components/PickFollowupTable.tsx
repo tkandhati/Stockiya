@@ -376,11 +376,16 @@ function ExpandedRow({ row }: { row: PickFollowupRow }) {
           {typeof row.volume_add === 'number' && (
             <span>
               volume-add <span className="font-medium text-slate-700">{Math.round(row.volume_add * 100)}%</span>
+              <span className="text-slate-400"> (primary)</span>
             </span>
           )}
-          {typeof row.price_stillness === 'number' && (
+          {typeof row.price_containment === 'number' && (
             <span>
-              price-stillness <span className="font-medium text-slate-700">{Math.round(row.price_stillness * 100)}%</span>
+              price containment{' '}
+              <span className="font-medium text-slate-700">{Math.round(row.price_containment * 100)}%</span>
+              {typeof row.price_variance_pct === 'number' && (
+                <span className="text-slate-400"> (range var {row.price_variance_pct}%)</span>
+              )}
             </span>
           )}
           {first && last && typeof first.obv90 === 'number' && typeof last.obv90 === 'number' && (
@@ -464,7 +469,7 @@ function ExpandedRow({ row }: { row: PickFollowupRow }) {
 export function PickFollowupTable({
   rows,
   title = 'Follow-up on previous picks',
-  subtitle = 'Ranked by coil quality — volume still adding + price barely moved on top',
+  subtitle = 'Ranked by coil quality — volume-led: volume still accumulating, price ranging tight, on top',
 }: {
   rows: PickFollowupRow[]
   title?: string
@@ -497,7 +502,7 @@ export function PickFollowupTable({
             <tr className="border-b border-slate-200 text-left text-[11px] uppercase tracking-wide text-slate-500">
               <th className="py-2 pr-3 font-medium">#</th>
               <th className="py-2 pr-3 font-medium">Symbol</th>
-              <th className="py-2 pr-3 font-medium" title="Volume still adding x price barely moved (0-100)">
+              <th className="py-2 pr-3 font-medium" title="Volume-led: volume accumulating (primary) x tight, low-variance price range (0-100)">
                 Coil quality
               </th>
               <th className="py-2 pr-3 font-medium" title="Leading clues the coil is starting to fire">
@@ -538,7 +543,7 @@ export function PickFollowupTable({
                       <div className="flex items-center gap-1.5">
                         {r.is_top_pick && (
                           <span
-                            title="Best coil to act on — strongest volume-add with the flattest price"
+                            title="Best coil to act on — strongest volume-add with the tightest (low-variance) price range"
                             className="flex items-center gap-0.5 rounded bg-emerald-600 px-1 py-0.5 text-[9px] font-bold uppercase tracking-wide text-white"
                           >
                             <Star className="h-2.5 w-2.5" fill="currentColor" />
@@ -640,9 +645,11 @@ export function PickFollowupTable({
       </div>
 
       <p className="mt-3 text-[11px] text-slate-400">
-        Monitoring only — not a buy list. <strong>Coil quality</strong> blends how
-        strongly volume is still accumulating with how little price has moved since
-        we suggested it, so the tightest coils rank first and{' '}
+        Monitoring only — not a buy list. <strong>Coil quality</strong> is
+        volume-led: it leads on how strongly volume is still accumulating, with a
+        tight, low-variance price range as the secondary factor (price may drift
+        up or down — only a wide, whippy base is discounted), so the tightest
+        volume-led coils rank first and{' '}
         <span className="font-semibold text-emerald-700">★ Best</span> flags the one
         to focus on. The <strong>Smart money</strong> column reads the volume tape
         the way Anna Coulling does — moderate volume with a high delivery % while

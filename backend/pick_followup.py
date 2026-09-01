@@ -239,28 +239,41 @@ def accumulation_trajectory(symbol: str, since_date: str) -> list[dict]:
 # --------------------------------------------------------------------------- #
 # Coil quality — the CONTINUOUS ranking metric (fixes the saturating gauge).
 #
-# The owner ask (2026-08-29): put "volume still being added but price barely
-# moved" on top. The 0-100 health gauge pegs at 100 for every strong name and
-# cannot order them. This blends two continuous axes instead:
-#   * volume_add    — how strongly volume is still accumulating (OBV-90d + up/down)
-#   * price_stillness — how little price has moved since we suggested it
-# so the tightest coils (strong accumulation, flat price) score highest, and a
-# name that already ran is discounted even if its volume is strong.
+# The owner ask (2026-08-29): put "volume still being added while price merely
+# fluctuates in a consolidation" on top. The 0-100 health gauge pegs at 100 for
+# every strong name and cannot order them. This blends two continuous axes:
+#   * volume_add        — how strongly volume is still accumulating (OBV-90d + up/down)
+#   * price_containment — how TIGHT the price range is (low variance)
+#
+# Refined 2026-09-01 (owner ask "give importance to volume accumulating but price
+# variance"):
+#   1. VOLUME is now the PRIMARY driver (the larger weight) — a coil is first and
+#      foremost about accumulation continuing.
+#   2. The price axis measures the VARIANCE (tightness) of the range, NOT
+#      displacement from the entry. A coil is "volume adding while price merely
+#      FLUCTUATES in a consolidation" (owner's own definition) — price may drift
+#      up or down, so a name that gently drifted but still rings TIGHT keeps its
+#      credit, and only a WIDE / whippy range is discounted. (Was: 1 − |move from
+#      entry|, which wrongly punished a healthy up-drift the same as a drop.)
 # --------------------------------------------------------------------------- #
 
-# Price move (%) at/above which "stillness" is fully spent — a name that has
-# moved this much off the suggestion is no longer a slight-change coil.
-COIL_PRICE_FLAT_REF_PCT: float = 10.0
 # OBV-90d slope (%) that maps to full volume-add credit. Scaled (not stepped) so
 # strong names still spread out instead of all pegging at the top.
 COIL_OBV_FULL_PCT: float = 25.0
 # up/down-vol-90d that maps to full credit (1.0 = balanced buying/selling).
 COIL_UD_FULL: float = 1.4
-# Weights on the two axes of the coil score (sum to 1.0). Stillness is weighted
-# a touch higher so "price barely moved" is the tie-breaker among strong-volume
-# names — exactly the owner's ordering ask.
-COIL_W_VOLUME: float = 0.45
-COIL_W_STILLNESS: float = 0.55
+# Weights on the two axes of the coil score (sum to 1.0). VOLUME leads (owner ask
+# 2026-09-01): accumulation is the primary driver; a tight, low-variance price
+# range is the secondary factor that separates real coils from whippy bases.
+COIL_W_VOLUME: float = 0.65
+COIL_W_PRICE: float = 0.35
+
+# Price-variance mapping. `price_variance_pct` is the coefficient of variation
+# (std/mean, %) of the tracked closes: at/below TIGHT -> full containment credit,
+# at/above WIDE -> none. Drift-tolerant by construction — a steady, contained
+# range has low variance regardless of a gentle up/down drift.
+COIL_PRICE_VAR_TIGHT_PCT: float = 3.0
+COIL_PRICE_VAR_WIDE_PCT: float = 12.0
 
 # Max additive lift the smart-money (VPA) read may add to the volume-add axis
 # (0-1). BOUNDED + reversible: at full bullish confirmation a delivery-backed
@@ -276,13 +289,39 @@ def _clamp01(x: float) -> float:
     return 0.0 if x < 0 else (1.0 if x > 1 else x)
 
 
+def _price_variance_pct(series: list[dict]) -> Optional[float]:
+    """Coefficient of variation (%) of the tracked closes = std / mean * 100.
+
+    The 'price variance' axis of the coil score (owner ask 2026-09-01). A tight
+    consolidation has LOW variance — and, crucially, it is drift-tolerant: a name
+    that trends gently but stays contained still reads tight, whereas a whippy /
+    wide base reads high. None with fewer than 2 usable closes.
+    """
+    closes = [p["close"] for p in series if _is_num(p.get("close"))]
+    if len(closes) < 2:
+        return None
+    mean = sum(closes) / len(closes)
+    if mean <= 0:
+        return None
+    var = sum((c - mean) ** 2 for c in closes) / len(closes)  # population variance
+    return round((math.sqrt(var) / mean) * 100.0, 2)
+
+
 def coil_quality(
     obv90: Optional[float],
     ud90: Optional[float],
-    price_change_pct: Optional[float],
+    price_variance_pct: Optional[float],
     smart_money_confirmation: float = 0.0,
 ) -> dict:
-    """Continuous coil-quality: {score(0-100)|None, volume_add(0-1), price_stillness(0-1)}.
+    """Continuous coil-quality: {score(0-100)|None, volume_add(0-1), price_containment(0-1)}.
+
+    VOLUME-LED (owner ask 2026-09-01 "give importance to volume accumulating but
+    price variance"): the volume-add axis is the primary driver (COIL_W_VOLUME);
+    the price axis rewards a TIGHT, low-VARIANCE consolidation range and is
+    drift-tolerant — `price_variance_pct` is the coefficient of variation (%) of
+    the tracked closes, so a name that drifted up/down but still rings tight keeps
+    its credit; only a wide/whippy range is discounted (NOT displacement from
+    entry).
 
     None score when we cannot measure volume (no obv90/ud90) — such rows sort
     last rather than faking a number.
@@ -294,7 +333,7 @@ def coil_quality(
     (PRINCIPLES §8). At confirmation 0 the returned numbers are unchanged.
     """
     if not _is_num(obv90) and not _is_num(ud90):
-        return {"score": None, "volume_add": None, "price_stillness": None}
+        return {"score": None, "volume_add": None, "price_containment": None}
 
     f_obv = _clamp01((obv90 / COIL_OBV_FULL_PCT)) if _is_num(obv90) else 0.0
     f_ud = _clamp01(((ud90 - 1.0) / (COIL_UD_FULL - 1.0))) if _is_num(ud90) else 0.0
@@ -309,16 +348,20 @@ def coil_quality(
     if conf > 0:
         volume_add = _clamp01(volume_add + SMART_MONEY_MAX_TILT * _clamp01(conf))
 
-    if _is_num(price_change_pct):
-        price_stillness = _clamp01(1.0 - abs(price_change_pct) / COIL_PRICE_FLAT_REF_PCT)
+    # Price containment from range VARIANCE (tight = high credit, drift-tolerant).
+    if _is_num(price_variance_pct):
+        span = COIL_PRICE_VAR_WIDE_PCT - COIL_PRICE_VAR_TIGHT_PCT
+        price_containment = _clamp01(
+            (COIL_PRICE_VAR_WIDE_PCT - price_variance_pct) / span
+        ) if span > 0 else 0.0
     else:
-        price_stillness = 0.5  # unknown price move -> neutral, don't over-reward
+        price_containment = 0.5  # unknown variance -> neutral, don't over-reward
 
-    score = 100.0 * (COIL_W_VOLUME * volume_add + COIL_W_STILLNESS * price_stillness)
+    score = 100.0 * (COIL_W_VOLUME * volume_add + COIL_W_PRICE * price_containment)
     return {
         "score": round(score),
         "volume_add": round(volume_add, 2),
-        "price_stillness": round(price_stillness, 2),
+        "price_containment": round(price_containment, 2),
     }
 
 
@@ -549,8 +592,9 @@ def build_pick_followup(today_iso: Optional[str] = None) -> list[dict]:
           suggested_date, days_tracked,
           entry_price, stop_price, expected_price, reached_expected,
           current_price, price_change_pct,
-          coil_score(0-100)|None,          # THE ranking metric (continuous)
-          volume_add(0-1), price_stillness(0-1),   # its two components
+          coil_score(0-100)|None,          # THE ranking metric (continuous, volume-led)
+          volume_add(0-1), price_containment(0-1),  # its two components
+          price_variance_pct,              # CV(%) of closes the containment is from
           smart_money: {signals[], headline, kind, confirmation, warning},  # VPA read
           obv90_now, obv90_start, ud90_now,        # continuous accumulation figures
           is_top_pick,                     # the single best live coil to act on
@@ -674,10 +718,14 @@ def build_pick_followup(today_iso: Optional[str] = None) -> list[dict]:
                 ud90=ud90_now,
             )
 
-            # Continuous coil quality — the real ranking metric (volume-add x
-            # price-stillness), with the bounded smart-money tilt on the volume leg.
+            # Continuous coil quality — the real ranking metric. VOLUME-LED
+            # (owner ask 2026-09-01): volume-add is the primary driver; the price
+            # axis is the VARIANCE (tightness) of the range since suggestion, not
+            # displacement from entry, so a name that drifted but rings tight keeps
+            # its credit. The bounded smart-money tilt rides on the volume leg.
+            price_variance_pct = _price_variance_pct(series)
             coil = coil_quality(
-                obv90_now, ud90_now, price_change_pct,
+                obv90_now, ud90_now, price_variance_pct,
                 smart_money_confirmation=smart_money.get("confirmation", 0.0),
             )
 
@@ -734,9 +782,12 @@ def build_pick_followup(today_iso: Optional[str] = None) -> list[dict]:
                 "volume_still_building": volume_still_building,
                 # Continuous coil ranking metric + its two components, plus the
                 # raw OBV-90d figures so the UI can show real numbers, not 100s.
+                # price_containment = tight/low-variance range credit (drift-
+                # tolerant); price_variance_pct = the raw CV(%) it is derived from.
                 "coil_score": coil["score"],
                 "volume_add": coil["volume_add"],
-                "price_stillness": coil["price_stillness"],
+                "price_containment": coil["price_containment"],
+                "price_variance_pct": price_variance_pct,
                 "obv90_now": obv90_now,
                 "obv90_start": obv90_start,
                 "ud90_now": ud90_now,
@@ -755,10 +806,12 @@ def build_pick_followup(today_iso: Optional[str] = None) -> list[dict]:
         except Exception:  # never let one bad row break the section
             continue
 
-    # Rank by CONTINUOUS coil quality (volume-add x price-stillness), so
-    # "volume still adding, price barely moved" floats to the top — the owner's
-    # ordering ask. The coarse gauge score is NOT used for ordering (it pegs at
-    # 100). Status only breaks ties (coiling above firing/weak).
+    # Rank by CONTINUOUS coil quality (VOLUME-LED: volume-add is the primary
+    # driver, a tight/low-variance price range the secondary), so "volume still
+    # accumulating while price rings tight" floats to the top — the owner's
+    # ordering ask (2026-08-29 / refined 2026-09-01). The coarse gauge score is
+    # NOT used for ordering (it pegs at 100). Status only breaks ties (coiling
+    # above firing/weak).
     _status_rank = {"coiling": 3, "firing": 2, "watch": 1, "weakening": 0, "broke_down": -1, "no-data": -2}
 
     def _sort_key(row: dict):

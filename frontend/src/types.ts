@@ -683,11 +683,13 @@ export interface PickFollowupRow {
   reached_expected?: boolean | null
   current_price?: number | null
   price_change_pct?: number | null
-  // Continuous coil-quality ranking metric (volume-add x price-stillness) and
-  // its parts — this, not the saturating gauge, orders the table.
+  // Continuous coil-quality ranking metric — VOLUME-LED (volume-add is the
+  // primary driver; a tight, low-variance price range is the secondary factor).
+  // This, not the saturating gauge, orders the table.
   coil_score?: number | null           // 0-100, higher = better coil
-  volume_add?: number | null           // 0-1, how strongly volume is still accumulating
-  price_stillness?: number | null      // 0-1, how little price has moved
+  volume_add?: number | null           // 0-1, how strongly volume is still accumulating (primary)
+  price_containment?: number | null    // 0-1, how TIGHT the range is (low variance; drift-tolerant)
+  price_variance_pct?: number | null   // CV(%) of closes the containment is derived from
   obv90_now?: number | null            // latest OBV-90d slope %
   obv90_start?: number | null          // OBV-90d slope % at suggestion
   ud90_now?: number | null             // latest up/down volume ratio (90d)
