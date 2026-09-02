@@ -1,14 +1,14 @@
 {
   "version": 1,
-  "updated_at": "2026-07-04",
-  "updated_by": "seed",
-  "notes": "Seed weights derived from PRINCIPLES.md priors. Champion metric is null until the first tuner run completes on real outcomes. The tuner will only overwrite this file if the challenger's metric strictly beats the champion's; otherwise this file is unchanged.",
+  "updated_at": "2026-09-02",
+  "updated_by": "owner (distribution-trap fix: DV veto -> block)",
+  "notes": "Seed weights derived from PRINCIPLES.md priors. Champion metric is null until the first tuner run completes on real outcomes. The tuner will only overwrite this file if the challenger's metric strictly beats the champion's; otherwise this file is unchanged. 2026-09-02: distribution_veto_mode flipped shadow -> block at the owner's request (see CHANGELOG); DV is now a hard gate.",
 
   "hard_gate_stage_ids": ["U", "I", "HR", "LTV"],
   "_hard_gate_stage_ids_help": "LTV = Long-Term Distribution Veto (added 2026-07-28). Hard-rejects any ticker whose OBV-90d slope < 0 — institutions net-selling over 3 months. Closes the false-breakout hole where a strong base cleared the composite while long-term flow was negative (e.g. Marico: OBV-90d -208%). See backend/stages/lt_distribution_veto.py. Remove 'LTV' to disable.",
 
-  "distribution_veto_mode": "shadow",
-  "_distribution_veto_mode_help": "shadow = trace-only (default, zero live impact). block = short-circuit ticker on veto (auto-adds 'DV' to hard_gate_stage_ids at load time). Flip only after ≥4 weeks of shadow traces confirm veto precision against outcomes. See backend/stages/distribution_veto.py for the three checks.",
+  "distribution_veto_mode": "block",
+  "_distribution_veto_mode_help": "block = short-circuit ticker on veto (auto-adds 'DV' to hard_gate_stage_ids at load time). ACTIVATED 2026-09-02 at the owner's request to hard-reject distribution footprints (weak-close volume spikes, gap-up bull traps, distribution-day clusters) disguised as consolidation. Set back to 'shadow' for trace-only / zero live impact. See backend/stages/distribution_veto.py for the three checks.",
 
   "scored_stage_weights": {
     "ACS": 0.05,

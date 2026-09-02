@@ -5,7 +5,7 @@ contract in `backend/pipeline.py`. The chain is `PER_TICKER_CHAIN` below.
 
 Per-ticker chain (run in parallel by the orchestrator):
 
-    universe        -> [U]   gate    In the scan universe? (nifty300 default)
+    universe        -> [U]   gate    In the scan universe? (niftytotal default)
     ingest          -> [I]   gate    >=200 daily bars; populates ctx.ohlcv
     hard_rejects    -> [HR]  gate    Parabolic 30d / extended above 50d MA
                                      (avoids buying into institutional dumping)

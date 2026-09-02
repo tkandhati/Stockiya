@@ -38,18 +38,24 @@ def _survivor(symbol: str, timing=_MISSING, *, day0=None):
 
 
 class TestPartitionSelectable(unittest.TestCase):
-    def test_only_missed_is_dropped_by_default(self):
-        # Defaults: EXCLUDE_MISSED_ENTRY=True, EXCLUDE_LATE_ENTRY=False.
+    def test_missed_and_late_dropped_by_default(self):
+        # Defaults (since 2026-09-02): EXCLUDE_MISSED_ENTRY=True AND
+        # EXCLUDE_LATE_ENTRY=True. "late" covers distribution-into-strength and
+        # Stage-3-top (see rank.EXCLUDE_LATE_ENTRY note), so it is now dropped
+        # too — the owner opted into the stricter distribution-trap policy.
         survivors = [
             _survivor("A", "early"),
             _survivor("B", "missed"),
-            _survivor("C", "late"),      # late stays (opt-in exclusion is off)
+            _survivor("C", "late"),      # late now dropped (distribution / already-run)
             _survivor("D", "unknown"),
         ]
         actionable, excluded = _partition_selectable(survivors)
-        self.assertEqual([r.symbol for r, _ in excluded], ["B"])
-        self.assertEqual([r.symbol for r in actionable], ["A", "C", "D"])
-        self.assertIn("missed", excluded[0][1])
+        excluded_syms = [r.symbol for r, _ in excluded]
+        self.assertEqual(excluded_syms, ["B", "C"])
+        self.assertEqual([r.symbol for r in actionable], ["A", "D"])
+        reason_by_sym = {r.symbol: reason for r, reason in excluded}
+        self.assertIn("missed", reason_by_sym["B"])
+        self.assertIn("late", reason_by_sym["C"])
 
     def test_day0_exit_watch_excluded(self):
         survivors = [

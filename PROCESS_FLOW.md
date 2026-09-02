@@ -86,7 +86,7 @@ integration points are `backend/orchestrator.py::run_universe`,
 | NSE block-deal CSV (`archives.nseindia.com/.../block.csv`) | `data/deals/block_<date>.csv` | Bonus rank signal |
 | NSE bulk-deal CSV | `data/deals/bulk_<date>.csv` | Bonus rank signal |
 | NSE delivery / MTO ("Security-wise Delivery Position") — **best-effort auto-fetch** (`fetch_and_cache_delivery`, wired into `nightly.py`; no-op behind firewall) **+ manual offline drop** fallback | `data/delivery/delivery_<date>.csv` | Advisory delivery % + rolling 5d/20d (accumulation vs churn) on picks + positions; surfaced as a reasoning step with **always-visible load status**; not in scoring (parked) |
-| `backend/universe.py:VOLUME_UNIVERSE` | code-tracked | The fixed 300 volume-strategy tickers |
+| `backend/universe.py:VOLUME_UNIVERSE` | repo CSV (`config/nifty_total_market.csv`) | The Nifty Total Market volume-strategy tickers (~750) |
 | `data/portfolio.csv` | persistent CSV | Open picks tracked for outcome |
 | `data/picks_<prior_date>.json` | persistent JSON | Self-heal on middleware boot |
 
@@ -101,7 +101,7 @@ Each stage is one file in `backend/stages/` with signature `run(ctx) -> StageRes
 | Stage | File | Algorithm | Math summary |
 |---|---|---|---|
 | **[RG] Regime** | `stages/regime.py` | Index trend + vol clock | `close(^CNX100) > sma(^CNX100, 50)`; ATR20% sets per-day volatility multiplier for downstream thresholds |
-| **[U] Universe** | `stages/universe.py` | Membership check | `symbol ∈ VOLUME_UNIVERSE` (fixed Nifty 300) |
+| **[U] Universe** | `stages/universe.py` | Membership check | `symbol ∈ VOLUME_UNIVERSE` (Nifty Total Market, ~750) |
 | **[I] Ingest** | `stages/ingest.py` | Fetch 180 daily bars + as-of slice + finalized-bar hygiene | Pulls 180d daily; if `ctx.today_iso` is a past date, slices bars to that date (no lookahead) and overrides snapshot.current with the as-of close. **2026-07-17 hygiene** — drops NaN OHLC rows, non-positive-volume rows, and (live only) the last bar if IST-time is before 15:35 (partial session). Trace records `dropped_malformed`, `dropped_partial_session`, `has_full_lookback` (≥ 260 bars). |
 | **[HR] Hard rejects** | `stages/hard_rejects.py` | Safety gate | `ret_30d ≤ +25 %` **AND** `close ≤ 1.15 × sma(50)` **AND** no auditor-exit / SEBI flag / promoter-pledge > 50 % |
 | **[WY] Wyckoff phase** | `stages/wyckoff.py` *(new)* | Phase A→D classifier, scored | Detects Phase C (spring: narrow-range low-vol undercut of Phase-A low) or Phase D (SOS: wide-range up-close ≥ 1.5×ADV50, above 150d MA). Score = phase confidence × phase-preference weight (C=1.0, D=0.9). Replaces the retired [LT]+[CS]+[VD] AND-chain. |

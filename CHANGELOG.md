@@ -1,5 +1,57 @@
 # Changelog
 
+## 2026-09-02 — Nifty Total Market volume universe + two distribution-trap guards
+
+Owner ask: *"save me from distribution traps — most of the stocks suggested are in
+consolidation phase"* and *"add the Nifty Total Market list and make it the
+default … Nifty 300 → market everywhere."* Three connected, selection-affecting
+changes. Offline-verified: full backend unittest package **275/275**;
+`python -m compileall backend middleware` clean. Nothing runs against the network.
+
+**1. Volume universe: fixed Nifty-300 → full Nifty Total Market (~754 names).**
+- `VOLUME_UNIVERSE` (`backend/universe.py`) now loads from the repo-tracked CSV
+  `config/nifty_total_market.csv` (NSE's `ind_niftytotalmarket_list.csv`; columns
+  Company Name, Industry, Symbol, Series, ISIN Code) via
+  `_load_nifty_total_market()` — each `Symbol` gets a `.NS` suffix, order
+  preserved, duplicates dropped. Rebalance = drop in a fresh CSV, no code change.
+- The old **"exactly 300" import guard** is replaced by a dedupe guard + a
+  min-size (`< 100`) sanity guard, so a truncated/corrupt CSV still fails loudly
+  at import.
+- `VOLUME_UNIVERSE_NAME` `nifty300 → niftytotal`, `VOLUME_UNIVERSE_LABEL`
+  `"Nifty 300" → "Nifty Total Market"`. Because the `[U]` gate, `data_health`,
+  `explain`, `middleware`, and `backtest` messages all read the label/set, their
+  user-facing text updated automatically.
+- **`niftytotal` is also the new default discovery universe** (`STOCKYA_UNIVERSE`
+  unset → niftytotal; was nifty300). Added to `UNIVERSES` + `_UNIVERSE_LABELS`.
+  The Price-Trend scanner (`backend/price_trend/`) reads `UNIVERSE`/`UNIVERSE_LABEL`,
+  so it now scans the full Nifty Total Market by default too. `nifty50/100/200/300/500`
+  and `custom` remain selectable discovery options; `NIFTY_300` (top-300 slice of
+  the curated 500) is retained for the `nifty300` discovery option.
+- ⚠️ **Operational note:** daily fetch load is ~2.5× the old 300 — watch Yahoo
+  rate limits and run time. `check_universe.py` throttle over ~754 names ≈ 3.8 min.
+
+**2. `EXCLUDE_LATE_ENTRY` flipped `False → True`** (`backend/stages/rank.py`). The
+`"late"` entry-timing bucket (`volume_signals._classify_entry_timing`) covers not
+just already-run names but **distribution-into-strength** (Stage-2 price structure
+while OBV-90d is falling — "institutions distributing into the rally") and
+**Stage-3 top forming**. The prior comment mislabeled `"late"` as
+"extended-but-not-distribution"; corrected. These are now kept out of the top-N.
+Selection-only veto — never widens picks; a resulting zero-pick day still falls
+through to the calm accumulation lead / monitoring content.
+
+**3. Distribution veto `[DV]` flipped `shadow → block`** (`config/stage_weights.json`
+`distribution_veto_mode`). `DV` is now a **hard gate** (auto-added to
+`HARD_GATE_IDS` at config load): weak-close volume spikes, gap-up bull traps, and
+distribution-day clusters short-circuit the ticker before the composite. These
+are the "stealth distribution disguised as consolidation" footprints
+(`backend/stages/distribution_veto.py`). NOTE: the config help previously advised
+validating ≥4 weeks of shadow traces first; activated on owner request ahead of
+that — revert to `"shadow"` to restore trace-only behavior.
+
+**Tests:** `test_volume_universe.py` rewritten for the Nifty-Total-Market boundary
+(synthetic out-of-universe symbol, robust to rebalances); `test_missed_exclusion.py`
+updated so the default now drops both `missed` and `late`.
+
 ## 2026-09-01 — Coil ranking: volume-led, price scored as variance (not stillness)
 
 Owner ask: *"give importance to volume accumulating but price variance."* The

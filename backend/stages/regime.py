@@ -13,7 +13,7 @@ Default: NIFTY 100 index (^CNX100) — a broad large-cap market-direction proxy.
 This is the regime INDEX and is deliberately independent of (and typically
 smaller than) the scan universe: the market's direction is read off the
 large-cap benchmark regardless of how many stocks we screen. Kept at ^CNX100
-even though the scan universe is now larger (nifty300 default).
+even though the scan universe is now larger (niftytotal default).
 
 Fix points:
     REGIME_TICKERS : indices that gate the day (tuple, all must pass)

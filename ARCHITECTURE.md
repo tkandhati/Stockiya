@@ -17,7 +17,7 @@
 
 ## 0. One-sentence summary — current spine
 
-Stockiya fetches 180 daily bars of OHLCV for every stock in the scan universe (default Nifty 300), detects a
+Stockiya fetches 180 daily bars of OHLCV for every stock in the scan universe (the Nifty Total Market list — ~750 NSE names), detects a
 Wyckoff-Phase-C-or-D accumulation base using pure volume math, waits for a
 Volume-Spread-Analysis trigger bar (Sign-of-Strength, pocket pivot, or no-supply
 test), verifies price is holding its anchored VWAP from the base low, and
@@ -32,9 +32,9 @@ file you can open. Same OHLCV in → byte-identical trace out.**
 ## 0.1. Big picture — Wyckoff-VPA spine
 
 ```
-                    ┌── UNIVERSE (Nifty 300) ──┐
-                    │                           │
-                    ▼ (parallel per ticker)     │
+                    ┌── UNIVERSE (Nifty Total Market) ──┐
+                    │                                    │
+                    ▼ (parallel per ticker)              │
         ┌──────────── PER-TICKER PIPELINE ────────┐
         │                                          │
    [U]   Universe            gate                  │
@@ -45,11 +45,12 @@ file you can open. Same OHLCV in → byte-identical trace out.**
    [WY]  Wyckoff phase       SCORED (0-1)          │
    [VSA] Bar confirmation    TRIGGER (binary)      │
    [AVWAP] VWAP hold         SCORED (0-1)          │
-   [DV]  Distribution veto   HYGIENE (shadow/block) ← anti-institution-
+   [DV]  Distribution veto   HARD GATE (block)      ← anti-institution-
                                         trick guard: weak-close spike,
                                         gap-up bull trap, dist-day
-                                        cluster. Default: shadow (trace
-                                        only, zero live impact).
+                                        cluster. Now block (hard-rejects
+                                        the footprint; was shadow until
+                                        2026-09-02).
         │                                          │
         │ every stage → JSONL trace                │
         └──────────────────────────────────────────┘
@@ -308,11 +309,11 @@ file you can open.**
 
 ### Stage [U] Universe — `backend/stages/universe.py`
 
-**What it does:** Gate. Checks if the ticker is in the fixed Nifty-300 volume universe.
+**What it does:** Gate. Checks if the ticker is in the Nifty Total Market volume universe.
 
 ```
 Input:  ticker symbol (e.g. "HDFCBANK.NS")
-Check:  symbol in backend/universe.py:VOLUME_UNIVERSE  (300 tickers)
+Check:  symbol in backend/universe.py:VOLUME_UNIVERSE  (~750 tickers, from config/nifty_total_market.csv)
 Output: passed=True → continue | passed=False → skip forever
 ```
 

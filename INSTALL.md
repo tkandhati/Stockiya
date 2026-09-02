@@ -51,7 +51,7 @@ Full knob list:
 | `DEMO_MODE` | `0` | `1` = synthetic data. Takes precedence over `DATA_SOURCE`. **UI only, do not trade.** |
 | `DATA_SOURCE` | `bhavcopy` | `yahoo` = live yfinance; `bhavcopy` = local CSV cache in `STOCKYA_OHLCV_DIR` |
 | `STOCKYA_OHLCV_DIR` | *(sibling tuner cache)* | Absolute path to per-symbol OHLCV CSVs. Point at your OWN cache; the tuner sibling is not guaranteed to exist. |
-| `STOCKYA_UNIVERSE` | `nifty300` | Controls independent discovery scanners such as Price Trend: `nifty50` / `nifty100` / `nifty200` / `nifty300` / `nifty500` / `custom`. It cannot widen the volume strategy, which is fixed to the project's Nifty-300 set. |
+| `STOCKYA_UNIVERSE` | `niftytotal` | Controls independent discovery scanners such as Price Trend: `nifty50` / `nifty100` / `nifty200` / `nifty300` / `nifty500` / `niftytotal` / `custom`. It does not change the volume strategy, which always scans the Nifty Total Market list (`config/nifty_total_market.csv`). |
 | `STOCKYA_ACCOUNT_VALUE` | `100000` | Capital used by `[PS] Position Sizer` for share-count math |
 
 Composite threshold `τ` and per-stage weights `wᵢ` live in

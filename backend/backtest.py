@@ -786,7 +786,7 @@ def _assumptions(
         "t1_pct": int(T1_PCT * 100),
         "t2_pct": int(T2_PCT * 100),
         "costs_modeled": False,
-        "survivorship_note": "Universe = today's scan universe (nifty300 default); historical drift not corrected",
+        "survivorship_note": "Universe = today's scan universe (niftytotal default); historical drift not corrected",
         "thresholds": eff,
         "thresholds_deviated": deviated,
     }
@@ -1392,14 +1392,14 @@ def scan_universe(
         }
 
     # Range scans model the live volume strategy. Even an explicit symbol list
-    # cannot widen it beyond Nifty 300.
+    # cannot widen it beyond the Nifty Total Market volume universe.
     sym_set = (
         [symbol for symbol in symbols if symbol in VOLUME_UNIVERSE_SET]
         if symbols
         else list(VOLUME_UNIVERSE)
     )
     if not sym_set:
-        return {"error": "no supplied symbols are in the Nifty 300 volume universe"}
+        return {"error": "no supplied symbols are in the Nifty Total Market volume universe"}
 
     # ---- Prefetch all OHLCV in parallel ----
     fetch_end = end_d + _td(days=int(hold_days * 1.6) + 5)

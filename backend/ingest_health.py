@@ -6,7 +6,7 @@ Motivation
 The orchestrator already computes an ``ingest_failed`` count, but only to fire
 the ">=90% failed => data source misconfigured" alarm (backend/orchestrator.py).
 For any failure rate *below* 90% the per-ticker outcome was discarded: a
-transient yfinance timeout on, say, 30 of 300 tickers left no durable trace.
+transient yfinance timeout on, say, 30 of ~750 tickers left no durable trace.
 Those 30 silently dropped out of consideration and nobody was notified.
 
 This module turns each ticker's ``[I]`` Ingest ``StageResult`` into a durable,

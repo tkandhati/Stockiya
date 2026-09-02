@@ -20,8 +20,8 @@ from .scanner import scan_symbol
 log = logging.getLogger("price_trend")
 
 # 0 / unset => scan the FULL universe. The old default (30) silently scanned
-# only the alphabetical head of Nifty 300 (ADANIENT..LT), so the tab missed ~90%
-# of the market. A real strategy scan must see the whole universe. A positive
+# only the alphabetical head of the scan universe (ADANIENT..LT), so the tab
+# missed ~90% of the market. A real strategy scan must see the whole universe. A positive
 # PRICE_TREND_SCAN_LIMIT still caps the scan (dev / latency), and the cap is
 # surfaced in the response (scan_limit vs universe size) and logged — never silent.
 DEFAULT_SCAN_LIMIT = 0

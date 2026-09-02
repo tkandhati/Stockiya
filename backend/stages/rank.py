@@ -90,10 +90,18 @@ EXCLUDE_MISSED_ENTRY: bool = True       # tunable
 # (imported from signal_trajectory). Reversible.
 EXCLUDE_DAY0_EXIT_WATCH: bool = True    # tunable
 
-# Also drop entry_timing == "late" (price already run) from the top-N. Off by
-# default — "late" is extended-but-not-distribution, so excluding it is a
-# stricter policy the user can opt into; the reported bug does not require it.
-EXCLUDE_LATE_ENTRY: bool = False        # tunable
+# Drop entry_timing == "late" from the top-N. Flipped ON 2026-09-02 at the
+# owner's request ("save me from distribution traps"). The prior comment called
+# "late" purely "extended-but-not-distribution" — that was inaccurate: the
+# "late" bucket in volume_signals._classify_entry_timing ALSO covers
+#   (a) distribution-into-strength — Stage-2 price structure but OBV-90d falling
+#       ("institutions are distributing into the rally, not accumulating"), and
+#   (b) Stage-3 top forming ("distribution is starting to form").
+# Excluding "late" therefore keeps BOTH already-run names AND those two
+# distribution setups out of the buy list. Selection-only veto — it never widens
+# picks; a resulting zero-pick day falls through to the calm accumulation lead /
+# monitoring content exactly as before. Set back to False to restore pre-2026-09-02.
+EXCLUDE_LATE_ENTRY: bool = True         # tunable
 
 # Final quality boundary. [CS] remains a soft stage so near-misses stay visible,
 # but the actual buy list should not contain a stock moving more than ~3% ATR
@@ -186,7 +194,7 @@ def rank_survivors(
         r.rank = None
     if outside_volume_universe:
         log.warning(
-            "rank: rejected %d non-Nifty-300 candidate(s): %s",
+            "rank: rejected %d non-volume-universe candidate(s): %s",
             len(outside_volume_universe),
             ", ".join(r.symbol for r in outside_volume_universe),
         )
@@ -406,7 +414,7 @@ def rank_lead_fallback(
 def _partition_volume_universe(
     survivors: list[PipelineResult],
 ) -> tuple[list[PipelineResult], list[PipelineResult]]:
-    """Split candidates at the volume strategy's fixed Nifty-300 boundary."""
+    """Split candidates at the volume strategy's Nifty Total Market boundary."""
     eligible: list[PipelineResult] = []
     excluded: list[PipelineResult] = []
     for result in survivors:

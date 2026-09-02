@@ -1,31 +1,42 @@
-"""Stock universes — Nifty 50 / 100 / 200 / 300 / 500, plus a `custom` file loader.
+"""Stock universes — Nifty Total Market (volume strategy) + Nifty 50 / 100 /
+200 / 300 / 500 and a `custom` file loader (discovery tools).
 
-The volume strategy is permanently scoped to ``VOLUME_UNIVERSE`` (Nifty 300).
-``STOCKYA_UNIVERSE`` only selects the configurable universe used by independent
-discovery tools such as the price-trend scanner:
+The volume strategy is scoped to ``VOLUME_UNIVERSE`` = the **Nifty Total Market**
+list (~754 NSE names), loaded from the repo-tracked CSV
+``config/nifty_total_market.csv``. This replaced the earlier fixed Nifty-300 set
+on 2026-09-02 at the owner's request (see CHANGELOG). To rebalance, drop NSE's
+latest ``ind_niftytotalmarket_list.csv`` in over that file and re-run
+``python -m backend.check_universe``.
 
-    STOCKYA_UNIVERSE=nifty50    — Nifty 50 (fast smoke tests)
-    STOCKYA_UNIVERSE=nifty100   — Nifty 50 + Nifty Next 50
-    STOCKYA_UNIVERSE=nifty200   — Nifty 100 + Nifty Midcap 100
-    STOCKYA_UNIVERSE=nifty300   (default) — top-300 slice of the curated 500 set
-    STOCKYA_UNIVERSE=nifty500   — Broad NSE-500 style coverage (small + mid + large)
-    STOCKYA_UNIVERSE=custom     — read tickers from config/universe_custom.txt
+``STOCKYA_UNIVERSE`` selects the configurable universe used by independent
+discovery tools such as the price-trend scanner (it is independent of the volume
+strategy's ``VOLUME_UNIVERSE`` above):
+
+    STOCKYA_UNIVERSE=nifty50     — Nifty 50 (fast smoke tests)
+    STOCKYA_UNIVERSE=nifty100    — Nifty 50 + Nifty Next 50
+    STOCKYA_UNIVERSE=nifty200    — Nifty 100 + Nifty Midcap 100
+    STOCKYA_UNIVERSE=nifty300    — top-300 slice of the curated 500 set
+    STOCKYA_UNIVERSE=nifty500    — Broad NSE-500 style coverage (small + mid + large)
+    STOCKYA_UNIVERSE=niftytotal  (default) — Nifty Total Market (~754 names, the
+                                  same CSV the volume strategy uses)
+    STOCKYA_UNIVERSE=custom      — read tickers from config/universe_custom.txt
                                   (one per line, `.NS` suffix optional but recommended;
                                   blank lines and `#` comments are ignored)
 
 NOTE: "Nifty 300" is NOT an official NSE index (the official broad indices are
 Nifty 200 and Nifty 500; the top-300-by-cap set is closest to "Nifty
 LargeMidcap 250" + 50). `NIFTY_300` here is a pragmatic top-300 slice of the
-curated `NIFTY_500` list. `STOCKYA_UNIVERSE=custom` can supply exact official
-constituents to independent discovery tools, but it intentionally cannot widen
-the volume strategy beyond the fixed set below.
+curated `NIFTY_500` list, retained as a discovery option. The **Nifty Total
+Market** list IS an official NSE index membership file, so `VOLUME_UNIVERSE`
+now tracks a real, refreshable index rather than a curated slice.
 
-NSE rebalances these indices ~twice a year. Bump the lists below when the
-rebalance lands, and confirm symbols via `python -m backend.check_universe`.
+NSE rebalances these indices ~twice a year. Refresh the Nifty Total Market CSV
+when the rebalance lands (see above), bump the hardcoded discovery lists below
+if you rely on them, and confirm symbols via `python -m backend.check_universe`.
 
 The hardcoded NIFTY_500 list is a *reasonable* snapshot from prior knowledge;
-it will drift from official constituents at each rebalance. Refresh these
-tracked lists when the volume strategy's exact membership needs to change.
+it will drift from official constituents at each rebalance. It now feeds only the
+discovery selector — the volume strategy reads the CSV.
 
 Known dead / corporate-action affected (kept as comments so future-you
 knows why they were removed):
@@ -39,6 +50,7 @@ knows why they were removed):
 
 from __future__ import annotations
 
+import csv
 import logging
 import os
 from pathlib import Path
@@ -47,6 +59,9 @@ log = logging.getLogger("universe")
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _CUSTOM_UNIVERSE_PATH = _PROJECT_ROOT / "config" / "universe_custom.txt"
+# Repo-tracked source of truth for the volume strategy's universe. Refresh by
+# dropping NSE's latest ind_niftytotalmarket_list.csv in over this file.
+_NIFTY_TOTAL_MARKET_PATH = _PROJECT_ROOT / "config" / "nifty_total_market.csv"
 
 # --------------------------------------------------------------------------- #
 # Nifty 50 (large-caps)
@@ -222,15 +237,65 @@ NIFTY_500 = _dedupe(NIFTY_200 + [t for t in NIFTY_SMALLCAP_300 if t not in NIFTY
 # --------------------------------------------------------------------------- #
 NIFTY_300 = NIFTY_500[:300]
 
-# The volume strategy's eligibility boundary.  Keep this separate from the
-# configurable ``UNIVERSE`` below: changing STOCKYA_UNIVERSE may widen or narrow
-# independent scanners, but must never admit a non-Nifty-300 volume pick.
-VOLUME_UNIVERSE_NAME = "nifty300"
-VOLUME_UNIVERSE_LABEL = "Nifty 300"
-VOLUME_UNIVERSE = tuple(NIFTY_300)
+
+# --------------------------------------------------------------------------- #
+# Nifty Total Market — the volume strategy's universe (official NSE index file).
+#
+# Loaded from the repo-tracked CSV config/nifty_total_market.csv (NSE's
+# ind_niftytotalmarket_list.csv, columns: Company Name, Industry, Symbol,
+# Series, ISIN Code). Each NSE `Symbol` gets a `.NS` suffix for Yahoo. Order is
+# preserved; duplicates are dropped. Refresh at each NSE rebalance by replacing
+# the CSV — no code change needed.
+# --------------------------------------------------------------------------- #
+
+def _load_nifty_total_market() -> list[str]:
+    """Read config/nifty_total_market.csv into a `.NS`-suffixed symbol list.
+
+    Raises RuntimeError if the file is missing/unreadable or yields too few
+    symbols — the volume strategy must never silently run on an empty or
+    truncated universe. See the guard on VOLUME_UNIVERSE below.
+    """
+    if not _NIFTY_TOTAL_MARKET_PATH.exists():
+        raise RuntimeError(
+            f"Nifty Total Market CSV not found at {_NIFTY_TOTAL_MARKET_PATH}. "
+            "Drop NSE's ind_niftytotalmarket_list.csv there (see backend/universe.py)."
+        )
+    out: list[str] = []
+    seen: set[str] = set()
+    # utf-8-sig strips NSE's BOM; the file has a header row.
+    with _NIFTY_TOTAL_MARKET_PATH.open(newline="", encoding="utf-8-sig") as f:
+        for row in csv.DictReader(f):
+            raw = (row.get("Symbol") or "").strip()
+            if not raw:
+                continue
+            sym = raw if raw.endswith(".NS") else f"{raw}.NS"
+            if sym in seen:
+                continue
+            seen.add(sym)
+            out.append(sym)
+    return out
+
+
+NIFTY_TOTAL_MARKET = _load_nifty_total_market()
+
+# The volume strategy's eligibility boundary. Keep this separate from the
+# configurable discovery ``UNIVERSE`` below: changing STOCKYA_UNIVERSE may widen
+# or narrow independent scanners, but the volume strategy always scans exactly
+# the Nifty Total Market membership loaded above.
+VOLUME_UNIVERSE_NAME = "niftytotal"
+VOLUME_UNIVERSE_LABEL = "Nifty Total Market"
+VOLUME_UNIVERSE = tuple(NIFTY_TOTAL_MARKET)
 VOLUME_UNIVERSE_SET = frozenset(VOLUME_UNIVERSE)
-if len(VOLUME_UNIVERSE) != 300 or len(VOLUME_UNIVERSE_SET) != 300:
-    raise RuntimeError("VOLUME_UNIVERSE must contain exactly 300 unique symbols")
+# Sanity guards (were "exactly 300" before 2026-09-02): reject duplicates and a
+# suspiciously small list (a truncated/corrupt CSV) so the strategy fails loudly
+# at import rather than silently scanning a partial universe.
+if len(VOLUME_UNIVERSE) != len(VOLUME_UNIVERSE_SET):
+    raise RuntimeError("VOLUME_UNIVERSE contains duplicate symbols")
+if len(VOLUME_UNIVERSE) < 100:
+    raise RuntimeError(
+        f"VOLUME_UNIVERSE has only {len(VOLUME_UNIVERSE)} symbols — expected the "
+        "full Nifty Total Market list (~750). Check config/nifty_total_market.csv."
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -268,22 +333,26 @@ def _load_custom_universe() -> list[str]:
 # --------------------------------------------------------------------------- #
 
 UNIVERSES = {
-    "nifty50":  NIFTY_50,
-    "nifty100": NIFTY_100,
-    "nifty200": NIFTY_200,
-    "nifty300": NIFTY_300,
-    "nifty500": NIFTY_500,
+    "nifty50":    NIFTY_50,
+    "nifty100":   NIFTY_100,
+    "nifty200":   NIFTY_200,
+    "nifty300":   NIFTY_300,
+    "nifty500":   NIFTY_500,
+    "niftytotal": NIFTY_TOTAL_MARKET,
 }
 
 # Human-readable labels for logs / UI / trace. Keeps user-facing text in sync
 # with the selected universe instead of hardcoding "Nifty 100" in a dozen files.
 _UNIVERSE_LABELS = {
     "nifty50": "Nifty 50", "nifty100": "Nifty 100", "nifty200": "Nifty 200",
-    "nifty300": "Nifty 300", "nifty500": "Nifty 500", "custom": "custom universe",
+    "nifty300": "Nifty 300", "nifty500": "Nifty 500",
+    "niftytotal": "Nifty Total Market", "custom": "custom universe",
 }
 
-# Default discovery universe (2026-07-27): nifty300. Was nifty100.
-_DEFAULT_UNIVERSE = "nifty300"
+# Default discovery universe (2026-09-02): niftytotal (the full Nifty Total
+# Market list, same CSV the volume strategy uses). Was nifty300 (2026-07-27),
+# nifty100 before that.
+_DEFAULT_UNIVERSE = "niftytotal"
 
 
 def _selected_universe_name() -> str:

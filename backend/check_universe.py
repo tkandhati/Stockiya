@@ -26,7 +26,8 @@ from .universe import VOLUME_UNIVERSE
 
 
 # Sleep between sequential fetches to stay below Yahoo's per-host rate limit.
-# 0.3 s × 100 tickers = 30 s of throttle on top of the actual fetch time.
+# 0.3 s × ~754 tickers (Nifty Total Market) ≈ 3.8 min of throttle on top of the
+# actual fetch time — run it when you can leave it going.
 _THROTTLE_SECS = 0.3
 
 

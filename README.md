@@ -2,7 +2,7 @@
 
 > **Don't invent. Follow the institutions. Enter early, exit early — on volume alone.**
 
-Local web app that surfaces up to **3 Indian (Nifty 300) stock picks per day** for a **swing hold — 3 weeks to 3 months typical, up to 6 months for runners**. Pure volume strategy: picks are stocks where **institutions are visibly building a Wyckoff accumulation base and today's tape confirms it**. Deterministic, no LLM, RL-ready.
+Local web app that surfaces up to **3 Indian (Nifty Total Market) stock picks per day** for a **swing hold — 3 weeks to 3 months typical, up to 6 months for runners**. Pure volume strategy: picks are stocks where **institutions are visibly building a Wyckoff accumulation base and today's tape confirms it**. Deterministic, no LLM, RL-ready.
 
 > **Honest holding-time expectation.** T1 (+8%) is expected around day 21 (~3 weeks) for a working setup. Median full lifecycle is 3-5 weeks to T1, then 1-3 more months to T2 or exit. Day-180 is the outer hard cap (not a target). Losers exit inside 1-15 sessions on stop or trajectory flip.
 
@@ -12,7 +12,7 @@ Local web app that surfaces up to **3 Indian (Nifty 300) stock picks per day** f
 
 ## What it does
 
-1. **Screens the Nifty 300 universe** every day for Wyckoff Phase-C or Phase-D accumulation footprints — institutional buying *before* price runs.
+1. **Screens the Nifty Total Market universe** (~750 NSE names) every day for Wyckoff Phase-C or Phase-D accumulation footprints — institutional buying *before* price runs.
 2. **Waits for a Volume-Spread-Analysis trigger bar** — Sign-of-Strength, pocket pivot, or no-supply test. Any one fires the entry.
 3. **Requires anchored-VWAP hold** — price above the institutional cost-basis line from the base low.
 4. **Picks 0–3 setups** that clear all three checks. Quality over quantity — if nothing qualifies, you see *"nothing actionable today"*, plus a "closer-to-passing" watchlist and near-misses so you can see what the chain is doing.
@@ -182,7 +182,7 @@ backend/
 ├── block_deals.py          ← NSE block/bulk CSV downloader + 30d aggregator (+ rolling 7d-vs-30d trend)
 ├── delivery.py             ← NSE MTO delivery-% best-effort fetcher + file-only reader + rolling 5d/20d   *(fetch 2026-07-26)*
 ├── reasoning_points.py     ← builds the pick "reasoning checklist" steps (incl. always-visible delivery load status)  *(new 2026-07-26)*
-├── universe.py             ← fixed Nifty-300 volume universe + configurable discovery universes
+├── universe.py             ← Nifty Total Market volume universe (config/nifty_total_market.csv) + configurable discovery universes
 ├── yahoo.py, fetch.py      ← data source adapters
 ├── demo_data.py            ← DEMO_MODE=1 synthetic OHLCV
 ├── nightly.py, weekly.py   ← cron entry points

@@ -1,9 +1,33 @@
 # Agent Handoff
 
-Last updated: 2026-08-13
+Last updated: 2026-09-02
 
 For proposals that have been analyzed but not shipped, see `WISHLIST.md`.
 For ideas parked pending trace evidence, see `ideas.md`.
+
+## Latest Change (2026-09-02) — Nifty Total Market universe + two distribution-trap guards
+
+Owner asked to (a) stop surfacing distribution traps / already-run "consolidation"
+names and (b) replace the fixed Nifty-300 volume universe with the full **Nifty
+Total Market** list. Offline-verified: full backend unittest package **275/275**;
+`python -m compileall backend middleware` clean. Nothing runs against the network.
+
+1. **Volume universe widened Nifty-300 → Nifty Total Market (~754 names).**
+   `VOLUME_UNIVERSE` now loads from the repo-tracked CSV
+   `config/nifty_total_market.csv` (NSE's `ind_niftytotalmarket_list.csv`) via
+   `universe._load_nifty_total_market()`. The old "exactly 300" import guard is
+   replaced by a dedupe + min-size (≥100) sanity guard. `niftytotal` is also the
+   new **default** discovery universe (`STOCKYA_UNIVERSE`). Rebalance = drop in a
+   new CSV, no code change. ⚠️ Daily fetch load is ~2.5× the old 300 — watch Yahoo
+   rate limits / run time on the live box.
+2. **`EXCLUDE_LATE_ENTRY` flipped False → True** (`backend/stages/rank.py`). The
+   `"late"` entry-timing bucket covers distribution-into-strength (Stage-2 price
+   but OBV-90d falling) and Stage-3-top, not just "already run" — so all three are
+   now kept out of the top-N. Selection-only veto; zero-pick days still fall
+   through to the calm accumulation lead / monitoring content.
+3. **Distribution veto [DV] flipped shadow → block** (`config/stage_weights.json`
+   `distribution_veto_mode`). `DV` is now a hard gate: weak-close volume spikes,
+   gap-up bull traps, and distribution-day clusters short-circuit the ticker.
 
 ## Latest Change (2026-08-13) — Fixed Nifty-300 volume universe + final pick-quality guards
 
@@ -12,7 +36,7 @@ Two connected, **selection-affecting** changes (full detail + rationale in
 **171/171**; `python -m compileall backend middleware` clean. Nothing runs against
 the network.
 
-1. **Volume strategy is locked to a fixed Nifty-300 set.** New `VOLUME_UNIVERSE` /
+1. **Volume strategy is locked to a fixed Nifty-300 set.** _(SUPERSEDED 2026-09-02 — the volume universe was widened to the Nifty Total Market list; see the top of this file.)_ New `VOLUME_UNIVERSE` /
    `VOLUME_UNIVERSE_SET` / `VOLUME_UNIVERSE_LABEL` in `backend/universe.py`
    (guarded to be exactly 300 unique names — raises at import otherwise). Every
    volume call site (`[U]` gate, `orchestrator`, `backtest`, `check_universe`,
@@ -511,9 +535,10 @@ have been analyzed and moved to `WISHLIST.md`.
 
 ## Current Architecture Truth
 
-Stockiya is a deterministic, volume-only swing screener (default scan universe
-`nifty300` — a curated top-300 set, fixed for the volume strategy; the independent
-discovery universe remains configurable via `STOCKYA_UNIVERSE`) for a
+Stockiya is a deterministic, volume-only swing screener (scan universe = the
+**Nifty Total Market** list, ~750 NSE names from `config/nifty_total_market.csv`,
+used by the volume strategy and, by default, the independent discovery tools;
+discovery remains configurable via `STOCKYA_UNIVERSE`) for a
 **swing hold — 3 weeks to 3 months typical, up to 6 months for runners**.
 Day-180 is the outer hard cap, not a target; the median winner hits T1
 around day 21 and finishes T2 or exits inside 1-3 months from entry.
