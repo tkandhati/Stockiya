@@ -152,22 +152,27 @@ REM Runs even when the pip step above was skipped (existing installs), because
 REM that skip-check does NOT include curl_cffi. Without curl_cffi, Yahoo blocks
 REM yfinance's login/crumb request and you get "Too Many Requests" (HTTP 429)
 REM even for a single ticker. This is the #1 fix for persistent rate limiting.
+REM NOTE: use goto labels (not parenthesised if/else) and an UNPINNED package
+REM name here. cmd.exe mis-parses the >= and < in a version spec even when
+REM quoted inside a ( ) block, which closes the window abruptly. The version
+REM pin still applies for fresh installs via requirements.txt.
 echo.
 echo [Step 4b/5] Ensuring curl_cffi (avoids Yahoo 429 rate limits)...
 python -m pip show curl_cffi 1>nul 2>&1
-if not errorlevel 1 (
-    echo      curl_cffi already installed -- OK.
-) else (
-    echo      Installing curl_cffi...
-    python -m pip install "curl_cffi>=0.7,<1.0" --only-binary :all: --quiet
-    if errorlevel 1 (
-        echo      WARNING: curl_cffi install failed. The app still runs, but Yahoo
-        echo               will rate-limit hard. Retry later with:
-        echo                 backend\.venv\Scripts\python.exe -m pip install curl_cffi
-    ) else (
-        echo      OK -- curl_cffi installed.
-    )
-)
+if not errorlevel 1 goto :curl_ok
+echo      Installing curl_cffi...
+python -m pip install curl_cffi --only-binary :all: --quiet
+if errorlevel 1 goto :curl_warn
+echo      OK -- curl_cffi installed.
+goto :curl_done
+:curl_warn
+echo      WARNING: curl_cffi install failed. The app still runs, but Yahoo
+echo               will rate-limit hard. Retry later with:
+echo                 backend\.venv\Scripts\python.exe -m pip install curl_cffi
+goto :curl_done
+:curl_ok
+echo      curl_cffi already installed -- OK.
+:curl_done
 
 REM ---- backend\.env -----------------------------------------------
 if exist .env (
