@@ -146,13 +146,20 @@ def _dict_to_series(d: Optional[dict]) -> Optional[pd.Series]:
 
 
 def _fetch_close_history(ticker: str, lookback_days: int = _LOOKBACK_DAYS) -> Optional[pd.Series]:
-    """Daily close series for one ticker via yfinance. None on ANY failure."""
+    """Daily close series for one ticker via yfinance. None on ANY failure.
+
+    Goes through `backend.yf_session` so these market-series fetches share the
+    same global throttle / 429 backoff / day cache as every other Yahoo call —
+    the deferred import keeps the offline default free of a hard yfinance dep.
+    """
     try:
-        import yfinance as yf  # deferred: offline default carries no hard dep
+        from . import yf_session  # deferred: offline default carries no hard dep
     except Exception:
         return None
     try:
-        h = yf.Ticker(ticker).history(period=f"{lookback_days}d", auto_adjust=True)
+        t = yf_session.get_ticker(ticker)
+        sig = f"macro_p{lookback_days}d_{_now().strftime('%Y-%m-%d')}"
+        h = yf_session.history(t, ticker, sig, period=f"{lookback_days}d", auto_adjust=True)
         if h is None or h.empty or "Close" not in h:
             return None
         s = h["Close"].copy()

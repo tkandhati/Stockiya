@@ -1,6 +1,10 @@
 fastapi==0.115.5
 uvicorn[standard]==0.32.1
 yfinance==1.3.0
+# Optional but recommended: browser impersonation drastically cuts Yahoo 429s.
+# yf_session.py auto-detects it and degrades gracefully if absent — remove this
+# line (and set STOCKYA_YF_IMPERSONATE=0) to disable.
+curl_cffi>=0.7,<1.0
 python-dotenv==1.0.1
 pandas==2.2.3
 pydantic==2.10.3

@@ -19,6 +19,7 @@ from typing import Any, Optional
 import pandas as pd
 import yfinance as yf
 
+from . import yf_session
 from .demo_data import DEMO_SNAPSHOTS, demo_history_6m
 from .snapshot_calc import build_snapshot_from_ohlcv
 
@@ -26,12 +27,10 @@ log = logging.getLogger("yahoo")
 
 
 # --------------------------------------------------------------------------- #
-# Retry helper — Yahoo intermittently 404s legit tickers under load.
-# Three attempts with exponential backoff (0.5, 1.0, 2.0 s) before giving up.
+# All Yahoo access is throttled + retried + cached in `backend/yf_session.py`
+# (one place, so the 10-worker orchestrator can't burst Yahoo into a 429).
+# This wrapper just builds the request signature and delegates.
 # --------------------------------------------------------------------------- #
-
-_RETRY_ATTEMPTS = 3
-_RETRY_BACKOFF_BASE = 0.5  # seconds; doubles each attempt
 
 
 def _history_with_retry(
@@ -40,42 +39,31 @@ def _history_with_retry(
     start: Optional[str] = None,
     end: Optional[str] = None,
 ) -> pd.DataFrame:
-    """yfinance.history wrapped with retry + backoff for transient failures.
+    """yfinance.history via the shared throttled/retried/cached session.
 
-    Retries on either exception or empty DataFrame. Returns empty DataFrame
-    only after all attempts exhausted — distinguishes truly-dead tickers
-    (still empty after retries) from transient Yahoo flakiness.
+    Returns an empty DataFrame only after all retries are exhausted — so a
+    truly-dead ticker (still empty) is distinguishable from transient Yahoo
+    flakiness (recovered by retry). Rate limiting, backoff and the on-disk day
+    cache are all handled in `yf_session`.
 
     Pass either `period` (e.g. "2y") or an explicit `start`/`end` window. The
-    explicit window is used by backtest to fetch bars ending at a past date.
+    explicit window is used by backtest to fetch bars ending at a past date and
+    is fully cacheable (the window is deterministic).
     """
     t = _ticker(symbol)
-    last_err: Optional[str] = None
     kwargs: dict = {"auto_adjust": True}
     if start or end:
         if start:
             kwargs["start"] = start
         if end:
             kwargs["end"] = end
-        label = f"start={start} end={end}"
+        sig = f"s{start or ''}_e{end or ''}"
     else:
-        kwargs["period"] = period or "2y"
-        label = f"period={kwargs['period']}"
-    for attempt in range(_RETRY_ATTEMPTS):
-        try:
-            h = t.history(**kwargs)
-            if h is not None and not h.empty:
-                return h
-            last_err = "empty result"
-        except Exception as e:
-            last_err = f"{type(e).__name__}: {e}"
-        if attempt < _RETRY_ATTEMPTS - 1:
-            time.sleep(_RETRY_BACKOFF_BASE * (2 ** attempt))
-    log.warning(
-        "yfinance history(%s, %s) failed after %d attempts: %s",
-        symbol, label, _RETRY_ATTEMPTS, last_err,
-    )
-    return pd.DataFrame()
+        p = period or "2y"
+        kwargs["period"] = p
+        # Day-stamp the signature so a live period fetch refreshes each day.
+        sig = f"p{p}_{time.strftime('%Y-%m-%d')}"
+    return yf_session.history(t, symbol, sig, **kwargs)
 
 
 def _demo_enabled() -> bool:
@@ -96,11 +84,21 @@ def _to_float(x: Any) -> Optional[float]:
 
 @lru_cache(maxsize=128)
 def _ticker(symbol: str) -> yf.Ticker:
-    return yf.Ticker(symbol)
+    # Ticker creation (with the optional shared impersonating session) lives in
+    # yf_session; the lru_cache here keeps one Ticker per symbol per process.
+    return yf_session.get_ticker(symbol)
 
 
 def snapshot(symbol: str) -> dict:
-    """Price + display snapshot for one ticker. No numeric fundamentals."""
+    """Price + display snapshot for one ticker. No numeric fundamentals.
+
+    By default the labels (company/sector/industry) and headline price come
+    from yfinance ``.info`` — the heaviest, most rate-limited Yahoo endpoint.
+    Set STOCKYA_YF_SKIP_INFO=1 to skip it entirely on full-universe runs: the
+    numeric fields then come from the far-lighter ``fast_info`` and labels
+    degrade to None (same as the bhavcopy path; sector is supplied elsewhere
+    from config/sector_map.json).
+    """
     if _demo_enabled():
         demo = DEMO_SNAPSHOTS.get(symbol)
         if demo:
@@ -114,23 +112,30 @@ def snapshot(symbol: str) -> dict:
             "vol_today": None, "vol_avg30": None,
         }
     t = _ticker(symbol)
-    try:
-        info: dict = t.info or {}
-    except Exception as e:
-        log.warning("yfinance .info failed for %s: %s", symbol, e)
-        info = {}
+    if yf_session.skip_info():
+        fi = yf_session.fast_info(t, symbol)
+        overrides = {
+            "company": symbol,
+            "sector": None,
+            "industry": None,
+            "current": _to_float(fi.get("last_price")),
+            "previous_close": _to_float(fi.get("previous_close")),
+            "fifty_two_w_high": _to_float(fi.get("year_high")),
+            "fifty_two_w_low": _to_float(fi.get("year_low")),
+        }
+    else:
+        info: dict = yf_session.info(t, symbol)
+        overrides = {
+            "company": info.get("longName") or info.get("shortName"),
+            "sector": info.get("sector"),
+            "industry": info.get("industry"),
+            "current": _to_float(info.get("currentPrice")) or _to_float(info.get("regularMarketPrice")),
+            "previous_close": _to_float(info.get("previousClose")),
+            "fifty_two_w_high": _to_float(info.get("fiftyTwoWeekHigh")),
+            "fifty_two_w_low": _to_float(info.get("fiftyTwoWeekLow")),
+        }
 
     hist = _history_with_retry(symbol, period="1y")
-
-    overrides = {
-        "company": info.get("longName") or info.get("shortName"),
-        "sector": info.get("sector"),
-        "industry": info.get("industry"),
-        "current": _to_float(info.get("currentPrice")) or _to_float(info.get("regularMarketPrice")),
-        "previous_close": _to_float(info.get("previousClose")),
-        "fifty_two_w_high": _to_float(info.get("fiftyTwoWeekHigh")),
-        "fifty_two_w_low": _to_float(info.get("fiftyTwoWeekLow")),
-    }
     return build_snapshot_from_ohlcv(symbol, hist, overrides=overrides)
 
 
