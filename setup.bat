@@ -147,6 +147,28 @@ exit /b 1
 :pip_done
 echo      All Python packages installed successfully.
 
+REM ---- 4b. Ensure curl_cffi (browser impersonation) --------------------
+REM Runs even when the pip step above was skipped (existing installs), because
+REM that skip-check does NOT include curl_cffi. Without curl_cffi, Yahoo blocks
+REM yfinance's login/crumb request and you get "Too Many Requests" (HTTP 429)
+REM even for a single ticker. This is the #1 fix for persistent rate limiting.
+echo.
+echo [Step 4b/5] Ensuring curl_cffi (avoids Yahoo 429 rate limits)...
+python -m pip show curl_cffi 1>nul 2>&1
+if not errorlevel 1 (
+    echo      curl_cffi already installed -- OK.
+) else (
+    echo      Installing curl_cffi...
+    python -m pip install "curl_cffi>=0.7,<1.0" --only-binary :all: --quiet
+    if errorlevel 1 (
+        echo      WARNING: curl_cffi install failed. The app still runs, but Yahoo
+        echo               will rate-limit hard. Retry later with:
+        echo                 backend\.venv\Scripts\python.exe -m pip install curl_cffi
+    ) else (
+        echo      OK -- curl_cffi installed.
+    )
+)
+
 REM ---- backend\.env -----------------------------------------------
 if exist .env (
     echo      backend\.env already exists -- leaving it alone.
