@@ -1,7 +1,7 @@
-"""The volume strategy scans exactly its Nifty Total Market universe, and never
-selects a symbol outside it — independent of the configurable discovery universe
-(STOCKYA_UNIVERSE). The universe was widened from the fixed Nifty-300 set to the
-full Nifty Total Market list on 2026-09-02 (see CHANGELOG)."""
+"""The volume strategy scans exactly its VOLUME_UNIVERSE, and never selects a
+symbol outside it — independent of the configurable discovery universe
+(STOCKYA_UNIVERSE). VOLUME_UNIVERSE is the in-code NIFTY_300 list; the CSV
+loader was removed on 2026-09-06 (see CHANGELOG)."""
 
 from __future__ import annotations
 
@@ -27,9 +27,9 @@ class TestVolumeUniverseBoundary(unittest.TestCase):
     def test_volume_universe_is_the_nifty_total_market_set(self) -> None:
         self.assertEqual(VOLUME_UNIVERSE_LABEL, "Nifty Total Market")
         self.assertEqual(VOLUME_UNIVERSE, tuple(NIFTY_TOTAL_MARKET))
-        # No duplicates, all Yahoo-suffixed, and a full-size list (~750).
+        # No duplicates, all Yahoo-suffixed, and the in-code Nifty 300 list.
         self.assertEqual(len(VOLUME_UNIVERSE), len(VOLUME_UNIVERSE_SET))
-        self.assertGreaterEqual(len(VOLUME_UNIVERSE), 500)
+        self.assertGreaterEqual(len(VOLUME_UNIVERSE), 250)
         self.assertTrue(all(s.endswith(".NS") for s in VOLUME_UNIVERSE))
         self.assertNotIn(_OUTSIDE, VOLUME_UNIVERSE_SET)
 

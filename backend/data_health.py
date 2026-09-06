@@ -134,17 +134,17 @@ def _check_universe() -> HealthItem:
             status="error", detail=f"import failed: {e}",
             fix="Check backend/universe.py exists and is syntactically valid.",
         )
-    if n < 500:
+    if n < 250:
         return HealthItem(
             id="universe", label=label,
-            path="config/nifty_total_market.csv",
+            path="backend/universe.py",
             status="warn",
-            detail=f"{n} symbols — expected the full Nifty Total Market list (~750)",
-            fix="Refresh config/nifty_total_market.csv with NSE's latest ind_niftytotalmarket_list.csv.",
+            detail=f"{n} symbols — expected the in-code Nifty 300 list (~300)",
+            fix="Check the NIFTY_300 / NIFTY_500 definitions in backend/universe.py.",
         )
     return HealthItem(
         id="universe", label=label,
-        path="config/nifty_total_market.csv",
+        path="backend/universe.py",
         status="ok", detail=f"{n} symbols",
     )
 
