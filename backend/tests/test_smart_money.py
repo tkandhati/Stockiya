@@ -189,6 +189,55 @@ class DistributionWarningFunctionTests(unittest.TestCase):
         self.assertEqual(full["warning"], pure["warning"])
 
 
+class MoneyFlowDistributionTests(unittest.TestCase):
+    """The Chaikin money-flow legs (CMF-21d / A/D-line slope) — the OBV-based
+    picks spine's blind spot. The Minda incident: OBV read accumulation while
+    CMF was deeply negative and the A/D-line was falling."""
+
+    def test_negative_cmf_fires_with_reason(self):
+        dw = SM.distribution_warning({"cmf_21d": -0.49}, None)
+        self.assertTrue(dw["warning"])
+        self.assertTrue(any("CMF" in r for r in dw["reasons"]))
+
+    def test_cmf_at_threshold_fires(self):
+        dw = SM.distribution_warning({"cmf_21d": SM.CMF_DISTRIBUTION_MAX}, None)
+        self.assertTrue(dw["warning"])
+
+    def test_mildly_negative_cmf_does_not_fire(self):
+        # A soft CMF just above the floor (e.g. a healing base) must NOT trip it.
+        dw = SM.distribution_warning({"cmf_21d": -0.05}, None)
+        self.assertFalse(dw["warning"])
+        self.assertEqual(dw["reasons"], [])
+
+    def test_falling_ad_line_fires_with_reason(self):
+        dw = SM.distribution_warning({"ad_line_slope_pct": -150.0}, None)
+        self.assertTrue(dw["warning"])
+        self.assertTrue(any("A/D-line" in r for r in dw["reasons"]))
+
+    def test_rising_ad_line_does_not_fire(self):
+        dw = SM.distribution_warning({"ad_line_slope_pct": 12.0}, None)
+        self.assertFalse(dw["warning"])
+
+    def test_missing_money_flow_metrics_are_fail_open(self):
+        # None / absent money-flow feats contribute no reason (byte-identical to
+        # the pre-money-flow behaviour).
+        dw = SM.distribution_warning({"cmf_21d": None, "ad_line_slope_pct": None}, None)
+        self.assertFalse(dw["warning"])
+        self.assertEqual(dw["reasons"], [])
+
+    def test_money_flow_forces_zero_confirmation_in_assess(self):
+        # A structural-looking delivery read is vetoed by deep-negative CMF, so a
+        # distributing coil earns no smart-money boost.
+        res = SM.assess_smart_money(
+            {"vol_ratio_5_50": 1.1, "cmf_21d": -0.4},
+            _adv(latest_pct=65.0, level="strong"),
+            price_change_pct=0.0, obv90=6.0, ud90=1.3,
+        )
+        self.assertTrue(res["warning"])
+        self.assertEqual(res["confirmation"], 0.0)
+        self.assertNotIn("structural_accumulation", _keys(res))
+
+
 class ContractTests(unittest.TestCase):
     def test_confirmation_bounded_0_1(self):
         res = SM.assess_smart_money(

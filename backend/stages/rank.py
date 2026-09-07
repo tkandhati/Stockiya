@@ -301,10 +301,24 @@ def rank_survivors(
         # analysis error or short history.
         entry_timing = "unknown"
         weinstein_stage = ""
+        # Money-flow oscillators (Chaikin CMF 21d/60d, A/D-line 30d slope,
+        # price-vs-VWAP) the volume-signature ALREADY computes on this same frame.
+        # The ranker previously read only entry_timing/weinstein_stage off `_vs`
+        # and discarded these — so the OBV-based picks spine never saw a base whose
+        # OBV rises on churn while the closes are weak. Stash them (no recompute)
+        # for the orchestrator's distribution tier guard + money-flow contradiction.
+        # Advisory: this does NOT change the confirmation score or rank here.
+        money_flow: dict = {}
         try:
             _vs = compute_volume_signals(df, r.symbol)
             entry_timing = getattr(_vs, "entry_timing", "unknown") or "unknown"
             weinstein_stage = getattr(_vs, "weinstein_stage", "") or ""
+            money_flow = {
+                "cmf_21d": getattr(_vs, "cmf_21d", None),
+                "cmf_60d": getattr(_vs, "cmf_60d", None),
+                "ad_line_slope_pct": getattr(_vs, "ad_line_slope_pct", None),
+                "price_vs_vwap_pct": getattr(_vs, "price_vs_vwap_pct", None),
+            }
         except Exception:
             log.exception("rank: volume-signature timing failed for %s", r.symbol)
 
@@ -337,6 +351,7 @@ def rank_survivors(
             "entry_timing": entry_timing,
             "weinstein_stage": weinstein_stage,
             "day0_exit_watch": day0_exit_watch,
+            "money_flow": money_flow,
         }
 
     # ---- Sort + select ----

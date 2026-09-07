@@ -287,6 +287,29 @@ def _distribution_tier_guard_enabled() -> bool:
     return os.environ.get("STOCKYA_DISTRIBUTION_TIER_GUARD", "1") != "0"
 
 
+def _moneyflow_distribution_enabled() -> bool:
+    """Whether the Chaikin money-flow read (CMF / A/D-line) participates in the
+    distribution machinery for a SELECTED pick.
+
+    The picks spine is OBV-based; OBV can rise on range-bound high-volume days
+    whose CLOSES are weak, so a base can read "accumulation" on OBV while CMF /
+    the A/D-line say the closes are being sold (the exact "OBV says accumulate,
+    CMF says distribute" contradiction). The ranker already computes CMF and the
+    A/D slope on each survivor's frame (`stages/rank.py`) but discarded them; this
+    switch lets that read (a) surface as a contradiction on the pick — which also
+    strips the pre-breakout badge via `pre_breakout_tag` self-veto — and (b) feed
+    the distribution tier guard, so a confirmed coil that is distributing at the
+    close is held to `lead_watch`.
+
+    On by default; STOCKYA_MONEYFLOW_DISTRIBUTION=0 fully restores the prior
+    behaviour (money flow stays display-only). Label-only, downward-only, and it
+    never touches the composite score, rank order, sizing, or exits — same firewall
+    as the distribution tier guard it extends. Thresholds live in
+    backend/smart_money.py (CMF_DISTRIBUTION_MAX, AD_SLOPE_DISTRIBUTION_MAX).
+    """
+    return os.environ.get("STOCKYA_MONEYFLOW_DISTRIBUTION", "1") != "0"
+
+
 def _pick_distribution_warning(res: PipelineResult, delivery) -> dict:
     """Consult the shared VPA distribution warning for a SELECTED pick.
 
@@ -310,6 +333,13 @@ def _pick_distribution_warning(res: PipelineResult, delivery) -> dict:
         "dist_day_count_15": _feat("DV", "dist_day_count_15"),
         "obv_flow_inflection": _feat("VD", "obv_flow_inflection"),
     }
+    # Money-flow legs (CMF-21d, A/D-line 30d slope) from the ranker's already-
+    # computed volume signature — the OBV-based spine's blind spot. Reversible via
+    # STOCKYA_MONEYFLOW_DISTRIBUTION=0 (then omitted -> byte-identical to before).
+    if _moneyflow_distribution_enabled():
+        mf = (getattr(res, "confirmation_components", None) or {}).get("money_flow") or {}
+        feat["cmf_21d"] = mf.get("cmf_21d")
+        feat["ad_line_slope_pct"] = mf.get("ad_line_slope_pct")
     return distribution_warning(feat, delivery)
 
 
@@ -632,6 +662,38 @@ def run_universe(
                             contras.append(_div)
             except Exception:
                 log.exception("obv_delivery_divergence failed for %s", res.symbol)
+            # Money-flow (Chaikin CMF / A/D-line) distribution — SCORING-NEUTRAL
+            # advisory. The picks spine reads OBV; a base whose OBV rises on
+            # range-bound churn while the CLOSES are weak surfaces here as negative
+            # CMF / a falling A/D-line even when OBV looks fine ("OBV says
+            # accumulate, CMF says distribute"). Recorded as a contradiction so it
+            # (a) is visible in the UI contradiction list and (b) strips the
+            # pre-breakout badge below via the pre_breakout_tag self-veto. The tier
+            # guard above already handled the confirmed->lead_watch demotion off the
+            # SAME warning. Runs for every pick (not just confirmed) and never gates
+            # selection or touches any score. Reversible via
+            # STOCKYA_MONEYFLOW_DISTRIBUTION=0.
+            try:
+                if _moneyflow_distribution_enabled():
+                    from .smart_money import distribution_warning as _dw_fn
+                    mf = (res.confirmation_components or {}).get("money_flow") or {}
+                    _mf = _dw_fn(
+                        {
+                            "cmf_21d": mf.get("cmf_21d"),
+                            "ad_line_slope_pct": mf.get("ad_line_slope_pct"),
+                        },
+                        None,
+                    )
+                    if _mf.get("warning"):
+                        assess = payload.get("accumulation_assessment")
+                        if isinstance(assess, dict):
+                            contras = assess.setdefault("contradictions", [])
+                            for _reason in _mf.get("reasons") or []:
+                                c = f"money-flow distribution: {_reason}"
+                                if c not in contras:
+                                    contras.append(c)
+            except Exception:
+                log.exception("money-flow contradiction failed for %s", res.symbol)
             # Pre-breakout TAG eligibility — the coherence guard on the
             # pre-breakout label (backend/pre_breakout_tag.py). Computed HERE,
             # after every advisory contradiction is attached, so the self-veto

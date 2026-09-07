@@ -30,9 +30,12 @@ THE FOUR READS (all from data already on file — traces + NSE delivery)
                               dominate (absorption); the same dry-up with flat
                               up/down is *apathy*, not absorption — no credit.
   4. distribution_warning     delivery is churn, OR >=3 distribution days in 15,
-                              OR OBV hemorrhaging, OR OBV-90d negative. The honest
-                              counter-signal — forces confirmation to 0 so a
-                              distributing name can never earn a smart-money boost.
+                              OR OBV hemorrhaging, OR OBV-90d negative, OR the
+                              Chaikin money-flow oscillators show distribution at
+                              the close (CMF-21d <= -0.15, or A/D-line 30d slope
+                              <= -5%). The honest counter-signal — forces
+                              confirmation to 0 so a distributing name can never
+                              earn a smart-money boost.
 
 CONTRACT
 --------
@@ -95,6 +98,19 @@ NO_SUPPLY_DEMAND_MIN: float = 1.1
 # Distribution-day cluster count (in 15 sessions) at/above which the tape is
 # distributing. Mirrors PRINCIPLES §5 (>=3/15).
 DIST_DAY_WARN: int = 3
+
+# Money-flow (Chaikin) distribution floors — the "OBV rises on range-bound churn
+# but the CLOSES are weak" trap (the picks spine is OBV-based, so this is the leg
+# it is blind to). Both are sourced from the volume-signature the ranker already
+# computes (`volume_signals.compute` → CMF 21d, A/D-line 30d slope %); nothing is
+# recomputed. CMF is bounded [-1, +1] and volume_signals' own display layer calls
+# `cmf <= -0.10` "sustained selling pressure" — we demand a margin BEYOND that
+# (-0.15) before money flow may change a selection tier, so a merely-soft CMF on a
+# genuine healing base does not trip it. The A/D floor mirrors volume_signals' own
+# `ad_slope <= -5 %/30d` "A/D falling — distribution" label exactly (not fit to any
+# one incident). Fail-open: a missing/uncomputable metric contributes no reason.
+CMF_DISTRIBUTION_MAX: float = -0.15
+AD_SLOPE_DISTRIBUTION_MAX: float = -5.0
 
 # Hard cap on the blended bullish confirmation the caller may tilt on.
 CONFIRMATION_CAP: float = 1.0
@@ -172,18 +188,27 @@ def distribution_warning(
     the orchestrator) can consult the SAME warning without re-implementing its
     thresholds — one source of truth for "this tape is distributing". Fires when
     delivery is churn (weak level), OR >=DIST_DAY_WARN distribution days in 15, OR
-    OBV flow is hemorrhaging, OR OBV-90d is negative.
+    OBV flow is hemorrhaging, OR OBV-90d is negative, OR the Chaikin money-flow
+    oscillators show distribution at the close (CMF-21d <= CMF_DISTRIBUTION_MAX, or
+    A/D-line 30d slope <= AD_SLOPE_DISTRIBUTION_MAX). The money-flow legs close the
+    "OBV rising on range-bound churn while closes are weak" blind spot of the
+    OBV-based picks spine; feed them via `feat["cmf_21d"]` / `feat["ad_line_slope_pct"]`
+    (the orchestrator sources both from the ranker's already-computed volume
+    signature — nothing is recomputed).
 
     Pure and fail-open: absent inputs simply don't contribute a reason (an empty
     reasons list -> warning False), delivery-led reasons require the advisory's
-    `available` flag, so with no delivery on disk this is byte-identical to the
-    non-delivery path.
+    `available` flag, and the money-flow legs require their metric to be present,
+    so with no delivery on disk and no money-flow feats this is byte-identical to
+    the pre-2026-09-07 non-delivery path.
     """
     feat = feat or {}
     adv = delivery_adv or {}
     infl = feat.get("obv_flow_inflection")
     dist = _to_float(feat.get("dist_day_count_15"))
     obv = obv90 if _is_num(obv90) else _to_float(feat.get("obv_90d_slope_pct"))
+    cmf = _to_float(feat.get("cmf_21d"))
+    ad_slope = _to_float(feat.get("ad_line_slope_pct"))
     deliv_ok = bool(adv.get("available"))
     latest_pct = _to_float(adv.get("latest_pct"))
     level = adv.get("level")
@@ -197,6 +222,16 @@ def distribution_warning(
         reasons.append("OBV flow hemorrhaging (10d & 30d both negative)")
     if _is_num(obv) and obv < 0:
         reasons.append(f"OBV-90d negative ({obv:+.0f}%)")
+    if _is_num(cmf) and cmf <= CMF_DISTRIBUTION_MAX:
+        reasons.append(
+            f"CMF {cmf:+.2f} — money flow negative at the close (sustained "
+            "selling pressure while OBV may look flat)"
+        )
+    if _is_num(ad_slope) and ad_slope <= AD_SLOPE_DISTRIBUTION_MAX:
+        reasons.append(
+            f"A/D-line {ad_slope:+.0f}%/30d — closes near lows on volume (Chaikin "
+            "distribution)"
+        )
     return {"warning": bool(reasons), "reasons": reasons}
 
 

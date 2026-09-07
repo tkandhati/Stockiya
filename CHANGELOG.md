@@ -1,5 +1,51 @@
 # Changelog
 
+## 2026-09-07 — Money-flow (Chaikin CMF / A/D-line) distribution leg (extends the tier guard)
+
+Follow-up to the distribution-risk tier guard below, closing the specific blind spot an
+outside review caught on a live "Best Buy": the card led with OBV accumulation + a tight
+base while **CMF −0.49, the A/D-line falling, and price below VWAP** sat in the data dump
+with **no effect on the recommendation**. Root cause: the picks spine is OBV-based, and OBV
+can rise on range-bound high-volume days whose *closes* are weak — the classic "OBV says
+accumulate, CMF says distribute" trap. Chaikin money flow (CMF-21d) and the A/D-line 30d
+slope are the close-weighted reads that catch exactly this, and the ranker **already
+computes both** on each survivor's frame (`stages/rank.py`, via `volume_signals.compute`)
+— it just read `entry_timing`/`weinstein_stage` off the result and threw the money-flow
+fields away. Nothing was recomputed to fix this; the discarded read is now stashed and wired.
+
+Offline-verified: full backend unittest package **290/290** (7 new); `python -m compileall
+backend middleware` clean. No network.
+
+**1. Two new legs on the single-source-of-truth warning** (`backend/smart_money.py`).
+`distribution_warning` now also fires when `cmf_21d <= CMF_DISTRIBUTION_MAX` (−0.15) or
+`ad_line_slope_pct <= AD_SLOPE_DISTRIBUTION_MAX` (−5%/30d). Both floors reuse the semantics
+volume_signals' own display layer already uses (it labels `cmf <= −0.10` "sustained selling
+pressure" and `ad_slope <= −5` "A/D falling — distribution"); CMF is held to a margin beyond
+−0.10 so a merely-soft CMF on a genuine healing base does not trip it. Fail-open: a
+missing/uncomputable metric contributes no reason, so every existing caller/test is
+byte-identical (refactor-equivalence test still green).
+
+**2. Stash, don't recompute** (`backend/stages/rank.py`). The already-computed volume
+signature's `cmf_21d`, `cmf_60d`, `ad_line_slope_pct`, `price_vs_vwap_pct` are recorded on
+`confirmation_components["money_flow"]`. Advisory — it does not change the confirmation
+score or rank.
+
+**3. Two wirings in the orchestrator Phase 3** (`backend/orchestrator.py`), both reversible
+via `STOCKYA_MONEYFLOW_DISTRIBUTION=0`:
+  - **Tier guard** — the money-flow legs are fed into `_pick_distribution_warning`, so a
+    `confirmed` coil distributing at the close is held to `lead_watch` (same demotion path,
+    same firewall as the OBV/delivery triggers).
+  - **Contradiction** — a distributing money-flow read is appended to the pick's
+    `accumulation_assessment.contradictions` for *every* pick (not just confirmed), which
+    makes it UI-visible and strips the pre-breakout badge via the `pre_breakout_tag`
+    self-veto (Instruction 1). This is the "long-term accumulation, short-term distribution
+    active — wait for CMF alignment" state the review asked for.
+
+**Firewall note:** label-only and downward-only, identical to the tier guard it extends —
+composite score, rank order, sizing, and exits are all untouched. Reversible at three grains:
+`STOCKYA_MONEYFLOW_DISTRIBUTION=0` (money-flow only), `STOCKYA_DISTRIBUTION_TIER_GUARD=0`
+(the whole tier demotion), or the two threshold constants in `smart_money.py`.
+
 ## 2026-09-07 — Distribution-risk tier guard (consolidation-trap defence, label-only)
 
 Owner ask: *"identify real accumulation, avoid traps entering in consolidation — I'm
