@@ -135,7 +135,15 @@ def snapshot(symbol: str) -> dict:
             "fifty_two_w_low": _to_float(info.get("fiftyTwoWeekLow")),
         }
 
-    hist = _history_with_retry(symbol, period="1y")
+    # Fetch the SAME 2y window the ingest stage fetches (`history_ohlcv`),
+    # not a separate 1y window. `build_snapshot_from_ohlcv` only ever reads
+    # trailing slices (last 252 for 52w-high/low + 1y return, tail(50/200/30)),
+    # so 2y is a strict superset that yields identical snapshot numbers — and
+    # sharing the window means both calls hit ONE cache key (p2y_<day>), so the
+    # second is a free cache read instead of a duplicate Yahoo request. This
+    # removes ~1 full history download per ticker per run — a ~⅓ cut in the
+    # Yahoo history load that was a major 429 source on full-universe runs.
+    hist = _history_with_retry(symbol, period="2y")
     return build_snapshot_from_ohlcv(symbol, hist, overrides=overrides)
 
 
@@ -191,9 +199,13 @@ def history_6m(symbol: str) -> list[dict]:
     """Return list of {date, close} for the last ~6 months (UI sparkline)."""
     if _demo_enabled():
         return demo_history_6m(symbol)
-    hist = _history_with_retry(symbol, period="6mo")
+    # Reuse the shared 2y window (same p2y_<day> cache key as snapshot/ingest)
+    # and slice the last ~126 trading days (~6 months) locally, rather than
+    # firing a separate period="6mo" Yahoo request on its own cache key.
+    hist = _history_with_retry(symbol, period="2y")
     if hist.empty:
         return []
+    hist = hist.tail(126)
     out: list[dict] = []
     for ts, row in hist.iterrows():
         close = _to_float(row.get("Close"))

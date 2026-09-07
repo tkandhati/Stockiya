@@ -57,6 +57,15 @@ the network.
    `selection_tier="lead_watch"` (frontend "⏳ Lead · Watch"); confirmed picks get
    `selection_tier="confirmed"`. Never runs on days with confirmed picks.
 
+   **`lead_watch` now has a second source (2026-09-07):** the distribution-risk tier
+   guard (`orchestrator._distribution_tier_guard_enabled`, on by default) demotes a
+   `confirmed` pick to `lead_watch` when it trips the shared VPA distribution warning
+   (`smart_money.distribution_warning`: ≥3 dist days/15, OBV hemorrhaging, or weak
+   delivery). Label-only + downward-only — score/rank/sizing/exits untouched; the pick
+   stays visible with a `lead_note` explaining the hold. Reversible via
+   `STOCKYA_DISTRIBUTION_TIER_GUARD=0`. So a `lead_watch` badge means *either* "coiling
+   just under τ" (fallback) *or* "confirmed but distributing — held to watch."
+
 New tests: `backend/tests/test_volume_universe.py`, `backend/tests/test_pick_quality.py`
 (incl. `TestGuaranteedLeadFallback`). Full backend suite **176/176**.
 

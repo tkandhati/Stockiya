@@ -53,6 +53,7 @@ Full knob list:
 | `STOCKYA_OHLCV_DIR` | *(sibling tuner cache)* | Absolute path to per-symbol OHLCV CSVs. Point at your OWN cache; the tuner sibling is not guaranteed to exist. |
 | `STOCKYA_UNIVERSE` | `niftytotal` | Controls independent discovery scanners such as Price Trend: `nifty50` / `nifty100` / `nifty200` / `nifty300` / `nifty500` / `niftytotal` / `custom`. It does not change the volume strategy, which always scans the Nifty Total Market list (`config/nifty_total_market.csv`). |
 | `STOCKYA_ACCOUNT_VALUE` | `100000` | Capital used by `[PS] Position Sizer` for share-count math |
+| `STOCKYA_DISTRIBUTION_TIER_GUARD` | `1` | `1` = a `confirmed` pick carrying an honest VPA distribution warning (≥3 distribution days/15, OBV hemorrhaging, or weak/churn delivery) is held to `lead_watch` — visible & ranked, but never stamped enter-today. Label-only, downward-only; score/rank/sizing/exits untouched. `0` = warning stays monitoring-only (prior behaviour). |
 
 Composite threshold `τ` and per-stage weights `wᵢ` live in
 `config\stage_weights.json`, not `.env`. `scripts/tune_weights.py` updates them.

@@ -290,6 +290,16 @@ More bonuses = more independent confirmations = less-likely false trigger.
 > layer (`macro_context.py`), which never ranks. Selection/composite/sizing/exits
 > are untouched.
 
+> **Sanctioned label-only exception (2026-09-07):** the honest VPA **distribution
+> warning** (`smart_money.distribution_warning`) may demote a `confirmed` pick to
+> `lead_watch` — the *only* place a monitoring-layer signal is allowed to change what
+> the user acts on. It is **label-only and downward-only** (confirmed → lead_watch,
+> never the reverse); composite score, rank order, sizing, and exits stay untouched, so
+> the firewall still holds for scoring/rank/sizing. Rationale: picks mostly surface
+> inside consolidation, and the trap is a base that is distributing, not accumulating —
+> so the enter-today badge must respect the counter-signal the system already computes.
+> Reversible: `STOCKYA_DISTRIBUTION_TIER_GUARD=0`. See CHANGELOG 2026-09-07.
+
 ---
 
 ## 9. Coding rules that protect the strategy

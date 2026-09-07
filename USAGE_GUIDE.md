@@ -94,7 +94,7 @@ journal. (To hide non-enterable names entirely, set `STOCKYA_MAIN_SHOW_ALL=0`.)
 - **`level = distribution`** — hard override; the tape is being *distributed into strength*. Exactly the false-breakout profile the engine exists to reject.
 - **`entry_stage = AT_PIVOT_NO_DEMAND`** — at the pivot but volume is dry. No demand → no follow-through.
 - **`entry_stage = LATE_CHASE`** (>10% over the 20-day MA) or **`FAILED_BREAKOUT_RETEST`** — you're late, or it already failed.
-- **`selection_tier = lead_watch`** — below the confirmation threshold. The app is literally saying "wait for the trigger, size cautiously." Watchlist only.
+- **`selection_tier = lead_watch`** — watchlist only, never an enter-today buy. Two causes, both say "wait": (1) the day had no confirmed pick and this is the best base coiling just under τ; or (2) the pick *cleared* confirmation but trips an honest **distribution warning** (≥3 distribution days in 15, OBV hemorrhaging, or weak/churn delivery) and was held to watch so you don't enter a consolidation that's actually distributing. The `lead_note` tooltip says which. (Guard is reversible: `STOCKYA_DISTRIBUTION_TIER_GUARD=0`.)
 - **delivery-divergence contradiction** — "OBV accumulation not confirmed by delivery — weak & falling." Accumulation the tape won't back up.
 
 ### ⚡ React immediately — the entry trigger

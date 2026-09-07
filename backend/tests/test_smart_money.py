@@ -141,6 +141,54 @@ class DistributionWarningTests(unittest.TestCase):
         self.assertTrue(res["warning"])
 
 
+class DistributionWarningFunctionTests(unittest.TestCase):
+    """The pure `distribution_warning` the selection-layer tier guard consults —
+    one source of truth shared with assess_smart_money."""
+
+    def test_weak_delivery_fires_with_reason(self):
+        dw = SM.distribution_warning({}, _adv(latest_pct=25.0, level="weak"))
+        self.assertTrue(dw["warning"])
+        self.assertTrue(any("churn" in r for r in dw["reasons"]))
+
+    def test_distribution_day_cluster_fires(self):
+        dw = SM.distribution_warning({"dist_day_count_15": 3}, None)
+        self.assertTrue(dw["warning"])
+        self.assertTrue(any("distribution days" in r for r in dw["reasons"]))
+
+    def test_hemorrhaging_fires(self):
+        dw = SM.distribution_warning({"obv_flow_inflection": "hemorrhaging"}, None)
+        self.assertTrue(dw["warning"])
+
+    def test_negative_obv_override_fires(self):
+        dw = SM.distribution_warning({}, None, obv90=-8.0)
+        self.assertTrue(dw["warning"])
+
+    def test_below_threshold_dist_days_do_not_fire(self):
+        dw = SM.distribution_warning({"dist_day_count_15": 2}, None)
+        self.assertFalse(dw["warning"])
+        self.assertEqual(dw["reasons"], [])
+
+    def test_fail_open_on_empty(self):
+        dw = SM.distribution_warning({}, None)
+        self.assertFalse(dw["warning"])
+        self.assertEqual(dw["reasons"], [])
+
+    def test_weak_delivery_ignored_when_unavailable(self):
+        # No delivery on disk -> the delivery-led trigger must not fire.
+        dw = SM.distribution_warning({}, {"available": False, "level": "weak",
+                                          "latest_pct": 20.0})
+        self.assertFalse(dw["warning"])
+
+    def test_matches_assess_smart_money_warning_flag(self):
+        # The refactor must keep assess_smart_money's warning byte-identical to
+        # the standalone function on the same inputs.
+        feat = {"dist_day_count_15": 4, "obv_flow_inflection": "hemorrhaging"}
+        adv = _adv(latest_pct=22.0, level="weak")
+        full = SM.assess_smart_money(feat, adv, price_change_pct=0.0, obv90=3.0)
+        pure = SM.distribution_warning(feat, adv, obv90=3.0)
+        self.assertEqual(full["warning"], pure["warning"])
+
+
 class ContractTests(unittest.TestCase):
     def test_confirmation_bounded_0_1(self):
         res = SM.assess_smart_money(

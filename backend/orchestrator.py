@@ -268,6 +268,51 @@ def _regime_halt_enabled() -> bool:
     return os.environ.get("STOCKYA_REGIME_HALT", "0") == "1"
 
 
+def _distribution_tier_guard_enabled() -> bool:
+    """Whether an honest distribution warning demotes a CONFIRMED pick to watch.
+
+    Owner ask (2026-09-07): the picker mostly surfaces coils inside consolidation,
+    and the trap is a base that is quietly *distributing* rather than accumulating.
+    The system already computes that honest warning (backend/smart_money.py) but
+    quarantines it in the monitoring layer. This guard promotes the SAME warning
+    to the one place it changes what the user sees: a `selection_tier == confirmed`
+    pick carrying a distribution warning is held to `lead_watch` — it stays fully
+    visible and ranked (never blank), the UI just never badges it "enter today".
+
+    On by default; STOCKYA_DISTRIBUTION_TIER_GUARD=0 fully restores the prior
+    behaviour (warning stays monitoring-only, tier untouched). Nothing here changes
+    the composite score, the rank order, sizing, or exits — only the confidence
+    LABEL, and only ever downward (confirmed -> lead_watch, never the reverse).
+    """
+    return os.environ.get("STOCKYA_DISTRIBUTION_TIER_GUARD", "1") != "0"
+
+
+def _pick_distribution_warning(res: PipelineResult, delivery) -> dict:
+    """Consult the shared VPA distribution warning for a SELECTED pick.
+
+    Assembles only the warning's inputs from the pick's own stage features
+    (VD: OBV-flow inflection; DV: 15-session distribution-day count) plus the
+    delivery advisory just attached in Phase 3, then defers to the single source
+    of truth `smart_money.distribution_warning`. Fail-open: any missing stage or
+    feature simply omits that trigger. (OBV-90d<0 is already an [LTV] hard gate,
+    so it can't reach here — the load-bearing triggers are the distribution-day
+    cluster, OBV hemorrhaging, and weak/churn delivery.)
+    """
+    from .smart_money import distribution_warning
+
+    stages = getattr(res, "stage_results", None) or {}
+
+    def _feat(stage_id: str, key: str):
+        st = stages.get(stage_id)
+        return (getattr(st, "features", None) or {}).get(key) if st else None
+
+    feat = {
+        "dist_day_count_15": _feat("DV", "dist_day_count_15"),
+        "obv_flow_inflection": _feat("VD", "obv_flow_inflection"),
+    }
+    return distribution_warning(feat, delivery)
+
+
 def run_universe(
     today_iso: Optional[str] = None,
     top_n: int = DEFAULT_TOP_N,
@@ -519,6 +564,43 @@ def run_universe(
                 payload["delivery"] = delivery_advisory(res.symbol)
             except Exception:
                 payload["delivery"] = None
+            # Distribution-risk tier guard — the ONE place the honest VPA
+            # distribution warning is allowed to change what the user acts on
+            # (see _distribution_tier_guard_enabled). A confirmed coil that is
+            # actually distributing is demoted to a watch-grade lead: it keeps
+            # its rank and stays visible, but the UI never stamps it enter-today.
+            # Runs here, after delivery is attached, so the weak/churn-delivery
+            # trigger participates. Label-only, downward-only, and reversible.
+            try:
+                if (
+                    _distribution_tier_guard_enabled()
+                    and payload.get("selection_tier") == "confirmed"
+                ):
+                    _dw = _pick_distribution_warning(res, payload.get("delivery"))
+                    if _dw.get("warning"):
+                        reasons = _dw.get("reasons") or []
+                        note = (
+                            "Held to watch-grade — distribution risk while coiling: "
+                            + "; ".join(reasons)
+                            + ". Kept visible for monitoring; not an enter-today "
+                            "confirmation."
+                        )
+                        payload["selection_tier"] = "lead_watch"
+                        payload["lead_note"] = note
+                        if isinstance(payload.get("confirmation"), dict):
+                            payload["confirmation"]["selection_tier"] = "lead_watch"
+                        comps = res.confirmation_components or {}
+                        comps["selection_tier"] = "lead_watch"
+                        comps["tier_downgrade"] = "distribution_warning"
+                        comps["tier_downgrade_reason"] = reasons
+                        comps.setdefault("lead_note", note)
+                        res.confirmation_components = comps
+                        log.info(
+                            "    tier-guard: %s confirmed -> lead_watch (%s)",
+                            res.symbol, "; ".join(reasons),
+                        )
+            except Exception:
+                log.exception("distribution tier guard failed for %s", res.symbol)
             # Institutional-flow INTEREST — bulk deals + delivery %, SCORING-NEUTRAL.
             # A display-only indicator (does NOT touch selection or any score):
             # flags picks worth a closer look and drives presentation_rank below.

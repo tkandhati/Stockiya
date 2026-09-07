@@ -33,18 +33,31 @@ What it does
 
 Env knobs (safe defaults; unset == default)
 --------------------------------------------
-  STOCKYA_YF_MIN_INTERVAL   seconds between dispatched calls   (default 2.0)
+  STOCKYA_YF_MIN_INTERVAL   base seconds between dispatched    (default 2.0)
+                            calls (the adaptive floor below)
   STOCKYA_YF_JITTER         max extra random seconds per call  (default 0.5)
   STOCKYA_YF_MAX_RETRIES    attempts per call                  (default 5)
   STOCKYA_YF_BACKOFF_BASE   base backoff s, doubles each retry (default 1.0)
   STOCKYA_YF_BACKOFF_MAX    cap on one backoff sleep           (default 60)
   STOCKYA_YF_429_SLEEP      extra sleep after a detected 429   (default 20)
+  STOCKYA_YF_ADAPTIVE       AIMD self-tuning of the interval   (default on)
+  STOCKYA_YF_INTERVAL_STEP  seconds added to the interval per  (default 1.0)
+                            429 (additive increase)
+  STOCKYA_YF_INTERVAL_MAX   ceiling on the adaptive interval   (default 30)
+  STOCKYA_YF_DECAY_AFTER    clean calls before the interval    (default 25)
+                            eases back down
+  STOCKYA_YF_DECAY_STEP     seconds shaved off per decay tick  (default 0.5)
   STOCKYA_YF_CACHE          "1" on-disk history cache          (default on)
   STOCKYA_YF_CACHE_TTL      history cache TTL seconds          (default 21600)
   STOCKYA_YF_CACHE_KEEP_DAYS prune cache files older than N d  (default 5)
   STOCKYA_YF_IMPERSONATE    use curl_cffi session when present (default on)
-  STOCKYA_YF_SKIP_INFO      skip the heavy .info call, use     (default off)
-                            fast_info + sector map instead
+  STOCKYA_YF_SKIP_INFO      skip the heavy .info call, use     (default ON)
+                            fast_info + sector map instead. ON
+                            by default: .info (quoteSummary) is
+                            Yahoo's most-throttled endpoint and
+                            the #1 429 source on a full-universe
+                            run. Set =0 to restore .info labels
+                            (longName/sector/industry).
 
 Nothing here raises: a fully offline / dependency-less environment still works
 — it just falls back to plain yfinance with the throttle + retry applied. The
@@ -95,16 +108,70 @@ def _envb(name: str, default: bool) -> bool:
 
 
 def skip_info() -> bool:
-    """True => snapshot() uses fast_info instead of the heavy .info call."""
-    return _envb("STOCKYA_YF_SKIP_INFO", False)
+    """True => snapshot() uses fast_info instead of the heavy .info call.
+
+    ON by default: the yfinance ``.info`` call hits Yahoo's ``quoteSummary``
+    endpoint, which is throttled far harder than quote/history and is the
+    single biggest 429 source on a ~750-ticker run (one heavy call per ticker).
+    fast_info covers every NUMERIC field snapshot needs; only the display
+    labels (longName/sector/industry) degrade to None on the Yahoo path — and
+    sector is already supplied from config/sector_map.json elsewhere. Set
+    STOCKYA_YF_SKIP_INFO=0 to restore the old behaviour.
+    """
+    return _envb("STOCKYA_YF_SKIP_INFO", True)
 
 
 # --------------------------------------------------------------------------- #
 # Global cross-thread throttle + shared cooldown
 # --------------------------------------------------------------------------- #
 _throttle_lock = threading.Lock()
-_last_call = 0.0        # time.monotonic() when the previous call was dispatched
-_cooldown_until = 0.0   # time.monotonic() before which NO thread may dispatch
+_last_call = 0.0             # time.monotonic() when the previous call was dispatched
+_cooldown_until = 0.0        # time.monotonic() before which NO thread may dispatch
+_interval_penalty = 0.0      # adaptive: seconds ADDED to the base dispatch interval
+_success_since_penalty = 0   # consecutive clean calls since the penalty last moved
+
+
+def _note_rate_limited() -> None:
+    """Additive-increase step of the adaptive throttle: a 429 was just seen.
+
+    Yahoo's tolerated request rate is unpublished and drifts with load, so we
+    LEARN it instead of guessing a fixed interval. Every rate-limit event
+    permanently (for this process) widens the gap between dispatched calls by
+    ``STOCKYA_YF_INTERVAL_STEP`` seconds, on TOP of the one-shot fleet cooldown
+    that ``_register_cooldown`` already applies. Paired with the slow decay in
+    ``_note_success`` this is an AIMD controller (like TCP congestion control):
+    it climbs to whatever spacing Yahoo will accept without 429s and settles
+    there — "adjust according to Yahoo's rate limit", automatically.
+    """
+    global _interval_penalty, _success_since_penalty
+    if not _envb("STOCKYA_YF_ADAPTIVE", True):
+        return
+    step = max(0.0, _envf("STOCKYA_YF_INTERVAL_STEP", 1.0))
+    cap = max(0.0, _envf("STOCKYA_YF_INTERVAL_MAX", 30.0))
+    base = max(0.0, _envf("STOCKYA_YF_MIN_INTERVAL", 2.0))
+    with _throttle_lock:
+        _interval_penalty = min(_interval_penalty + step, max(0.0, cap - base))
+        _success_since_penalty = 0
+
+
+def _note_success() -> None:
+    """Multiplicative-ish (slow) decrease step: a call just returned cleanly.
+
+    The interval only eases after ``STOCKYA_YF_DECAY_AFTER`` consecutive clean
+    calls, and then only by ``STOCKYA_YF_DECAY_STEP`` seconds — deliberately far
+    slower than the increase, so one lucky success can't undo a hard-won backoff
+    and the controller stays comfortably below Yahoo's cliff.
+    """
+    global _interval_penalty, _success_since_penalty
+    if not _envb("STOCKYA_YF_ADAPTIVE", True) or _interval_penalty <= 0.0:
+        return
+    after = max(1, _envi("STOCKYA_YF_DECAY_AFTER", 25))
+    dstep = max(0.0, _envf("STOCKYA_YF_DECAY_STEP", 0.5))
+    with _throttle_lock:
+        _success_since_penalty += 1
+        if _success_since_penalty >= after:
+            _interval_penalty = max(0.0, _interval_penalty - dstep)
+            _success_since_penalty = 0
 
 
 def _register_cooldown(seconds: float) -> None:
@@ -133,11 +200,14 @@ def _throttle() -> None:
     dispatch is paced.
     """
     global _last_call
-    min_interval = max(0.0, _envf("STOCKYA_YF_MIN_INTERVAL", 2.0))
+    base_interval = max(0.0, _envf("STOCKYA_YF_MIN_INTERVAL", 2.0))
     jitter = max(0.0, _envf("STOCKYA_YF_JITTER", 0.5))
     while True:
         with _throttle_lock:
             now = time.monotonic()
+            # Effective spacing = static floor + whatever the adaptive
+            # controller has learned it needs (see _note_rate_limited).
+            min_interval = base_interval + _interval_penalty
             target = max(_last_call + min_interval, _cooldown_until)
             wait = target - now
             if wait <= 0:
@@ -188,20 +258,27 @@ def call(fn: Callable[..., Any], *args: Any, _label: str = "yf", **kwargs: Any) 
     for i in range(attempts):
         _throttle()
         try:
-            return fn(*args, **kwargs)
+            result = fn(*args, **kwargs)
+            _note_success()  # adaptive: a clean call nudges the interval back down
+            return result
         except Exception as e:  # noqa: BLE001
             last = e
             if i >= attempts - 1:
                 break
             backoff = min(cap, base * (2 ** i)) if base else 0.0
             if _is_rate_limited(e):
+                # Adaptive: permanently widen the fleet dispatch interval so the
+                # REST of this run stops hammering Yahoo, not just this retry.
+                _note_rate_limited()
                 ra = _retry_after(e)
                 sleep_s = ra if (ra and ra > 0) else backoff + extra_429
                 # Freeze the whole fleet, not just this thread — Yahoo limits by IP.
                 _register_cooldown(sleep_s)
                 log.warning(
-                    "%s rate-limited (attempt %d/%d) — fleet cooldown %.1fs%s",
+                    "%s rate-limited (attempt %d/%d) — fleet cooldown %.1fs, "
+                    "interval now %.1fs%s",
                     _label, i + 1, attempts, sleep_s,
+                    max(0.0, _envf("STOCKYA_YF_MIN_INTERVAL", 2.0)) + _interval_penalty,
                     "" if _session() is not None else "  [curl_cffi NOT installed — see logs]",
                 )
             else:
@@ -436,10 +513,14 @@ def selftest(symbol: str = "AAPL", with_info: bool = False) -> dict:
         "STOCKYA_YF_MIN_INTERVAL": _envf("STOCKYA_YF_MIN_INTERVAL", 2.0),
         "STOCKYA_YF_MAX_RETRIES": _envi("STOCKYA_YF_MAX_RETRIES", 5),
         "STOCKYA_YF_429_SLEEP": _envf("STOCKYA_YF_429_SLEEP", 20.0),
+        "STOCKYA_YF_ADAPTIVE": _envb("STOCKYA_YF_ADAPTIVE", True),
+        "STOCKYA_YF_INTERVAL_STEP": _envf("STOCKYA_YF_INTERVAL_STEP", 1.0),
+        "STOCKYA_YF_INTERVAL_MAX": _envf("STOCKYA_YF_INTERVAL_MAX", 30.0),
         "STOCKYA_YF_CACHE": _envb("STOCKYA_YF_CACHE", True),
         "STOCKYA_YF_IMPERSONATE": _envb("STOCKYA_YF_IMPERSONATE", True),
-        "STOCKYA_YF_SKIP_INFO": _envb("STOCKYA_YF_SKIP_INFO", False),
+        "STOCKYA_YF_SKIP_INFO": _envb("STOCKYA_YF_SKIP_INFO", True),
     }
+    report["adaptive_interval_penalty_now"] = round(_interval_penalty, 2)
 
     # One real fetch (cache bypassed so it's a true network probe).
     prev_cache = os.environ.get("STOCKYA_YF_CACHE")

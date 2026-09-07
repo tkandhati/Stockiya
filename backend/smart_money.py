@@ -160,6 +160,46 @@ def _deliv_level_strength(latest_pct) -> float:
     return _clamp01((latest_pct - WEAK_DELIV_PCT) / span) if span > 0 else 0.0
 
 
+def distribution_warning(
+    feat: dict | None,
+    delivery_adv: dict | None,
+    *,
+    obv90=None,
+) -> dict:
+    """The honest VPA distribution warning, in isolation — `{"warning", "reasons"}`.
+
+    Extracted from `assess_smart_money` so the SELECTION layer (the tier guard in
+    the orchestrator) can consult the SAME warning without re-implementing its
+    thresholds — one source of truth for "this tape is distributing". Fires when
+    delivery is churn (weak level), OR >=DIST_DAY_WARN distribution days in 15, OR
+    OBV flow is hemorrhaging, OR OBV-90d is negative.
+
+    Pure and fail-open: absent inputs simply don't contribute a reason (an empty
+    reasons list -> warning False), delivery-led reasons require the advisory's
+    `available` flag, so with no delivery on disk this is byte-identical to the
+    non-delivery path.
+    """
+    feat = feat or {}
+    adv = delivery_adv or {}
+    infl = feat.get("obv_flow_inflection")
+    dist = _to_float(feat.get("dist_day_count_15"))
+    obv = obv90 if _is_num(obv90) else _to_float(feat.get("obv_90d_slope_pct"))
+    deliv_ok = bool(adv.get("available"))
+    latest_pct = _to_float(adv.get("latest_pct"))
+    level = adv.get("level")
+
+    reasons: list[str] = []
+    if deliv_ok and level == "weak" and _is_num(latest_pct):
+        reasons.append(f"delivery {latest_pct:.0f}% — mostly intraday churn")
+    if _is_num(dist) and dist >= DIST_DAY_WARN:
+        reasons.append(f"{int(dist)} distribution days in 15 sessions")
+    if infl == "hemorrhaging":
+        reasons.append("OBV flow hemorrhaging (10d & 30d both negative)")
+    if _is_num(obv) and obv < 0:
+        reasons.append(f"OBV-90d negative ({obv:+.0f}%)")
+    return {"warning": bool(reasons), "reasons": reasons}
+
+
 def assess_smart_money(
     feat: dict,
     delivery_adv: dict,
@@ -193,10 +233,6 @@ def assess_smart_money(
     vol_5_50 = _to_float(feat.get("vol_ratio_5_50"))
     dryup = _to_float(feat.get("dry_up_streak_days_p25"))
     ud = ud90 if _is_num(ud90) else _to_float(feat.get("up_down_vol_ratio_90d"))
-    infl = feat.get("obv_flow_inflection")
-    dist = _to_float(feat.get("dist_day_count_15"))
-    obv = obv90 if _is_num(obv90) else _to_float(feat.get("obv_90d_slope_pct"))
-
     deliv_ok = bool(adv.get("available"))
     latest_pct = _to_float(adv.get("latest_pct"))
     level = adv.get("level")
@@ -205,16 +241,11 @@ def assess_smart_money(
     drift = adv.get("accum_drift")
 
     # --- 1. Distribution warning (FIRST — it suppresses every bullish read) ---
-    warn_reasons: list[str] = []
-    if deliv_ok and level == "weak" and _is_num(latest_pct):
-        warn_reasons.append(f"delivery {latest_pct:.0f}% — mostly intraday churn")
-    if _is_num(dist) and dist >= DIST_DAY_WARN:
-        warn_reasons.append(f"{int(dist)} distribution days in 15 sessions")
-    if infl == "hemorrhaging":
-        warn_reasons.append("OBV flow hemorrhaging (10d & 30d both negative)")
-    if _is_num(obv) and obv < 0:
-        warn_reasons.append(f"OBV-90d negative ({obv:+.0f}%)")
-    warning = bool(warn_reasons)
+    # Delegated to the shared, pure `distribution_warning` so the selection-layer
+    # tier guard reads the SAME thresholds (one source of truth).
+    _warn = distribution_warning(feat, adv, obv90=obv90)
+    warn_reasons = _warn["reasons"]
+    warning = _warn["warning"]
     if warning:
         signals.append({
             "key": "distribution_warning",

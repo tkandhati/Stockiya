@@ -1,5 +1,53 @@
 # Changelog
 
+## 2026-09-07 — Distribution-risk tier guard (consolidation-trap defence, label-only)
+
+Owner ask: *"identify real accumulation, avoid traps entering in consolidation — I'm
+only notified in consolidation phases most of the time."* The picker mostly surfaces
+coils **inside** consolidation, and the trap is a base that is quietly *distributing*
+rather than accumulating. The system already computes that honest signal — the VPA
+**distribution warning** (`backend/smart_money.py`: ≥3 distribution days in 15, OBV
+hemorrhaging, or weak/churn delivery) — but it was **quarantined in the monitoring
+layer**: it forced `smart_money.confirmation=0` and blocked the coil headline, yet had
+**zero** effect on whether a name was stamped `selection_tier="confirmed"` (enter-today).
+This change promotes the same warning to the one place it changes what the user acts on.
+
+Offline-verified: full backend unittest package **283/283**; `python -m compileall
+backend middleware` clean. Nothing runs against the network.
+
+**1. Shared, single-source-of-truth warning** (`backend/smart_money.py`). Extracted the
+distribution warning into a pure `distribution_warning(feat, delivery, obv90=)` →
+`{"warning", "reasons"}`. `assess_smart_money` now delegates to it (behaviour-identical —
+covered by a refactor-equivalence test), so the selection layer consults the **exact same
+thresholds** and never re-implements them. Fail-open: absent inputs contribute no reason;
+delivery-led reasons require the advisory's `available` flag.
+
+**2. Tier guard** (`backend/orchestrator.py`, Phase 3, after the delivery advisory
+attaches). A pick with `selection_tier == "confirmed"` that trips the warning is held to
+`"lead_watch"`: it keeps its rank and stays fully visible (never blank), the UI just never
+badges it enter-today. A `lead_note` explains why (feeds the existing "⏳ Lead · Watch"
+tooltip); `res.confirmation_components` records `tier_downgrade` + `tier_downgrade_reason`
+for the trace. Runs here (not in the pure ranker) so the weak/churn-delivery trigger —
+which needs the delivery advisory attached in the orchestrator I/O layer — participates.
+Load-bearing triggers: `dist_day_count_15 ≥ 3` ([DV] stage), `obv_flow_inflection ==
+"hemorrhaging"` ([VD] stage), weak delivery ([DELIV] advisory). OBV-90d<0 is moot here —
+already an `[LTV]` hard gate, so it can't reach a survivor.
+
+**Firewall note:** this is **label-only and downward-only** (confirmed → lead_watch, never
+the reverse). The composite score, rank order, position sizing, and exits are untouched —
+so the monitoring-only firewall still holds for scoring/rank/sizing. This is a deliberate,
+owner-sanctioned exception limited to the confidence *label*. Expected effect: on
+consolidation-heavy days the confirmed list may shrink as distributing coils drop to watch
+— that is the intent, and lead_watch still shows content (see the never-blank principle).
+
+**Reversible:** `STOCKYA_DISTRIBUTION_TIER_GUARD=0` restores the prior behaviour exactly
+(warning stays monitoring-only, tier untouched). Kill-switch helper
+`orchestrator._distribution_tier_guard_enabled()`.
+
+New tests: `backend/tests/test_smart_money.py::DistributionWarningFunctionTests` (8 cases:
+each trigger, below-threshold no-fire, fail-open, delivery-unavailable, and
+assess-smart-money equivalence).
+
 ## 2026-09-02 — Nifty Total Market volume universe + two distribution-trap guards
 
 Owner ask: *"save me from distribution traps — most of the stocks suggested are in

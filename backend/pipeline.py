@@ -413,9 +413,16 @@ def run_pipeline(
     )
 
     # Clean any previous trace for this (date, symbol) so a re-run is idempotent.
+    # Best-effort only: do NOT check-then-act (a concurrent re-run of the same
+    # symbol can delete the file between exists() and unlink(), and on Windows
+    # the file may be briefly locked by the indexer/AV or a lingering append
+    # handle). A stale trace left behind is harmless — cleanup must never abort
+    # the run, which would take down the whole universe future in orchestrator.
     p = _trace_path(today_iso, symbol)
-    if p.exists():
-        p.unlink()
+    try:
+        p.unlink(missing_ok=True)
+    except OSError as e:
+        log.warning("could not clean previous trace %s: %s", p, e)
 
     import sys
     passed_gates = True
