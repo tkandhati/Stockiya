@@ -29,6 +29,18 @@ const CATEGORY_META: Record<string, { label: string; badge: string }> = {
     label: 'Timing unclear',
     badge: 'bg-slate-100 text-slate-700',
   },
+  data_integrity: {
+    label: 'Data integrity — implausible readings',
+    badge: 'bg-rose-100 text-rose-900',
+  },
+  setup_unconfirmed: {
+    label: 'Setup forming — wait for trigger',
+    badge: 'bg-amber-100 text-amber-900',
+  },
+  lead_watch: {
+    label: 'Watch-grade lead',
+    badge: 'bg-sky-100 text-sky-900',
+  },
 }
 
 export function NotActionablePanel({ rows }: { rows: NotActionableRow[] }) {

@@ -88,6 +88,10 @@ _READINESS_BADGE: dict[str, tuple[str, str]] = {
     "timing_unclear": ("Watch · timing unclear", "watch"),
     "stale_base": ("Watch · stale base", "watch"),
     "distribution": ("Avoid · distribution", "avoid"),
+    # Categories emitted by the sequential BUY-readiness verdict (buy_readiness.py).
+    "data_integrity": ("Avoid · data check", "avoid"),
+    "setup_unconfirmed": ("Watch · wait for trigger", "watch"),
+    "lead_watch": ("Watch · lead", "watch"),
 }
 
 
@@ -182,6 +186,25 @@ def entry_readiness(payload: dict) -> Optional[dict]:
     """
     if not isinstance(payload, dict):
         return None
+
+    # Sequential BUY-readiness verdict takes precedence (owner ask, 2026-09-08):
+    # it assembles Structure -> Money-flow -> Trigger in order, so it catches a
+    # DISTRIBUTING or unconfirmed pick whose entry_timing still reads early/mid
+    # (the parallel-scoring blind spot). `avoid`/`watch` route out of the buy list
+    # here; `buy`/absent falls through to the legacy timing + stale-base checks
+    # (unchanged). See backend/buy_readiness.py. Reversible via STOCKYA_BUY_READINESS=0
+    # (then the verdict is absent and this block is a no-op).
+    verdict = payload.get("buy_readiness") or {}
+    state = verdict.get("state")
+    if state in ("avoid", "watch"):
+        return {
+            "category": verdict.get("category")
+            or ("distribution" if state == "avoid" else "setup_unconfirmed"),
+            "entry_timing": (payload.get("confirmation") or {}).get("entry_timing"),
+            "buy_state": state,
+            "buy_layers": verdict.get("layers"),
+            "why": verdict.get("why"),
+        }
 
     # A recurring-but-going-nowhere base is not a fresh entry even if its timing
     # still reads early/mid — check it before the timing verdict.

@@ -39,6 +39,23 @@ export function PickCard({ pick }: { pick: Pick }) {
   const upside = pick.upside_pct ?? (entry > 0 ? (t2 / entry - 1) * 100 : 0)
   const downside =
     pick.downside_pct ?? (entry > 0 ? (stop / entry - 1) * 100 : 0)
+  // Actual target percentages (the backend ladder is ATR-adaptive/R-based, so the
+  // old hardcoded "+8% / +16%" labels were wrong for volatile names).
+  const t1Pct = entry > 0 ? (t1 / entry - 1) * 100 : 8
+  const t2Pct = entry > 0 ? (t2 / entry - 1) * 100 : 16
+
+  // Sequential BUY-readiness verdict decides whether this card may present an
+  // ACTIVE buy. Only state === 'buy' is actionable; 'watch'/'avoid' show the
+  // levels as reference-only. Fall back to the readiness badge / tier when the
+  // verdict is absent (older payloads / STOCKYA_BUY_READINESS=0).
+  const buyState = pick.buy_readiness?.state
+  const actionable = buyState
+    ? buyState === 'buy'
+    : pick.readiness
+    ? pick.readiness.enterable !== false
+    : pick.selection_tier !== 'lead_watch'
+  const verdictWhy =
+    pick.buy_readiness?.why || pick.readiness?.why || pick.lead_note || ''
 
   return (
     <Link
@@ -387,9 +404,62 @@ export function PickCard({ pick }: { pick: Pick }) {
         </div>
       )}
 
+      {/* 3.5 BUY-readiness verdict — when this is NOT an actionable buy, say so
+             loudly and reframe the levels below as reference-only. This is the
+             fix for premature "Best Buy" cards: a distributing / unconfirmed /
+             watch-grade pick never presents a live entry. */}
+      {!actionable && (
+        <div
+          className={`mt-4 rounded-lg border px-3 py-2 text-xs ${
+            buyState === 'avoid'
+              ? 'border-rose-300 bg-rose-50 text-rose-900'
+              : 'border-amber-300 bg-amber-50 text-amber-900'
+          }`}
+        >
+          <div className="flex items-center gap-1.5 font-semibold uppercase tracking-wide">
+            {buyState === 'avoid' ? (
+              <>⛔ Not a buy — avoid today</>
+            ) : (
+              <>⏳ Not a buy yet — watch / wait for the trigger</>
+            )}
+          </div>
+          {verdictWhy && (
+            <div className="mt-0.5 leading-snug">{verdictWhy}</div>
+          )}
+          {pick.buy_readiness?.layers && (
+            <div className="mt-1.5 flex flex-wrap gap-1.5">
+              {(['structure', 'money_flow', 'trigger'] as const).map((k) => {
+                const L = pick.buy_readiness!.layers[k]
+                const label = k === 'money_flow' ? 'money flow' : k
+                return (
+                  <span
+                    key={k}
+                    className={`rounded px-1.5 py-0.5 font-medium ${
+                      L?.pass
+                        ? 'bg-emerald-100 text-emerald-800'
+                        : 'bg-rose-100 text-rose-800'
+                    }`}
+                    title={(L?.notes || []).join(' · ')}
+                  >
+                    {L?.pass ? '✓' : '✕'} {label}
+                  </span>
+                )
+              })}
+            </div>
+          )}
+          <div className="mt-1 opacity-80">
+            Levels below are reference only — not an active buy recommendation.
+          </div>
+        </div>
+      )}
+
       {/* 4. Price plan grid */}
       <div className="mt-4 grid grid-cols-2 gap-x-4 gap-y-3 rounded-xl border border-slate-200 bg-slate-50/60 p-4 text-sm md:grid-cols-5">
-        <Cell label="Entry" value={fmtINR(entry)} tone="emerald" />
+        <Cell
+          label={actionable ? 'Entry' : 'Ref. price'}
+          value={fmtINR(entry)}
+          tone={actionable ? 'emerald' : 'slate'}
+        />
         <Cell
           label="Stop"
           value={fmtINR(stop)}
@@ -397,13 +467,13 @@ export function PickCard({ pick }: { pick: Pick }) {
           tone="rose"
         />
         <Cell
-          label="T1 (+8%)"
+          label={`T1 (${t1Pct >= 0 ? '+' : ''}${t1Pct.toFixed(0)}%)`}
           value={fmtINR(t1)}
           extra="sell 50%"
           tone="amber"
         />
         <Cell
-          label="T2 (+16%)"
+          label={`T2 (${t2Pct >= 0 ? '+' : ''}${t2Pct.toFixed(0)}%)`}
           value={fmtINR(t2)}
           extra={fmtPct(upside)}
           tone="indigo"

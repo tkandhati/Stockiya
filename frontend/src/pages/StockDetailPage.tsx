@@ -111,10 +111,40 @@ export function StockDetailPage() {
                 <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
                 Today&apos;s recommendation
               </div>
+              {/* Sequential BUY-readiness verdict — when this is not an actionable
+                  buy, the prices below are reference-only, not a live entry. */}
+              {data.pick_today.buy_readiness &&
+                data.pick_today.buy_readiness.state !== 'buy' && (
+                  <div
+                    className={`mt-2 rounded-lg border px-3 py-2 text-xs ${
+                      data.pick_today.buy_readiness.state === 'avoid'
+                        ? 'border-rose-300 bg-rose-50 text-rose-900'
+                        : 'border-amber-300 bg-amber-50 text-amber-900'
+                    }`}
+                  >
+                    <div className="font-semibold uppercase tracking-wide">
+                      {data.pick_today.buy_readiness.state === 'avoid'
+                        ? '⛔ Not a buy — avoid today'
+                        : '⏳ Not a buy yet — watch / wait for the trigger'}
+                    </div>
+                    <div className="mt-0.5 leading-snug">
+                      {data.pick_today.buy_readiness.why}
+                    </div>
+                    <div className="mt-1 opacity-80">
+                      The prices below are reference only — not an active buy
+                      recommendation.
+                    </div>
+                  </div>
+                )}
               <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-4">
                 <RecStat
                   icon={<ShoppingCart className="h-4 w-4" />}
-                  label="Best buy at"
+                  label={
+                    data.pick_today.buy_readiness &&
+                    data.pick_today.buy_readiness.state !== 'buy'
+                      ? 'Ref. / trigger price'
+                      : 'Best buy at'
+                  }
                   value={fmtINR(data.pick_today.best_buy_at)}
                 />
                 <RecStat

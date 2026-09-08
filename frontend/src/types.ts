@@ -260,7 +260,29 @@ export interface Pick {
     stage?: string | null
     reason: string
   }
+  // Sequential BUY-readiness verdict (backend/buy_readiness.py, 2026-09-08).
+  // Structure -> Money-flow -> Trigger assembled IN ORDER (not averaged), plus a
+  // data-integrity gate. `state` drives whether the card presents an actionable
+  // buy: only 'buy' shows a live entry; 'watch'/'avoid' are reference-only.
+  buy_readiness?: BuyReadiness | null
   composite_score?: number
+}
+
+export interface BuyReadinessLayer {
+  pass: boolean
+  notes: string[]
+}
+
+export interface BuyReadiness {
+  state: 'buy' | 'watch' | 'avoid'
+  category: string
+  why: string
+  layers: {
+    data_integrity: BuyReadinessLayer
+    structure: BuyReadinessLayer
+    money_flow: BuyReadinessLayer
+    trigger: BuyReadinessLayer
+  }
 }
 
 // --------------------------------------------------------------------------
@@ -525,11 +547,14 @@ export interface DeliveryAnalysisRow {
 
 // Why a pick was moved out of the main (enter-today) buy list.
 export interface NotActionableReason {
-  category: string          // late_entry | extended_breakout | distribution | timing_unclear
+  category: string          // late_entry | extended_breakout | distribution | timing_unclear | data_integrity | setup_unconfirmed | lead_watch
   entry_timing: string
   broke_out?: boolean
   weinstein_stage?: string | null
   why: string
+  // Present when the sequential BUY-readiness verdict routed this pick out.
+  buy_state?: 'watch' | 'avoid'
+  buy_layers?: BuyReadiness['layers']
 }
 
 export interface NotActionableRow {

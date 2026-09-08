@@ -1,5 +1,56 @@
 # Changelog
 
+## 2026-09-08 — Sequential BUY-readiness verdict (the "5-filter fortress")
+
+Owner ask after two premature "Best Buy" cards (Minda, CG Power): *"most of your
+recommendations are distributions — correct this, I'm at risk."* Root cause, correctly
+diagnosed by the outside review: the engine **scored its gates in parallel** and combined
+them into one composite S, so a strong STRUCTURE leg (tight base, rising long-OBV) could
+outvote a bearish TIMING/FLOW leg (no breakout, CMF/A-D distributing). A weighted average
+is the wrong detector when the legs are *preconditions*, not interchangeable evidence.
+
+New module `backend/buy_readiness.py` turns the parallel legs into a strict SEQUENCE and
+emits one honest verdict per pick. It recomputes nothing — it reads fields the pipeline
+already persisted:
+
+  - **Layer 0 Data integrity** — indicator values physically sane (CMF∈[-1,1], no NaN/inf,
+    OBV normalized slope not absurd, price>0). CG Power's OBV **+3123%** is a data error, not
+    a signal → `avoid`. Pure-technical only; NO fundamentals (PRINCIPLES §8).
+  - **Layer 1 Structure** — Weinstein Stage-2 (or durable early accumulation) AND not
+    already late / extended / Stage-4.
+  - **Layer 2 Money flow** — no active distribution: CMF-21d not ≤ −0.15, A/D-line not
+    ≤ −5%/30d, and no distribution contradiction attached upstream (reuses the 2026-09-07
+    thresholds — one source of truth).
+  - **Layer 3 Entry trigger** — the breakout actually fired today ([BR] passed).
+
+Verdict is **safety-first — BUY requires positive evidence on every layer; absence of
+evidence is `watch`, never `buy`**: `avoid` (integrity fail / distributing / late), `watch`
+(structure+flow clean but no trigger yet — a coil to monitor and buy ON the trigger, or a
+`lead_watch` pick), `buy` (all green AND tier confirmed).
+
+Wired in two places, both reversible via `STOCKYA_BUY_READINESS=0`:
+  1. `orchestrator.py` Phase 3 attaches `payload["buy_readiness"]` LAST, so it sees the
+     demoted `selection_tier` and every distribution contradiction.
+  2. `entry_readiness.py` consults the verdict FIRST — `avoid`/`watch` route the pick out of
+     the enter-today list into the awareness bin (and drive the `readiness` badge tone), so a
+     distributing coil whose `entry_timing` still reads early/mid is no longer called
+     enterable. This closes the parallel-scoring blind spot.
+
+Frontend: `PickCard` and `StockDetailPage` now gate the buy presentation on the verdict — a
+non-`buy` pick shows a prominent "Not a buy — avoid / wait for the trigger" banner with the
+per-layer ✓/✕ checklist, and the price grid is relabelled reference-only (Entry → Ref./
+trigger). Also fixed the hardcoded "+8% / +16%" target labels to reflect the actual
+ATR-adaptive R-ladder. `tsc --noEmit` clean.
+
+**Reconciliation with the early-accumulation thesis:** this is a **labelling** change, not a
+suppression — a clean coil is still SURFACED and tabled, it is just labelled "watch / wait
+for the trigger" instead of "Best Buy". Never-blank-page holds. Nothing changes the composite
+score, rank order, sizing, or exits.
+
+Offline-verified: full backend unittest package **301/301** (11 new in `test_buy_readiness.py`,
+incl. Minda-distributing→avoid and CG-Power-absurd-OBV→data-integrity-avoid); `compileall`
+clean; frontend `tsc --noEmit` clean. No network.
+
 ## 2026-09-07 — Money-flow (Chaikin CMF / A/D-line) distribution leg (extends the tier guard)
 
 Follow-up to the distribution-risk tier guard below, closing the specific blind spot an

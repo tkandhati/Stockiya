@@ -718,6 +718,21 @@ def run_universe(
             except Exception:
                 log.exception("build_reasoning failed for %s", res.symbol)
                 payload["reasoning"] = []
+            # Sequential BUY-readiness verdict (5-filter fortress) — assembled
+            # LAST so it sees the demoted selection_tier + every distribution
+            # contradiction attached above. Turns the parallel-scored legs into an
+            # ordered Structure -> Money-flow -> Trigger gate: only an all-green
+            # pick is `state="buy"`; a clean coil is `watch`; a distributing or
+            # extended one is `avoid`. Drives the entry-readiness router below
+            # (and the card's buy/no-buy presentation). Reversible via
+            # STOCKYA_BUY_READINESS=0. See backend/buy_readiness.py.
+            try:
+                from .buy_readiness import assess_buy_readiness
+                verdict = assess_buy_readiness(payload)
+                if verdict is not None:
+                    payload["buy_readiness"] = verdict
+            except Exception:
+                log.exception("assess_buy_readiness failed for %s", res.symbol)
             pick_payloads.append(payload)
         except Exception:
             log.exception("build_pick_payload failed for %s", res.symbol)
