@@ -1,5 +1,28 @@
 # Changelog
 
+## 2026-09-09 — Dedicated "Pre-Breakout" section on the picks page
+
+After the 2026-09-08 sequential BUY-readiness verdict, a clean coil is `watch`
+(structure + money flow green, breakout not fired) so only breakout-confirmed
+("matured") picks earn the buy badge. Owner ask: surface those coils in their own
+section rather than mixed into one grid.
+
+**Presentation-only, frontend-only. No re-scan, no gate/score/rank change, and
+NO yfinance/Yahoo calls — it reads only the `readiness` badge already stamped on
+each persisted pick.** `frontend/src/pages/PicksPage.tsx` now splits the single
+grid into three labelled sections, keyed on `readiness`:
+
+  - **Today's Buys** — breakout confirmed / enterable today (`tone === 'enter'`).
+  - **Pre-Breakout — watch for the trigger** — clean coils (`category`
+    `setup_unconfirmed` / `lead_watch`).
+  - **Not actionable today** — late / extended / distribution / unclear.
+
+On a day with no confirmed buy but live coils, an inline note ("No breakout
+confirmed today…") replaces the empty gap (never-blank rule). Legacy payloads
+with no `readiness` badge fall through as buys, so the look is unchanged there.
+Effective only with `STOCKYA_MAIN_SHOW_ALL` on (default); with the split view off
+the existing `not_actionable` panel is unchanged. Revert = revert the frontend diff.
+
 ## 2026-09-08 — Sequential BUY-readiness verdict (the "5-filter fortress")
 
 Owner ask after two premature "Best Buy" cards (Minda, CG Power): *"most of your

@@ -12,7 +12,7 @@ import { PickCard } from '../components/PickCard'
 import { DeliveryWeightedPicks } from '../components/DeliveryWeightedPicks'
 import { RegimeBanner } from '../components/RegimeBanner'
 import { StrategyTabs } from '../components/StrategyTabs'
-import type { PicksResponse } from '../types'
+import type { Pick, PicksResponse } from '../types'
 
 export function PicksPage() {
   const qc = useQueryClient()
@@ -26,6 +26,24 @@ export function PicksPage() {
     onSuccess: (resp: PicksResponse) => qc.setQueryData(['picks'], resp),
   })
 
+  // Presentation-only split of the single picks grid into three sections, keyed
+  // purely on the `readiness` badge the backend already stamped (no re-scan, no
+  // yfinance calls, no gate/score change). With STOCKYA_MAIN_SHOW_ALL on the
+  // main list carries every selected pick; here we group them:
+  //   • buys        — breakout confirmed / enterable today (the current process)
+  //   • preBreakout — clean coils (structure + money flow green, trigger pending)
+  //   • otherWatch  — late / extended / distribution / unclear (awareness only)
+  // Legacy payloads with no readiness badge fall through as buys (unchanged look).
+  const allPicks = data?.picks ?? []
+  const isBuy = (p: Pick) => !p.readiness || p.readiness.tone === 'enter'
+  const isPreBreakout = (p: Pick) =>
+    !isBuy(p) &&
+    (p.readiness?.category === 'setup_unconfirmed' ||
+      p.readiness?.category === 'lead_watch')
+  const buys = allPicks.filter(isBuy)
+  const preBreakout = allPicks.filter(isPreBreakout)
+  const otherWatch = allPicks.filter((p) => !isBuy(p) && !isPreBreakout(p))
+
   return (
     <div className="mx-auto max-w-6xl px-6 py-10">
       <StrategyTabs />
@@ -33,7 +51,7 @@ export function PicksPage() {
         <div>
           <h1 className="flex items-center gap-2 text-2xl font-bold text-slate-900">
             <Sparkles className="h-5 w-5 text-amber-500" />
-            Today&apos;s Picks{data && data.picks.length > 0 ? ` (${data.picks.length})` : ''}
+            Today&apos;s Picks{buys.length > 0 ? ` (${buys.length})` : ''}
           </h1>
           <p className="mt-1 text-sm text-slate-700">
             <span className="font-medium">Don&apos;t invent. Follow the institutions.
@@ -119,19 +137,72 @@ export function PicksPage() {
             </div>
           </div>
         )}
-        {data && data.picks.length > 0 && (
-          <div
-            className={`grid grid-cols-1 gap-5 ${
-              data.picks.length === 1
-                ? 'lg:grid-cols-1 max-w-2xl'
-                : data.picks.length === 2
-                ? 'lg:grid-cols-2'
-                : 'lg:grid-cols-3'
-            }`}
-          >
-            {data.picks.map((p) => (
-              <PickCard key={p.symbol} pick={p} />
-            ))}
+        {data && allPicks.length > 0 && (
+          <div className="space-y-10">
+            {/* Section 1 — confirmed buys (the current process): breakout fired,
+                enterable today. */}
+            {buys.length > 0 && (
+              <section>
+                <SectionHeading
+                  tone="emerald"
+                  title={`Today's Buys (${buys.length})`}
+                  subtitle="Breakout confirmed — enterable today."
+                />
+                <div className={`mt-4 grid grid-cols-1 gap-5 ${gridCols(buys.length)}`}>
+                  {buys.map((p) => (
+                    <PickCard key={p.symbol} pick={p} />
+                  ))}
+                </div>
+              </section>
+            )}
+
+            {/* No confirmed buy today but setups exist — say so, don't leave a
+                gap (never-blank rule). */}
+            {buys.length === 0 && (
+              <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+                <span className="font-semibold">No breakout confirmed today.</span>{' '}
+                <span className="opacity-90">
+                  The setups below are still pre-breakout — watch for the trigger,
+                  don&apos;t buy at market yet.
+                </span>
+              </div>
+            )}
+
+            {/* Section 2 (NEW) — pre-breakout: clean coils whose structure and
+                money flow are green but the breakout has NOT fired. Watch and buy
+                ON the trigger, not at market today. */}
+            {preBreakout.length > 0 && (
+              <section>
+                <SectionHeading
+                  tone="amber"
+                  title={`Pre-Breakout — watch for the trigger (${preBreakout.length})`}
+                  subtitle="Structure and money flow are clean, but the breakout hasn't fired. Wait for a close above the pivot on ≥1.5× volume — reference levels only, not an at-market buy."
+                />
+                <div className={`mt-4 grid grid-cols-1 gap-5 ${gridCols(preBreakout.length)}`}>
+                  {preBreakout.map((p) => (
+                    <PickCard key={p.symbol} pick={p} />
+                  ))}
+                </div>
+              </section>
+            )}
+
+            {/* Section 3 — surfaced but not actionable (late / extended /
+                distribution / unclear). Kept visible for awareness, clearly
+                separated from the buy list. */}
+            {otherWatch.length > 0 && (
+              <section>
+                <SectionHeading
+                  tone="slate"
+                  title={`Not actionable today (${otherWatch.length})`}
+                  subtitle="Surfaced by the scan but late / extended / distributing — awareness only, not a buy."
+                />
+                <div className={`mt-4 grid grid-cols-1 gap-5 ${gridCols(otherWatch.length)}`}>
+                  {otherWatch.map((p) => (
+                    <PickCard key={p.symbol} pick={p} />
+                  ))}
+                </div>
+              </section>
+            )}
           </div>
         )}
 
@@ -204,6 +275,41 @@ export function PicksPage() {
           Generated at <span className="font-mono">{data.generated_at}</span> IST
         </footer>
       )}
+    </div>
+  )
+}
+
+// Column count matches the old single-grid behaviour: 1 card = centered single
+// column, 2 = two columns, 3+ = three columns.
+function gridCols(n: number): string {
+  return n === 1
+    ? 'lg:grid-cols-1 max-w-2xl'
+    : n === 2
+    ? 'lg:grid-cols-2'
+    : 'lg:grid-cols-3'
+}
+
+function SectionHeading({
+  title,
+  subtitle,
+  tone,
+}: {
+  title: string
+  subtitle?: string
+  tone: 'emerald' | 'amber' | 'slate'
+}) {
+  const bar = {
+    emerald: 'bg-emerald-500',
+    amber: 'bg-amber-500',
+    slate: 'bg-slate-400',
+  }[tone]
+  return (
+    <div className="flex items-start gap-3">
+      <span className={`mt-1 h-5 w-1 flex-shrink-0 rounded-full ${bar}`} />
+      <div>
+        <h2 className="text-lg font-bold text-slate-900">{title}</h2>
+        {subtitle && <p className="mt-0.5 text-sm text-slate-600">{subtitle}</p>}
+      </div>
     </div>
   )
 }

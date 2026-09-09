@@ -162,6 +162,9 @@ export interface Readiness {
     | 'timing_unclear'
     | 'stale_base'
     | 'distribution'
+    | 'setup_unconfirmed'
+    | 'lead_watch'
+    | 'data_integrity'
     | string
   timing?: string | null
   label: string
