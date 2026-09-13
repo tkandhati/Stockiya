@@ -1,5 +1,46 @@
 # Changelog
 
+## 2026-09-13 — LLM tuning log (outcome→tuner bootstrap; additive, offline)
+
+Owner ask, after an honest re-evaluation of an outside review: *"build logs I can
+feed an LLM for future tuning — generate the log information in a specific format,
+I'll plug the LLM in later."*
+
+Root context uncovered during the evaluation (both durable findings):
+  - **The tuner has never run.** `config/stage_weights.json` still shows
+    `champion_metric.value = null`, `n_picks_evaluated = 0`, `history = []`. So
+    τ=0.28 and every scored weight are hand-set seed priors — the PRINCIPLES §9
+    adaptive layer is dormant, because a clean outcome-paired training record was
+    never emitted. This is the deepest reason "success" is low, not a missing signal.
+  - **On the 5-name sample, the only thing that separates winners from −8% losers
+    is whether the `[BR]` trigger fired** (BR-fired +9%/100% vs coil-entered-at-market
+    −5.6%/20%, 8/10 stopped). Accumulated signed-pressure (`sp_hl30`) shows *zero*
+    separation (+0.10 win vs +0.11 loss) — so the review's "consistency gate" is
+    refuted here; the 2026-09-08 buy-readiness split (coil→watch, breakout→buy) is
+    the correct fix and the data validates it.
+
+New, **purely additive** machinery (no live path imports it yet; delete the files to revert):
+  - `backend/tuning_log.py` — pure, reusable record builder. One record per decision
+    pairing decision-time `as_of` inputs (no lookahead; features read straight from the
+    stage results the pipeline decided on) with the graded `outcome` label (app's own
+    exit ladder + raw buy&hold at T+21/63/90) and a natural-language `summary`. Schema
+    `stockiya-tuning-log/v1`; live `MATURED-OUTCOME HOOK` documented at the bottom
+    (reads the pick's stored trace — no pipeline re-run).
+  - `scripts/gen_tuning_log.py` — offline generator over `test_data/18months/*.csv`.
+    Runs the LIVE chain incl. the `[DV]` distribution veto (block mode) and `[LTV]`,
+    and calls the real `buy_readiness.assess_buy_readiness`, so the log is faithful
+    to live selection/labelling.
+  - `data/tuning/tuning_log.jsonl` — 217 records (205 graded) from the sample.
+  - `data/tuning/README_tuning_log.md` — durable schema/field reference + LLM-feeding
+    guide + scope limits. `data/tuning/tuning_digest.md` — regenerated summary + sample.
+
+Faithfulness note: DV is in the chain, so DV-vetoed days are correctly excluded
+(hence `dv_would_veto` is uniformly false in the log). Tuning the veto *itself* needs
+a `veto` `record_type` — flagged as v2. Sample caveat: 5 names is directional only;
+the volume of training data must come from the live hook or a full-universe run.
+
+Offline, deterministic, no network. Nothing about live gates/scores/rank/sizing/exits changed.
+
 ## 2026-09-09 — Dedicated "Pre-Breakout" section on the picks page
 
 After the 2026-09-08 sequential BUY-readiness verdict, a clean coil is `watch`
