@@ -2,17 +2,24 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { Briefcase, FlaskConical, RefreshCw, Sparkles } from 'lucide-react'
 import { fetchPicks, fmtDateTimeIST, refreshPicks } from '../api'
-import { DemoBanner } from '../components/DemoBanner'
-import { DataHealthPill } from '../components/DataHealthPill'
-import { ClosestToFiringPanel } from '../components/ClosestToFiringPanel'
-import { NotActionablePanel } from '../components/NotActionablePanel'
-import { CoiledAccumulatorsPanel } from '../components/CoiledAccumulatorsPanel'
-import { PickFollowupTable } from '../components/PickFollowupTable'
 import { PickCard } from '../components/PickCard'
-import { DeliveryWeightedPicks } from '../components/DeliveryWeightedPicks'
-import { RegimeBanner } from '../components/RegimeBanner'
+import { PullbackSetupsTable } from '../components/PullbackSetupsTable'
 import { StrategyTabs } from '../components/StrategyTabs'
-import type { Pick, PicksResponse } from '../types'
+import type { PicksResponse } from '../types'
+
+// TWO-SECTION MODE (owner ask, 2026-09-19). The page renders exactly two content
+// sections: (1) Top picks by volume, (2) Pullback Re-Entry Setups on previous
+// picks. All other panels/banners were removed here AND in
+// backend/orchestrator.py (both reversible). The imports + blocks below are
+// commented, not deleted, so any panel can be restored:
+//   import { DemoBanner } from '../components/DemoBanner'
+//   import { DataHealthPill } from '../components/DataHealthPill'
+//   import { ClosestToFiringPanel } from '../components/ClosestToFiringPanel'
+//   import { NotActionablePanel } from '../components/NotActionablePanel'
+//   import { CoiledAccumulatorsPanel } from '../components/CoiledAccumulatorsPanel'
+//   import { PickFollowupTable } from '../components/PickFollowupTable'
+//   import { DeliveryWeightedPicks } from '../components/DeliveryWeightedPicks'
+//   import { RegimeBanner } from '../components/RegimeBanner'
 
 export function PicksPage() {
   const qc = useQueryClient()
@@ -26,23 +33,9 @@ export function PicksPage() {
     onSuccess: (resp: PicksResponse) => qc.setQueryData(['picks'], resp),
   })
 
-  // Presentation-only split of the single picks grid into three sections, keyed
-  // purely on the `readiness` badge the backend already stamped (no re-scan, no
-  // yfinance calls, no gate/score change). With STOCKYA_MAIN_SHOW_ALL on the
-  // main list carries every selected pick; here we group them:
-  //   • buys        — breakout confirmed / enterable today (the current process)
-  //   • preBreakout — clean coils (structure + money flow green, trigger pending)
-  //   • otherWatch  — late / extended / distribution / unclear (awareness only)
-  // Legacy payloads with no readiness badge fall through as buys (unchanged look).
-  const allPicks = data?.picks ?? []
-  const isBuy = (p: Pick) => !p.readiness || p.readiness.tone === 'enter'
-  const isPreBreakout = (p: Pick) =>
-    !isBuy(p) &&
-    (p.readiness?.category === 'setup_unconfirmed' ||
-      p.readiness?.category === 'lead_watch')
-  const buys = allPicks.filter(isBuy)
-  const preBreakout = allPicks.filter(isPreBreakout)
-  const otherWatch = allPicks.filter((p) => !isBuy(p) && !isPreBreakout(p))
+  // Section 1 — the top picks, by volume. One clean list (no sub-split).
+  const topPicks = data?.picks ?? []
+  const pullbackSetups = data?.pullback_setups ?? []
 
   return (
     <div className="mx-auto max-w-6xl px-6 py-10">
@@ -51,22 +44,12 @@ export function PicksPage() {
         <div>
           <h1 className="flex items-center gap-2 text-2xl font-bold text-slate-900">
             <Sparkles className="h-5 w-5 text-amber-500" />
-            Today&apos;s Picks{buys.length > 0 ? ` (${buys.length})` : ''}
+            Today&apos;s Picks{topPicks.length > 0 ? ` (${topPicks.length})` : ''}
           </h1>
           <p className="mt-1 text-sm text-slate-700">
             <span className="font-medium">Don&apos;t invent. Follow the institutions.
             Pick one.</span>
           </p>
-          {/* Readiness legend — shown when any pick carries a badge (STOCKYA_MAIN_
-              SHOW_ALL on). Green = enter today, amber = watch, rose = avoid. */}
-          {data?.picks?.some((p) => p.readiness) && (
-            <p className="mt-0.5 text-xs text-slate-500">
-              <span className="font-medium text-emerald-700">Enter today</span> ·{' '}
-              <span className="font-medium text-amber-700">Watch</span> (surfaced, not
-              enterable yet) ·{' '}
-              <span className="font-medium text-rose-700">Avoid</span> (distribution)
-            </p>
-          )}
           <p className="mt-0.5 text-xs text-slate-500">
             Swing trading · 3-week to 3-month typical hold · daily review ·{' '}
             <span className="font-mono">{data?.date ?? '—'}</span>
@@ -75,20 +58,12 @@ export function PicksPage() {
                 · generated {fmtDateTimeIST(data.generated_at)}
               </span>
             )}
-            {data && (
-              <span className="ml-2 rounded bg-slate-100 px-2 py-0.5 text-xs uppercase tracking-wide text-slate-600">
-                volume pipeline
-              </span>
-            )}
             {data?.demo_mode && (
               <span className="ml-2 rounded bg-rose-200 px-2 py-0.5 text-xs font-bold uppercase tracking-wide text-rose-900">
                 ⚠ Demo data
               </span>
             )}
           </p>
-          <div className="mt-2">
-            <DataHealthPill />
-          </div>
         </div>
         <div className="flex items-center gap-2">
           <Link
@@ -118,14 +93,6 @@ export function PicksPage() {
         </div>
       </header>
 
-      {data?.regime && <RegimeBanner regime={data.regime} />}
-
-      {data?.demo_mode && (
-        <div className="mt-6">
-          <DemoBanner />
-        </div>
-      )}
-
       <main className="mt-8">
         {isLoading && <SkeletonGrid />}
         {isError && (
@@ -137,138 +104,38 @@ export function PicksPage() {
             </div>
           </div>
         )}
-        {data && allPicks.length > 0 && (
-          <div className="space-y-10">
-            {/* Section 1 — confirmed buys (the current process): breakout fired,
-                enterable today. */}
-            {buys.length > 0 && (
-              <section>
-                <SectionHeading
-                  tone="emerald"
-                  title={`Today's Buys (${buys.length})`}
-                  subtitle="Breakout confirmed — enterable today."
-                />
-                <div className={`mt-4 grid grid-cols-1 gap-5 ${gridCols(buys.length)}`}>
-                  {buys.map((p) => (
-                    <PickCard key={p.symbol} pick={p} />
-                  ))}
-                </div>
-              </section>
-            )}
 
-            {/* No confirmed buy today but setups exist — say so, don't leave a
-                gap (never-blank rule). */}
-            {buys.length === 0 && (
-              <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-                <span className="font-semibold">No breakout confirmed today.</span>{' '}
-                <span className="opacity-90">
-                  The setups below are still pre-breakout — watch for the trigger,
-                  don&apos;t buy at market yet.
-                </span>
-              </div>
-            )}
-
-            {/* Section 2 (NEW) — pre-breakout: clean coils whose structure and
-                money flow are green but the breakout has NOT fired. Watch and buy
-                ON the trigger, not at market today. */}
-            {preBreakout.length > 0 && (
-              <section>
-                <SectionHeading
-                  tone="amber"
-                  title={`Pre-Breakout — watch for the trigger (${preBreakout.length})`}
-                  subtitle="Structure and money flow are clean, but the breakout hasn't fired. Wait for a close above the pivot on ≥1.5× volume — reference levels only, not an at-market buy."
-                />
-                <div className={`mt-4 grid grid-cols-1 gap-5 ${gridCols(preBreakout.length)}`}>
-                  {preBreakout.map((p) => (
-                    <PickCard key={p.symbol} pick={p} />
-                  ))}
-                </div>
-              </section>
-            )}
-
-            {/* Section 3 — surfaced but not actionable (late / extended /
-                distribution / unclear). Kept visible for awareness, clearly
-                separated from the buy list. */}
-            {otherWatch.length > 0 && (
-              <section>
-                <SectionHeading
-                  tone="slate"
-                  title={`Not actionable today (${otherWatch.length})`}
-                  subtitle="Surfaced by the scan but late / extended / distributing — awareness only, not a buy."
-                />
-                <div className={`mt-4 grid grid-cols-1 gap-5 ${gridCols(otherWatch.length)}`}>
-                  {otherWatch.map((p) => (
-                    <PickCard key={p.symbol} pick={p} />
-                  ))}
-                </div>
-              </section>
-            )}
-          </div>
-        )}
-
-        {/* NEW: fresh, delivery-led analysis over today's eligible field —
-            its own ranking, independent of the picks above; never changes
-            selection. Sits right after the canonical picks. */}
-        {data && data.delivery_analysis && data.delivery_analysis.length > 0 && (
-          <DeliveryWeightedPicks rows={data.delivery_analysis} />
-        )}
-
-        {/* Empty pick set — NO blank page. A slim, non-blocking WARNING banner,
-            then promote the best-accumulators follow-up table as the main content
-            so there is always something to watch. Regime-off no longer pauses
-            buys (owner ask 2026-08-31) — it's a caution shown by the banner above;
-            an empty list here means nothing cleared the bar today. */}
-        {data && data.picks.length === 0 && (
-          <div className="space-y-4">
-            <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-              <span className="font-semibold">
-                No breakout cleared the bar today
-              </span>{' '}
-              <span className="opacity-90">
-                {data.message ||
-                  'Normal for a 300-name universe — quality over quantity. Your strongest accumulators to watch are below.'}
-              </span>
+        {/* Section 1 — Top picks by volume. */}
+        {data && topPicks.length > 0 && (
+          <section>
+            <SectionHeading
+              tone="emerald"
+              title={`Top picks (by volume) (${topPicks.length})`}
+              subtitle="The volume pipeline's strongest candidates for today."
+            />
+            <div className={`mt-4 grid grid-cols-1 gap-5 ${gridCols(topPicks.length)}`}>
+              {topPicks.map((p) => (
+                <PickCard key={p.symbol} pick={p} />
+              ))}
             </div>
-
-            {/* Best accumulators promoted as the day's watch list — shown on
-                every empty day (monitoring, not a buy). */}
-            {data.pick_followup && data.pick_followup.length > 0 && (
-              <PickFollowupTable
-                rows={data.pick_followup}
-                title="Strongest accumulators to watch"
-                subtitle="No pick fired today — these previous picks are still accumulating"
-              />
-            )}
-          </div>
+          </section>
         )}
 
+        {/* No picks today — say so plainly (never a blank page). */}
+        {data && topPicks.length === 0 && (
+          <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+            <span className="font-semibold">No pick cleared the bar today.</span>{' '}
+            <span className="opacity-90">
+              {data.message ||
+                'Normal for a large universe — quality over quantity. See the pullback setups below.'}
+            </span>
+          </div>
+        )}
       </main>
 
-      {/* Persistent follow-up on previous picks — a continuous eye on what we
-          suggested, ranked by accumulation strength, with a day-by-day strength
-          trajectory on expand. Shown on NON-empty days (on empty days it is
-          promoted into <main> above). Monitor only; renders null when empty. */}
-      {data && data.picks.length > 0 && data.pick_followup && data.pick_followup.length > 0 && (
-        <PickFollowupTable rows={data.pick_followup} />
-      )}
-
-      {/* Picks the scan surfaced that are NOT enterable today (late / extended /
-          distribution). Own section below the buy list, for awareness only. */}
-      {data?.not_actionable && data.not_actionable.length > 0 && (
-        <NotActionablePanel rows={data.not_actionable} />
-      )}
-
-      {/* "Loaded spring" WATCH cohort — coiling bases still absorbing volume that
-          have not broken out yet. Monitor only; renders null when empty. */}
-      {data?.coiled_accumulators && data.coiled_accumulators.length > 0 && (
-        <CoiledAccumulatorsPanel rows={data.coiled_accumulators} />
-      )}
-
-      {/* The full candidate pool — moved to the very bottom and shown on EVERY
-          day (not only empty days), so the near-misses are always visible. */}
-      {data?.closest_to_firing && (
-        <ClosestToFiringPanel data={data.closest_to_firing} />
-      )}
+      {/* Section 2 — Pullback Re-Entry Setups on previous picks with persisted
+          interest. Renders null when empty. */}
+      {pullbackSetups.length > 0 && <PullbackSetupsTable rows={pullbackSetups} />}
 
       {data && (
         <footer className="mt-8 text-xs text-slate-400">

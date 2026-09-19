@@ -1,9 +1,41 @@
 # Agent Handoff
 
-Last updated: 2026-09-02
+Last updated: 2026-09-19
 
 For proposals that have been analyzed but not shipped, see `WISHLIST.md`.
 For ideas parked pending trace evidence, see `ideas.md`.
+
+## Latest Change (2026-09-19) — Yahoo 1-call-per-stock + required-interval fetch; report trimmed to 2 sections; new "Pullback Re-Entry Setups"
+
+Owner ask: fix live-Yahoo 429 throttling (most stocks weren't analysed), and show
+only two sections. Offline-verified: full backend unittest package **307/307**;
+`py_compile` clean; frontend `tsc -b` clean. Full detail + rationale in
+`CHANGELOG.md → 2026-09-19`. All reversible via env / commented blocks.
+
+1. **Yahoo ≈ one call per stock** (`backend/yahoo.py`). A per-run in-memory memo
+   (`STOCKYA_YF_RUN_MEMO`, remembers empties so a failed fetch isn't re-fired) +
+   dropping the per-ticker `fast_info` call (snapshot derived from OHLCV) collapse
+   the old `fast_info + 3×history` per stock to one history call. Directly addresses
+   the "watch Yahoo rate limits" warning in the 2026-09-02 note below.
+2. **Fetch only the required interval, not 2y.** All live call sites share one
+   `STOCKYA_FETCH_LOOKBACK_DAYS` window (default 450 cal days ≈ 310 bars, floored
+   400 to keep 200d MA / OBV-90d / ADV50 at full lookback). Raise toward 730 for ~2y.
+3. **Fewer workers for Yahoo.** `run_universe` → `_default_workers()`: 2 for
+   `DATA_SOURCE=yahoo` (was 10), 10 for bhavcopy/demo; `STOCKYA_MAX_WORKERS` override.
+4. **Report trimmed to 2 sections** (`orchestrator.py` Phase 4 + `PicksPage.tsx`).
+   Everything except Top picks + Pullback Re-Entry Setups is commented out
+   (reversible): closest-to-firing, watchlist, coiled accumulators, pick-follow-up,
+   not-actionable panel, delivery-weighted, data-health pill, regime/demo banners.
+   Payload now carries only `picks` + `pullback_setups`.
+5. **New Section 2 — Pullback Re-Entry Setups** (`backend/pullback_setups.py`,
+   `frontend/src/components/PullbackSetupsTable.tsx`; schema in `middleware/schemas.py`
+   + `frontend/src/types.ts`). The 11-rule impulse→VDU-pullback→breakout strategy on
+   previous open picks (portfolio.csv, `STOCKYA_HISTSETUP_LOOKBACK_DAYS`=45), reusing
+   the already-fetched OHLCV. Gated on **interest-persisted = accumulation-continuity
+   (OBV-90d slope, up/down-vol, above 50d SMA), NOT raw volume** — a low-volume dip is
+   a bullish VDU, only a high-volume dip invalidates. Presentation-only. Knobs:
+   `STOCKYA_PULLBACK_SETUPS`, `STOCKYA_INTEREST_OBV_SLOPE_MIN`,
+   `STOCKYA_INTEREST_UD_RATIO_MIN`, `STOCKYA_PULLBACK_SHOW_FADED`.
 
 ## Latest Change (2026-09-02) — Nifty Total Market universe + two distribution-trap guards
 

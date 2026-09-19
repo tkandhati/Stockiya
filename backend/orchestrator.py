@@ -254,6 +254,28 @@ DEFAULT_TOP_N = 5
 DEFAULT_ACCOUNT_VALUE = float(os.environ.get("STOCKYA_ACCOUNT_VALUE", "100000"))
 
 
+def _default_workers() -> int:
+    """Thread-pool width for the per-ticker fan-out.
+
+    Live Yahoo runs get a DELIBERATELY SMALL pool (default 2): fewer concurrent
+    dispatches is the single biggest 429 defence, and the owner explicitly
+    accepts a slower run in exchange for actually analysing every stock. Bhavcopy
+    and demo read local files, so they keep the fast default (10). Override with
+    STOCKYA_MAX_WORKERS.
+    """
+    env = os.environ.get("STOCKYA_MAX_WORKERS")
+    if env:
+        try:
+            return max(1, int(float(env)))
+        except (TypeError, ValueError):
+            pass
+    demo = os.environ.get("DEMO_MODE", "0") == "1"
+    src = os.environ.get("DATA_SOURCE", "bhavcopy").lower()
+    if src == "yahoo" and not demo:
+        return 2
+    return 10
+
+
 def _regime_halt_enabled() -> bool:
     """Whether a regime-OFF day should still HARD-halt buys.
 
@@ -347,7 +369,7 @@ def run_universe(
     today_iso: Optional[str] = None,
     top_n: int = DEFAULT_TOP_N,
     account_value: float = DEFAULT_ACCOUNT_VALUE,
-    max_workers: int = 10,
+    max_workers: Optional[int] = None,
     **_kwargs,   # absorb legacy `min_composite` arg silently
 ) -> dict:
     """Run the gates-based pipeline over the scan universe. Returns the
@@ -355,6 +377,17 @@ def run_universe(
     """
     today_iso = today_iso or datetime.now(IST).date().isoformat()
     demo_mode = os.environ.get("DEMO_MODE", "0") == "1"
+    if max_workers is None:
+        max_workers = _default_workers()
+
+    # Fresh per-run history memo so a symbol that failed on a PRIOR run (or a
+    # manual "Refresh picks") is re-attempted, while within THIS run each symbol
+    # is fetched at most once. Guarded import: bhavcopy/demo don't touch yahoo.
+    try:
+        from . import yahoo
+        yahoo.clear_run_memo()
+    except Exception:
+        pass
     log.info("=" * 76)
     log.info("  PIPELINE RUN  %s   (universe=%d, top_n=%d, account=%.0f, demo=%s)",
              today_iso, len(VOLUME_UNIVERSE), top_n, account_value, demo_mode)
@@ -768,11 +801,15 @@ def run_universe(
             "volatility ceiling, but still approaching the confirmation line. "
             "Wait for the trigger or size cautiously; this is not a confirmed buy."
         )
-    # Closest-to-firing is now computed EVERY run (not just on zero-pick days)
-    # so the near-misses are always visible alongside the picks.
-    closest_to_firing: dict = _collect_closest_to_firing(
-        results, tau=COMPOSITE_TAU, n_per_tab=5
-    )
+    # DISABLED: 2-section mode (reversible). Closest-to-firing panel removed from
+    # the UI per owner ask (only Top picks + Pullback Re-Entry Setups). Left as an
+    # empty structure so downstream references stay valid and render_picks_response
+    # omits it (it only attaches when non-empty). Restore by uncommenting the
+    # _collect_closest_to_firing(...) call below.
+    closest_to_firing: dict = {"accumulation": [], "breakout": [], "overall": []}
+    # closest_to_firing = _collect_closest_to_firing(
+    #     results, tau=COMPOSITE_TAU, n_per_tab=5
+    # )
     if not pick_payloads:
         if regime_halted:
             # Regime OFF: buys are suppressed by design. Say so as a warning —
@@ -863,58 +900,40 @@ def run_universe(
             ),
         )
 
-    # Coiled Accumulators — the "loaded spring" WATCH cohort (owner ask,
-    # 2026-08-24). Bases that absorbed volume for a while, are STILL absorbing at
-    # the right edge, and have NOT broken out yet — sideways coils, not dead
-    # bases. PRESENTATION/MONITORING ONLY: never touches selection/score/rank/
-    # sizing/exits. Scans BOTH the main buy list and the awareness
-    # (`not_actionable`) payloads, so a strong coil that entry_timing routed to
-    # "late" is still surfaced. Reversible via STOCKYA_COILED_WATCH=0. See
-    # backend/coiled_accumulators.py.
+    # DISABLED: 2-section mode (reversible). The Coiled Accumulators, persistent
+    # pick-follow-up, and accumulation-watchlist panels are removed from the UI so
+    # the page shows only Top picks + Pullback Re-Entry Setups. Their builders are
+    # left commented (not deleted); the variables stay defined-empty so downstream
+    # attach/render code is a no-op. Restore any panel by uncommenting its block.
+    coiled_accumulators = []
+    watchlist = []
+    pick_followup = []
+    # from .coiled_accumulators import build_coiled_accumulators
+    # coiled_accumulators = build_coiled_accumulators(visible_picks + not_actionable)
+    # from .pick_followup import build_pick_followup
+    # pick_followup = build_pick_followup(today_iso)   # superseded by pullback_setups below
+    # from .flow_interest import build_watchlist
+    # watchlist = build_watchlist()
+
+    # Section 2 — Pullback Re-Entry Setups (owner ask, 2026-09-19). The
+    # impulse -> volume-dry-up pullback -> breakout strategy, evaluated on
+    # PREVIOUS picks that still show persisted interest (accumulation continuity,
+    # not raw volume size). PRESENTATION/MONITORING ONLY: reads portfolio.csv +
+    # the same required-interval OHLCV already fetched, never touches selection/
+    # score/rank/sizing/exits. Reversible via STOCKYA_PULLBACK_SETUPS=0.
+    # See backend/pullback_setups.py.
     try:
-        from .coiled_accumulators import build_coiled_accumulators
-        coiled_accumulators = build_coiled_accumulators(visible_picks + not_actionable)
-        if coiled_accumulators:
+        from .pullback_setups import build_pullback_setups
+        pullback_setups = build_pullback_setups(today_iso)
+        if pullback_setups:
             log.info(
-                "  [Phase 4/4] Coiled accumulators: %d name(s) still absorbing, "
-                "no breakout yet",
-                len(coiled_accumulators),
+                "  [Phase 4/4] Pullback re-entry setups: %d previous pick(s) with "
+                "persisted interest evaluated",
+                len(pullback_setups),
             )
     except Exception:
-        log.exception("build_coiled_accumulators failed")
-        coiled_accumulators = []
-
-    # Persistent pick FOLLOW-UP tracker (owner ask, 2026-08-29): a continuous
-    # eye on PREVIOUS picks (the open portfolio cohort), ranked by accumulation
-    # strength, each with a day-by-day strength trajectory from the day we
-    # suggested it to today. Answers "did volume keep accumulating while price
-    # stayed flat?" over the last ~month. PRESENTATION/MONITORING ONLY: reads
-    # portfolio.csv + per-day traces, never touches selection/score/rank/sizing/
-    # exits. Reversible via STOCKYA_FOLLOWUP_WATCH=0. See backend/pick_followup.py.
-    try:
-        from .pick_followup import build_pick_followup
-        pick_followup = build_pick_followup(today_iso)
-        if pick_followup:
-            log.info(
-                "  [Phase 4/4] Pick follow-up: %d previous pick(s) tracked "
-                "(ranked by accumulation strength)",
-                len(pick_followup),
-            )
-    except Exception:
-        log.exception("build_pick_followup failed")
-        pick_followup = []
-
-    # Institutional-accumulation WATCHLIST (Use 1 — scoring-neutral guidance on
-    # which stocks to analyze). Built from the deals/delivery corpora, never
-    # enters the scan. Empty when no flow data is on disk.
-    try:
-        from .flow_interest import build_watchlist
-        watchlist = build_watchlist()
-        if watchlist:
-            log.info("  [Phase 4/4] Accumulation watchlist: %d name(s)", len(watchlist))
-    except Exception:
-        log.exception("build_watchlist failed")
-        watchlist = []
+        log.exception("build_pullback_setups failed")
+        pullback_setups = []
 
     # Readiness badges + "show all 5" main list (owner ask, 2026-08-25). The
     # router above already classified every pick; here we STAMP that verdict onto
@@ -947,64 +966,45 @@ def run_universe(
         watchlist=watchlist,
     )
 
-    # Read-only per-run ingest-health block (how many of the universe ingested;
-    # from backend/ingest_health.py — distinct from the data_health.py service
-    # probe behind /api/health/data).
-    response["data_health"] = data_health
-    # Picks moved out of the buy list because they are not enterable today
-    # (late / extended / distribution / unclear timing). Shown in a separate
-    # for-awareness section with a reason. Additive/optional; absent when empty.
-    # Split view only. When show-all is on the non-enterable picks are already in
-    # `picks` (each carrying its readiness badge), so re-emitting them here would
-    # double-render them in the separate awareness section.
-    if not_actionable and not show_all:
-        response["not_actionable"] = [
-            {
-                "symbol": p.get("symbol"),
-                "company": p.get("company"),
-                "rank": p.get("rank"),
-                "reason": p.get("not_actionable"),
-            }
-            for p in not_actionable
-        ]
+    # Section 2 — Pullback Re-Entry Setups on previous picks with persisted
+    # interest (see the Phase-4 note above). Additive/optional; absent when empty
+    # or disabled. Persisted into picks_<date>.json.
+    if pullback_setups:
+        response["pullback_setups"] = pullback_setups
 
-    # Coiled Accumulators watch cohort (see the Phase-4 note above). Additive/
-    # optional; absent when empty or disabled. Persisted into picks_<date>.json
-    # so the cohort can be replayed offline to measure "coiled -> breakout"
-    # conversion over time (observation-first; owner choice 2026-08-24).
-    if coiled_accumulators:
-        response["coiled_accumulators"] = coiled_accumulators
-
-    # Persistent pick follow-up tracker (see the Phase-4 note above). Additive/
-    # optional; absent when empty or disabled. Persisted into picks_<date>.json
-    # so the tracked cohort + strength trajectories can be replayed offline.
-    if pick_followup:
-        response["pick_followup"] = pick_followup
-
-    # Fresh, delivery-LED analysis over TODAY'S ELIGIBLE FIELD (every hard-gate
-    # survivor) — SCORING-NEUTRAL and purely additive. Its own ranking (a
-    # strong-delivery near-miss can outrank a volume pick); it never touches
-    # selection / composite / rank / sizing / exits or any other section. Built
-    # here, after selection, from the survivors already in memory + a single
-    # batch delivery read. Degrades to composite order when no delivery on disk.
-    try:
-        from .delivery import all_advisories
-        from .delivery_weighted import build_delivery_analysis
-        _advs = all_advisories()
-        _cands = [
-            {
-                "symbol": r.symbol,
-                "company": (r.snapshot or {}).get("company") or r.symbol,
-                "composite_score": r.composite_score,
-                "delivery": _advs.get(r.symbol),
-            }
-            for r in hard_survivors
-        ]
-        _picked = {p.get("symbol") for p in visible_picks}
-        response["delivery_analysis"] = build_delivery_analysis(_cands, _picked)
-    except Exception:
-        log.exception("build_delivery_analysis failed")
-        response["delivery_analysis"] = []
+    # DISABLED: 2-section mode (reversible). The blocks below emitted the
+    # data_health pill, not_actionable / coiled_accumulators / pick_followup
+    # panels, and the delivery-weighted analysis. They are commented out so the
+    # payload carries only `picks` + `pullback_setups`. `data_health` is still
+    # computed and logged above (Phase 1) for observability — only the response
+    # key is dropped. Restore any panel by uncommenting its block.
+    # response["data_health"] = data_health
+    # if not_actionable and not show_all:
+    #     response["not_actionable"] = [
+    #         {"symbol": p.get("symbol"), "company": p.get("company"),
+    #          "rank": p.get("rank"), "reason": p.get("not_actionable")}
+    #         for p in not_actionable
+    #     ]
+    # if coiled_accumulators:
+    #     response["coiled_accumulators"] = coiled_accumulators
+    # if pick_followup:
+    #     response["pick_followup"] = pick_followup
+    # try:
+    #     from .delivery import all_advisories
+    #     from .delivery_weighted import build_delivery_analysis
+    #     _advs = all_advisories()
+    #     _cands = [
+    #         {"symbol": r.symbol,
+    #          "company": (r.snapshot or {}).get("company") or r.symbol,
+    #          "composite_score": r.composite_score,
+    #          "delivery": _advs.get(r.symbol)}
+    #         for r in hard_survivors
+    #     ]
+    #     _picked = {p.get("symbol") for p in visible_picks}
+    #     response["delivery_analysis"] = build_delivery_analysis(_cands, _picked)
+    # except Exception:
+    #     log.exception("build_delivery_analysis failed")
+    #     response["delivery_analysis"] = []
 
     path = write_picks_file(response)
     log.info(

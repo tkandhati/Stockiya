@@ -1,5 +1,93 @@
 # Changelog
 
+## 2026-09-19 — Yahoo: 1 call per stock + required-interval fetch; report trimmed to 2 sections; new "Pullback Re-Entry Setups"
+
+Owner ask, after live `DATA_SOURCE=yahoo` runs were 429-throttled so hard most
+stocks never got analysed: *"(1) number of stocks should equal number of calls to
+Yahoo; (2) pause based on the limits — slower is fine; (3) I need only 2 sections
+— top picks, and the pullback setup on previously-picked stocks; comment out the
+rest."* Two clarifications during planning: **don't fetch 2 years — fetch only the
+required interval**, and Section 2 should run **only where interest persisted, judged
+on accumulation-continuity, not raw volume** (a low-volume down-day is a bullish VDU
+supply test, not weakness). All changes reversible via env flags / commented blocks.
+
+### 1. Yahoo calls ≈ one per stock  (`backend/yahoo.py`)
+Root cause of the "hundreds of 2y ratelimit errors": a `2y` fetch that failed was
+NOT written to the on-disk cache (`yf_session._write_cache` never stores empties),
+so a throttled stock re-fired the full request from `snapshot()`, then
+`history_ohlcv()`, then `history_6m()` — ~3×/stock × 10 worker threads × 5 retries.
+Fixes:
+  - **Per-run in-memory memo** (`_RUN_MEMO`, `STOCKYA_YF_RUN_MEMO`=1) keyed by
+    `symbol|sig` that remembers the frame **including empties**, so each symbol is
+    fetched at most once per run. `orchestrator.run_universe` calls
+    `yahoo.clear_run_memo()` at the start of every run (within-run dedup, cross-run
+    retry — a manual "Refresh picks" re-attempts failed names).
+  - **Dropped the per-ticker `fast_info` call.** On the default `STOCKYA_YF_SKIP_INFO=1`
+    path `snapshot()` now derives every numeric field from the OHLCV frame via the
+    existing `build_snapshot_from_ohlcv` (labels were already None on that path;
+    sector still comes from `config/sector_map.json`). `.info` is kept only for the
+    opt-in `STOCKYA_YF_SKIP_INFO=0` escape hatch. Net live cost: **one history call
+    per stock.**
+
+### 2. Fetch only the required interval, not 2y  (`backend/yahoo.py`)
+The three live call sites (`snapshot` / `history_ohlcv` / `history_6m`) no longer
+hardcode `period="2y"`; they share one `start`/`end` window of
+`STOCKYA_FETCH_LOOKBACK_DAYS` calendar days (**default 450 ≈ 310 trading bars**,
+floored at 400) computed once per run — so they hit ONE cache+memo key. 310 bars
+keeps the 200d MA / 150d MA / OBV-90d / ADV50 at full lookback
+(`stages/ingest.py` `MIN_BARS=200`, `FULL_LOOKBACK_BARS=260`) while cutting ~38% of
+the history payload vs 2y. Raise toward 730 to restore ~2 years. Backtest's explicit
+`start`/`end` window is unchanged.
+
+### 3. Pause harder — fewer workers  (`backend/orchestrator.py`)
+`run_universe(max_workers=None)` now resolves via `_default_workers()`: **2** for
+`DATA_SOURCE=yahoo` (was 10), 10 for bhavcopy/demo, overridable with
+`STOCKYA_MAX_WORKERS`. Fewer concurrent dispatches is the single biggest 429 defence;
+the existing adaptive throttle + fleet-cooldown + 5-retry in `yf_session.py` still
+"pauses on the limit" within each fetch. Owner accepts a slower-but-complete run.
+
+Combined per stock: from `fast_info + 3×(2y)` @10 workers → `1×(≈14-month window)` @2.
+
+### 4. Report trimmed to exactly 2 sections  (`orchestrator.py`, `frontend/src/pages/PicksPage.tsx`)
+All other panels/banners are **commented out, not deleted** (reversible), in both the
+backend Phase-4 build/attach and the frontend render: closest-to-firing, accumulation
+watchlist, coiled accumulators, persistent pick-follow-up, not-actionable panel,
+delivery-weighted analysis, the data-health pill, and the regime/demo banners (owner
+chose "strip to 2 sections only" for the on-screen view). The payload now carries only
+`picks` + `pullback_setups`. Section 1 is the top picks by volume, flattened to a
+single grid (the Buys/Pre-Breakout/Not-actionable sub-split is dropped from the view).
+
+### 5. New Section 2 — "Pullback Re-Entry Setups"  (new `backend/pullback_setups.py`, `frontend/src/components/PullbackSetupsTable.tsx`)
+The owner's 11-rule impulse → volume-dry-up (VDU) pullback → breakout strategy,
+evaluated on **previous open picks** (portfolio.csv cohort, `STOCKYA_HISTSETUP_LOOKBACK_DAYS`=45)
+using the same required-interval OHLCV already fetched (no new Yahoo bursts; reuses
+`fetch.fetch_ohlcv` + the memo). **Interest-persisted gate (the key design rule):** a
+name is only evaluated while interest holds, judged on accumulation-continuity — OBV-90d
+normalized slope ≥ `STOCKYA_INTEREST_OBV_SLOPE_MIN` (default 0), up/down-vol(90) ≥
+`STOCKYA_INTEREST_UD_RATIO_MIN` (default 1.0), and close ≥ 50d SMA — **not** raw volume
+size. Down-day volume is read only two ways: LOW (<0.7×ADV50) = VDU/confirming, HIGH
+(>1.2×ADV50) = distribution/invalidating. Status ladder: `interest_faded` (dropped by
+default; `STOCKYA_PULLBACK_SHOW_FADED=1` shows it) → `insufficient_history` /
+`below_50sma` / `no_impulse` / `awaiting_pullback` / `in_pullback_vdu_pending` /
+`vdu_confirmed_watch_trigger` / `buy_trigger` (with entry, 0.5%-below-low stop, 2:1 T1)
+/ `invalidated`. Presentation/monitoring only — never touches selection/score/rank/
+sizing/exits. Reuses `indicators.{sma,adv,obv,obv_norm_slope_pct,up_down_vol_ratio}`.
+Schema: `pullback_setups` added to `middleware/schemas.py:PicksResponse` and
+`frontend/src/types.ts:PullbackSetupRow`.
+
+### Reversibility
+`STOCKYA_YF_RUN_MEMO=0`, `STOCKYA_YF_SKIP_INFO=0`, `STOCKYA_FETCH_LOOKBACK_DAYS=730`,
+`STOCKYA_MAX_WORKERS=10`, `STOCKYA_PULLBACK_SETUPS=0` (+ interest thresholds / show-faded);
+uncomment the panel blocks in `orchestrator.py` + `PicksPage.tsx` to restore any section.
+Documented in `backend/.env.example`.
+
+### Verification
+New offline tests `backend/tests/test_pullback_setups.py` (buy-trigger with correct
+entry/stop/2:1 target, both invalidation paths, interest-faded, no-impulse,
+insufficient-history) — 6/6 pass. **Full backend suite 307/307.** Memo probe: 3 logical
+fetches → 1 network call, window 451 days (not 730). Demo end-to-end: response keys =
+`picks` + metadata only (no removed sections). Frontend `tsc -b` clean.
+
 ## 2026-09-13 — LLM tuning log (outcome→tuner bootstrap; additive, offline)
 
 Owner ask, after an honest re-evaluation of an outside review: *"build logs I can

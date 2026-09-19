@@ -755,6 +755,45 @@ export interface PicksResponse {
   coiled_accumulators?: CoiledAccumulatorRow[]
   // Persistent follow-up tracker over previous picks, ranked by accumulation strength.
   pick_followup?: PickFollowupRow[]
+  // Section 2 — Pullback Re-Entry Setups on previous picks with persisted interest.
+  pullback_setups?: PullbackSetupRow[]
+}
+
+// Section 2 — one previous pick evaluated by the impulse -> VDU pullback ->
+// breakout re-entry strategy. Numeric fields are null until that stage is reached.
+export interface PullbackSetupRow {
+  symbol: string
+  company: string
+  status:
+    | 'buy_trigger'
+    | 'vdu_confirmed_watch_trigger'
+    | 'in_pullback_vdu_pending'
+    | 'awaiting_pullback'
+    | 'no_impulse'
+    | 'below_50sma'
+    | 'invalidated'
+    | 'insufficient_history'
+    | 'interest_faded'
+  status_label: string
+  interest: {
+    persisted: boolean
+    obv90_slope: number | null
+    ud_ratio_90: number | null
+    above_50sma: boolean | null
+    delivery_pct: number | null
+    reasons: string[]
+  }
+  day0_date: string | null
+  day0_pct: number | null
+  adv50: number | null
+  support_base: number | null
+  pullback_low: number | null
+  vdu: boolean
+  entry: number | null
+  stop: number | null
+  target1: number | null
+  rr: number | null
+  notes: string
 }
 
 // --------------------------------------------------------------------------

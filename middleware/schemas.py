@@ -253,6 +253,11 @@ class PicksResponse(BaseModel):
     # PRESENTATION/MONITORING ONLY, additive. Untyped dicts so inner keys pass
     # through; None/absent when empty or disabled (STOCKYA_FOLLOWUP_WATCH=0).
     pick_followup: Optional[list[dict]] = None
+    # Section 2 — Pullback Re-Entry Setups: the impulse -> volume-dry-up pullback
+    # -> breakout strategy evaluated on PREVIOUS picks that still show persisted
+    # interest. PRESENTATION/MONITORING ONLY, additive. Untyped dicts so inner
+    # keys pass through; None/absent when empty or disabled (STOCKYA_PULLBACK_SETUPS=0).
+    pullback_setups: Optional[list[dict]] = None
 
 
 # --------------------------------------------------------------------------- #
