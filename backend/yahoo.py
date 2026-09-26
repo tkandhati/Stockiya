@@ -59,6 +59,26 @@ def clear_run_memo() -> None:
         _RUN_MEMO.clear()
 
 
+def forget(symbols) -> None:
+    """Drop memo entries for specific symbols so the NEXT fetch re-attempts them.
+
+    The per-run memo deliberately remembers empties (a rate-limited symbol is
+    fetched at most once per run — see the module note). That is right for the
+    main fan-out, but it also means a symbol dropped to an empty frame can never
+    recover within the same run. The orchestrator's dropped-stock re-sweep
+    (``_resweep_dropped_fetches``) calls this to forget exactly the dropped
+    symbols after a cooldown, so a slower single-threaded retry actually hits
+    Yahoo again instead of returning the memoized empty. No-op for symbols not
+    in the memo. Accepts a single symbol or any iterable of symbols.
+    """
+    syms = {symbols} if isinstance(symbols, str) else set(symbols)
+    if not syms:
+        return
+    with _RUN_MEMO_LOCK:
+        for key in [k for k in _RUN_MEMO if k.split("|", 1)[0] in syms]:
+            _RUN_MEMO.pop(key, None)
+
+
 def fetch_lookback_days() -> int:
     """Calendar-day span of the live history window (the "required interval").
 

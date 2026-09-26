@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from typing import Optional
@@ -276,6 +277,129 @@ def _default_workers() -> int:
     return 10
 
 
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return default
+
+
+def _ingest_dropped(res: Optional[PipelineResult]) -> bool:
+    """True only when a symbol never got usable OHLCV — a recoverable FETCH drop.
+
+    A stock that PASSED [I] Ingest but was later rejected by a gate was genuinely
+    analysed and must NOT be re-swept. A stock that failed [I] for a data VERDICT
+    a retry can't change (too few bars, no price) is also skipped — re-fetching
+    won't add history. Only the "no frame at all" case (empty fetch / fetch
+    exception, i.e. ``has_ohlcv is False``) or a total absence of a result
+    (pipeline crashed before producing one) is a rate-limit casualty worth
+    re-attempting.
+    """
+    if res is None:
+        return True  # no result at all -> crashed before/at ingest
+    st = (getattr(res, "stage_results", None) or {}).get("I")
+    if st is None:
+        return True
+    if st.passed:
+        return False
+    feats = getattr(st, "features", None) or {}
+    return feats.get("has_ohlcv") is False
+
+
+def _resweep_dropped_fetches(
+    results: list[PipelineResult],
+    today_iso: str,
+) -> list[PipelineResult]:
+    """Give Yahoo rate-limit casualties a second (bounded) chance — completeness.
+
+    Under sustained Yahoo 429s a symbol can exhaust its in-call retries and come
+    back as an empty frame, which is memoized empty for the rest of the run and
+    dropped at [I] Ingest — the "it isn't reading all the stocks" symptom. This
+    runs AFTER the main fan-out and re-fetches ONLY those dropped symbols:
+      * a cooldown sleep first, so Yahoo's per-IP rolling window actually drains
+        (the single most effective recovery lever — you can't out-retry a window
+        you keep refilling);
+      * a WIDER dispatch interval for the duration (yf_session reads the env per
+        call), on top of the adaptive penalty the first pass already learned;
+      * SINGLE-THREADED, so the stubborn tail trickles instead of bursting;
+      * up to N passes, stopping early the moment a pass recovers nothing (Yahoo
+        isn't budging — no point hammering a dead IP window).
+    Symbols that already succeeded are never touched, so the happy path keeps its
+    speed. Fully reversible: STOCKYA_YF_RESWEEP=0 disables it (byte-identical to
+    the old single-pass behaviour). Tunables: STOCKYA_YF_RESWEEP_MAX_PASSES (2),
+    STOCKYA_YF_RESWEEP_COOLDOWN (30s), STOCKYA_YF_RESWEEP_MIN_INTERVAL (4.0s).
+    """
+    if os.environ.get("STOCKYA_YF_RESWEEP", "1") == "0":
+        return results
+    try:
+        max_passes = max(0, int(_env_float("STOCKYA_YF_RESWEEP_MAX_PASSES", 2)))
+    except (TypeError, ValueError):
+        max_passes = 2
+    if max_passes == 0:
+        return results
+
+    by_sym: dict[str, PipelineResult] = {r.symbol: r for r in results}
+    dropped = [
+        sym for sym in VOLUME_UNIVERSE
+        if _ingest_dropped(by_sym.get(sym))
+    ]
+    if not dropped:
+        log.info("  [Phase 1.5] Re-sweep: 0 dropped symbols — universe fully read.")
+        return results
+
+    try:
+        from . import yahoo
+    except Exception:
+        return results
+
+    cooldown = max(0.0, _env_float("STOCKYA_YF_RESWEEP_COOLDOWN", 30.0))
+    sweep_interval = max(0.0, _env_float("STOCKYA_YF_RESWEEP_MIN_INTERVAL", 4.0))
+    prev_interval = os.environ.get("STOCKYA_YF_MIN_INTERVAL")
+    try:
+        widened = max(_env_float("STOCKYA_YF_MIN_INTERVAL", 2.0), sweep_interval)
+        os.environ["STOCKYA_YF_MIN_INTERVAL"] = str(widened)
+        for pass_no in range(1, max_passes + 1):
+            if not dropped:
+                break
+            log.info(
+                "  [Phase 1.5] Re-sweep pass %d/%d — %d dropped symbol(s); "
+                "cooldown %.0fs, interval %.1fs, 1 worker ...",
+                pass_no, max_passes, len(dropped), cooldown, widened,
+            )
+            if cooldown > 0:
+                time.sleep(cooldown)
+            yahoo.forget(dropped)  # so the memoized empties don't shadow the retry
+            recovered = 0
+            still: list[str] = []
+            for sym in dropped:
+                try:
+                    res = run_pipeline(sym, PER_TICKER_CHAIN, today_iso)
+                except Exception:
+                    log.exception("re-sweep pipeline crashed for %s", sym)
+                    still.append(sym)
+                    continue
+                by_sym[sym] = res
+                if _ingest_dropped(res):
+                    still.append(sym)
+                else:
+                    recovered += 1
+            log.info(
+                "  [Phase 1.5] Pass %d: recovered %d/%d, %d still dropped.",
+                pass_no, recovered, len(dropped), len(still),
+            )
+            if recovered == 0:
+                log.info("  [Phase 1.5] No recovery this pass — stopping re-sweep.")
+                break
+            dropped = still
+    finally:
+        if prev_interval is None:
+            os.environ.pop("STOCKYA_YF_MIN_INTERVAL", None)
+        else:
+            os.environ["STOCKYA_YF_MIN_INTERVAL"] = prev_interval
+
+    return list(by_sym.values())
+
+
 def _regime_halt_enabled() -> bool:
     """Whether a regime-OFF day should still HARD-halt buys.
 
@@ -460,6 +584,13 @@ def run_universe(
                 results.append(fut.result())
             except Exception:
                 log.exception("pipeline crashed for %s", futures[fut])
+
+    # ---- Phase 1.5: dropped-stock re-sweep (live Yahoo only) ----
+    # Recover symbols dropped at [I] Ingest because Yahoo rate-limited the first
+    # pass into an empty frame ("it isn't reading all the stocks"). Local sources
+    # (bhavcopy/demo) never 429, so this is scoped to the live Yahoo path.
+    if not demo_mode and os.environ.get("DATA_SOURCE", "bhavcopy").lower() == "yahoo":
+        results = _resweep_dropped_fetches(results, today_iso)
 
     # ---- Data-availability diagnostic ----
     # If >=90% of tickers failed at [I] Ingest, the composite score is
