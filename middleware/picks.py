@@ -30,6 +30,22 @@ from .schemas import PicksResponse
 log = logging.getLogger("picks")
 
 
+def _offline_bhavcopy_auto() -> bool:
+    """True => wrap the run in an offline bhavcopy download/erase cycle.
+
+    Gated on DATA_SOURCE=bhavcopy (the offline source) and not DEMO_MODE. Opt
+    out with STOCKYA_BHAVCOPY_AUTO=0 to manage the OHLCV cache yourself.
+    """
+    if os.environ.get("DEMO_MODE", "0") == "1":
+        return False
+    if os.environ.get("DATA_SOURCE", "bhavcopy").lower() != "bhavcopy":
+        return False
+    v = os.environ.get("STOCKYA_BHAVCOPY_AUTO")
+    if v is None:
+        return True
+    return v.strip().lower() not in ("0", "false", "no", "off", "")
+
+
 def generate_picks(force: bool = False) -> PicksResponse:
     """Run the pipeline and persist results. Returns the validated DTO.
 
@@ -45,7 +61,20 @@ def generate_picks(force: bool = False) -> PicksResponse:
     if force and delete_picks(today):
         log.info("Refresh: deleted existing picks file for %s", today)
     log.info("Running orchestrator for %s", today)
-    response = run_universe(today_iso=today)
+    # OFFLINE DATA SOURCE (owner ask, 2026-10-02): when DATA_SOURCE=bhavcopy, a
+    # run is a turn-key download -> analyze -> erase cycle. The session downloads
+    # only the trading days missing since the last run, pivots them into the
+    # per-symbol OHLCV cache the pipeline reads, and erases the bulky raw NSE
+    # dumps afterwards (and the per-symbol cache too under STOCKYA_BHAVCOPY_WIPE=1).
+    # Zero per-ticker Yahoo calls on this path = no rate limiting. The session
+    # never raises, so yahoo/demo runs and a missing/unreachable NSE just fall
+    # through to the normal pipeline behaviour. Reversible: STOCKYA_BHAVCOPY_AUTO=0.
+    if _offline_bhavcopy_auto():
+        from backend.bhavcopy_fetch import offline_session
+        with offline_session(today):
+            response = run_universe(today_iso=today)
+    else:
+        response = run_universe(today_iso=today)
     if response.get("date") == today:
         write_picks(today, response)
     else:

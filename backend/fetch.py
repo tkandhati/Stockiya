@@ -83,15 +83,15 @@ def fetch_snapshot(symbol: str) -> dict:
 
 
 def _bhavcopy_ohlcv_dir() -> Path:
-    """Where the tuner-pivoted per-symbol CSVs live.
+    """Where the per-symbol OHLCV CSVs live (reader + writer share this).
 
-    Default points at the sibling tuner repo. Override with
-    `STOCKYA_OHLCV_DIR=/abs/path` if the tuner cache is elsewhere.
+    Default is the in-repo, git-ignored ``data/ohlcv`` that
+    ``backend/bhavcopy_fetch.py`` downloads into and erases — so the offline
+    data source is self-contained (no dependency on the sibling tuner repo).
+    Override with ``STOCKYA_OHLCV_DIR=/abs/path`` to point at an external cache.
     """
-    raw = os.environ.get(
-        "STOCKYA_OHLCV_DIR",
-        "C:/Claude_projects/Stockya-tuner/data/ohlcv",
-    )
+    _repo_root = Path(__file__).resolve().parent.parent
+    raw = os.environ.get("STOCKYA_OHLCV_DIR", str(_repo_root / "data" / "ohlcv"))
     return Path(raw).resolve()
 
 

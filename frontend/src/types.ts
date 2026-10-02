@@ -757,6 +757,40 @@ export interface PicksResponse {
   pick_followup?: PickFollowupRow[]
   // Section 2 — Pullback Re-Entry Setups on previous picks with persisted interest.
   pullback_setups?: PullbackSetupRow[]
+  // Section 2 — tiled monitoring dashboard over the recent-picks cohort.
+  section2_dashboard?: Section2Dashboard
+}
+
+// Section 2 dashboard — a grid of top-5 leaderboard tiles + past-learnings tiles
+// over the recent-picks cohort. Monitoring only. Built in backend/section2_dashboard.py.
+export interface Section2TileRow {
+  symbol: string
+  display: string
+  company: string
+  value: string
+  extra: string | null
+  status: string | null
+}
+export interface Section2Tile {
+  id: string
+  title: string
+  subtitle: string
+  rows: Section2TileRow[]
+}
+export interface Section2Learning {
+  id: string
+  badge: string
+  label: string
+  why: string
+  names: { symbol: string; display: string }[]
+}
+export interface Section2Dashboard {
+  window_days: number
+  cohort_size: number
+  evaluated?: number
+  tiles: Section2Tile[]
+  learnings: Section2Learning[]
+  setups: PullbackSetupRow[]
 }
 
 // Section 2 — one previous pick evaluated by the impulse -> VDU pullback ->

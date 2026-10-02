@@ -1066,6 +1066,24 @@ def run_universe(
         log.exception("build_pullback_setups failed")
         pullback_setups = []
 
+    # Section 2 — tiled monitoring dashboard over the recent-picks cohort (owner
+    # ask, 2026-10-02): top-5 leaderboards by volume (15/30/45/60d) + delivery +
+    # accumulation + most-recommended, plus past-learnings tiles. Presentation-
+    # only, same cohort/OHLCV as the setups table. See backend/section2_dashboard.py.
+    try:
+        from .section2_dashboard import build_section2
+        section2_dashboard = build_section2(today_iso)
+        if section2_dashboard:
+            log.info(
+                "  [Phase 4/4] Section-2 dashboard: cohort=%d, %d tiles, %d learning(s)",
+                section2_dashboard.get("cohort_size", 0),
+                len(section2_dashboard.get("tiles", [])),
+                len(section2_dashboard.get("learnings", [])),
+            )
+    except Exception:
+        log.exception("build_section2 failed")
+        section2_dashboard = None
+
     # Readiness badges + "show all 5" main list (owner ask, 2026-08-25). The
     # router above already classified every pick; here we STAMP that verdict onto
     # each payload as a `readiness` badge and — when STOCKYA_MAIN_SHOW_ALL is on
@@ -1102,6 +1120,8 @@ def run_universe(
     # or disabled. Persisted into picks_<date>.json.
     if pullback_setups:
         response["pullback_setups"] = pullback_setups
+    if section2_dashboard is not None:
+        response["section2_dashboard"] = section2_dashboard
 
     # DISABLED: 2-section mode (reversible). The blocks below emitted the
     # data_health pill, not_actionable / coiled_accumulators / pick_followup

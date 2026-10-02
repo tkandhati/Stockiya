@@ -1,17 +1,20 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Link } from 'react-router-dom'
-import { Briefcase, FlaskConical, RefreshCw, Sparkles } from 'lucide-react'
+import { RefreshCw, Sparkles } from 'lucide-react'
 import { fetchPicks, fmtDateTimeIST, refreshPicks } from '../api'
 import { PickCard } from '../components/PickCard'
 import { PullbackSetupsTable } from '../components/PullbackSetupsTable'
-import { StrategyTabs } from '../components/StrategyTabs'
+import { Section2Dashboard } from '../components/Section2Dashboard'
 import type { PicksResponse } from '../types'
 
-// TWO-SECTION MODE (owner ask, 2026-09-19). The page renders exactly two content
-// sections: (1) Top picks by volume, (2) Pullback Re-Entry Setups on previous
-// picks. All other panels/banners were removed here AND in
-// backend/orchestrator.py (both reversible). The imports + blocks below are
-// commented, not deleted, so any panel can be restored:
+// TWO-SECTION / SIMPLE MODE (owner ask, 2026-09-19; tabs removed 2026-10-02).
+// The page renders exactly two content sections: (1) Top picks by volume,
+// (2) Pullback Re-Entry Setups on the last ~45-60 days of picks. The strategy
+// tab bar and the header links to other pages (My positions / Backtest / Price
+// trend) are gone too — see App.tsx, which routes only "/" and "/stock/:symbol".
+// Everything is commented, not deleted, so any panel/tab can be restored:
+//   import { Link } from 'react-router-dom'
+//   import { Briefcase, FlaskConical } from 'lucide-react'
+//   import { StrategyTabs } from '../components/StrategyTabs'
 //   import { DemoBanner } from '../components/DemoBanner'
 //   import { DataHealthPill } from '../components/DataHealthPill'
 //   import { ClosestToFiringPanel } from '../components/ClosestToFiringPanel'
@@ -36,10 +39,10 @@ export function PicksPage() {
   // Section 1 — the top picks, by volume. One clean list (no sub-split).
   const topPicks = data?.picks ?? []
   const pullbackSetups = data?.pullback_setups ?? []
+  const section2 = data?.section2_dashboard
 
   return (
     <div className="mx-auto max-w-6xl px-6 py-10">
-      <StrategyTabs />
       <header className="flex flex-wrap items-end justify-between gap-4">
         <div>
           <h1 className="flex items-center gap-2 text-2xl font-bold text-slate-900">
@@ -66,20 +69,6 @@ export function PicksPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <Link
-            to="/backtest"
-            className="flex items-center gap-2 rounded-lg border border-violet-300 bg-violet-50 px-3 py-2 text-sm font-medium text-violet-900 shadow-sm transition hover:border-violet-400 hover:bg-violet-100"
-          >
-            <FlaskConical className="h-4 w-4" />
-            Backtest
-          </Link>
-          <Link
-            to="/positions"
-            className="flex items-center gap-2 rounded-lg border border-indigo-300 bg-indigo-50 px-3 py-2 text-sm font-medium text-indigo-900 shadow-sm transition hover:border-indigo-400 hover:bg-indigo-100"
-          >
-            <Briefcase className="h-4 w-4" />
-            My positions
-          </Link>
           <button
             onClick={() => refresh.mutate()}
             disabled={refresh.isPending || isLoading}
@@ -133,9 +122,13 @@ export function PicksPage() {
         )}
       </main>
 
-      {/* Section 2 — Pullback Re-Entry Setups on previous picks with persisted
-          interest. Renders null when empty. */}
-      {pullbackSetups.length > 0 && <PullbackSetupsTable rows={pullbackSetups} />}
+      {/* Section 2 — recent-picks analysis. Prefer the tiled dashboard; fall
+          back to the legacy setups table for older payloads. */}
+      {section2 ? (
+        <Section2Dashboard dash={section2} />
+      ) : (
+        pullbackSetups.length > 0 && <PullbackSetupsTable rows={pullbackSetups} />
+      )}
 
       {data && (
         <footer className="mt-8 text-xs text-slate-400">

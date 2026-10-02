@@ -258,6 +258,11 @@ class PicksResponse(BaseModel):
     # interest. PRESENTATION/MONITORING ONLY, additive. Untyped dicts so inner
     # keys pass through; None/absent when empty or disabled (STOCKYA_PULLBACK_SETUPS=0).
     pullback_setups: Optional[list[dict]] = None
+    # Section 2 — tiled monitoring DASHBOARD over the recent-picks cohort (owner
+    # ask, 2026-10-02): top-5 leaderboards (volume 15/30/45/60d, delivery,
+    # accumulation, most-recommended) + past-learnings tiles. PRESENTATION ONLY,
+    # additive. Untyped dict so inner keys pass through; None/absent when disabled.
+    section2_dashboard: Optional[dict] = None
 
 
 # --------------------------------------------------------------------------- #
