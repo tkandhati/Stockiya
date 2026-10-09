@@ -1,0 +1,33 @@
+# =============================================================================
+# Stockiya VOLUME UNIVERSE  —  the top-500-by-market-cap list the picker scans.
+# =============================================================================
+# PASTE YOUR LIST BELOW: one NSE symbol per line.
+#
+#   * The ".NS" suffix is OPTIONAL — it's added automatically.
+#       RELIANCE        and   RELIANCE.NS     are equivalent.
+#   * Blank lines are ignored. Anything after a "#" on a line is a comment.
+#   * Order is preserved; duplicates are dropped automatically.
+#   * Known dead/renamed tickers are stripped automatically (see
+#     backend/universe.py:_DEAD_OR_RENAMED) — e.g. use ARE&M not AMARAJABAT,
+#     KOTAKBANK not KOTAK, RELIANCE not RIL, CUB not CITYUNIONBK, PVRINOX not PVR.
+#
+# HOW IT'S USED:
+#   * When this file has at least one symbol below, it BECOMES the volume
+#     universe (VOLUME_UNIVERSE) — it overrides the in-code Nifty-300 fallback.
+#   * While this file is only comments (as shipped), the picker falls back to
+#     the cleaned in-code NIFTY_300 list, so nothing breaks until you fill it in.
+#   * On the bhavcopy data source, only these symbols are pivoted from the NSE
+#     whole-market daily file — so a 500-name list is still ONE download/day.
+#   * Point somewhere else with the env var STOCKYA_VOLUME_UNIVERSE_FILE=/path.
+#
+# AFTER EDITING on the run machine: git pull (if committed) OR edit here, then
+# restart the app so the new list is loaded.
+#
+# -----------------------------------------------------------------------------
+# Example (delete these comment markers and paste your ~500 symbols):
+# RELIANCE
+# HDFCBANK
+# TCS
+# INFY
+# ICICIBANK
+# -----------------------------------------------------------------------------

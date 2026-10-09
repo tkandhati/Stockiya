@@ -1,5 +1,83 @@
 # Changelog
 
+## 2026-10-08 — Yahoo: stop looping forever on delisted/renamed symbols (persistent negative cache)
+
+Owner report: a live `DATA_SOURCE=yahoo` run "keeps looping for hours even when it
+is delisted" — the log showed the same ~12 dead/renamed NSE names (`L&TFH`,
+`UJJIVAN`, `AMARAJABAT`, `GET&D`, `CENTURYTEX`, `IBREALEST`, `CITYUNIONBK`,
+`IIFCL`, `IIFLWAM`, `IBULHSGFIN`, `ISEC`, `GUJGASLTD`) re-fetched dozens of times
+each, spanning 15+ minutes.
+
+### Root cause
+A delisted symbol returns an **empty** frame, which was indistinguishable from a
+transient 429-empty, so it was treated as *retryable*:
+  - `yf_session.call` retried it **5×** with backoff on **every** fetch window;
+  - two windows per symbol (live ~450d + ~730d) doubled that;
+  - `orchestrator._resweep_dropped_fetches` `forget()`s then re-fetches every
+    `[I] Ingest`-dropped symbol each pass (dead names always drop), only stopping
+    early when a pass recovers *zero* — so one lucky transient recovery kept the
+    corpses cycling;
+  - **nothing was persisted** (empties are never disk-cached, no dead-list), so
+    every run / window / pass repeated the whole 5×-retry burn for the same names.
+
+### Fix  (`backend/yf_session.py`, single network chokepoint)
+Yahoo always logs the word **"delisted"** for these (both forms: *"possibly
+delisted; no timezone found"* and *"…no price data found … symbol may be
+delisted"*), so a PERMANENT miss is now told apart from a transient empty:
+  - A read-only handler on yfinance's own logger (`_YFDelistWatcher`) captures the
+    "delisted" marker **per worker thread** (10-wide fan-out safe). An empty frame
+    carrying that marker raises a new `_Delisted` sentinel; a plain under-load
+    empty still raises the retryable `_Empty` — so a rate-limited-but-valid symbol
+    is **never** blacklisted.
+  - `call()` re-raises `_Delisted` immediately — **no retry, no backoff**.
+  - **Persistent negative cache** `data/yf_cache/_delisted.json` (symbol →
+    first-seen epoch). `history()` short-circuits a cached dead symbol to an empty
+    frame with **zero network, zero retry, zero log spam**, for ALL windows and
+    across runs. Re-probed once after a TTL so a re-listing / fixed rename recovers
+    on its own; a symbol that returns real data clears itself from the list.
+  - The orchestrator re-sweep now benefits automatically: `forget()`→re-fetch of a
+    dead name hits the short-circuit (instant empty), not a 5×-retry storm.
+
+Fully reversible: `STOCKYA_YF_SKIP_DELISTED=0` restores the old retry-everything
+behaviour; `STOCKYA_YF_DELISTED_TTL_DAYS` (default 30) tunes the re-probe window.
+One `INFO` line is logged the first time each symbol is blacklisted. The existing
+`backend/check_universe.py` remains the way to prune dead names from
+`VOLUME_UNIVERSE` for good.
+
+## 2026-10-08 — Volume universe: owner-supplied "top 500 by market cap" file + dead-ticker cleanup
+
+Owner ask: *"which list it is reading? can you clean them — I just need top 500
+with market cap,"* and chose to **supply the list themselves**.
+
+### Where the universe comes from  (`backend/universe.py`)
+`VOLUME_UNIVERSE` is now sourced in priority order:
+  1. **Owner file `config/universe_custom.txt`** — the top-500-by-market-cap list.
+     One symbol per line, `.NS` optional, `#` comments / blank lines ignored;
+     override the path with `STOCKYA_VOLUME_UNIVERSE_FILE`. When present and
+     non-empty this IS the universe (re-enables file-sourcing that was dropped
+     2026-09-06, now at the owner's explicit request).
+  2. **Cleaned in-code `NIFTY_300` fallback** when the file is absent/empty, so
+     the app is never left blank. A shipped template (comments only) keeps the
+     fallback active until the owner pastes their names.
+There is no offline market-cap feed (bhavcopy has OHLCV + delivery%, not market
+cap), so the ranking is whatever list the owner supplies. On bhavcopy a 500-name
+list is still ONE whole-market download/day (only these symbols are pivoted).
+
+### Dead-ticker cleanup  (`_DEAD_OR_RENAMED` + `_clean`)
+Every curated list is now run through `_clean` (order-preserving de-dupe **plus**
+a dead/renamed/wrong-form strip). Removed: `AMARAJABAT`→ARE&M, `L&TFH`→LTF,
+`GET&D`→GETD, `CENTURYTEX`, `IBREALEST`, `IIFCL`, `IIFLWAM`→360ONE,
+`IBULHSGFIN`→SAMMAANCAP, `ISEC` (delisted), `CITYUNIONBK`→CUB, `UJJIVAN`→UJJIVANSFB,
+`KOTAK`→KOTAKBANK, `RIL`→RELIANCE, `PVR`→PVRINOX, `LTIM`, `MAHINDCIE`→CIEINDIA,
+`COMPUTERAGE`→CAMS — the exact names that drove the "possibly delisted" fetch loop.
+The correct replacements were already present in the lists. The file loader and
+the discovery `custom` universe share one reader (`_read_symbol_file`), so the
+same cleaning applies to an owner-supplied list too.
+
+Reversible: delete/empty the file to return to the in-code fallback; drop a symbol
+from `_DEAD_OR_RENAMED` to let it back in. The stale, no-longer-read
+`config/nifty_total_market.csv` was left in place (harmless).
+
 ## 2026-09-19 — Yahoo: 1 call per stock + required-interval fetch; report trimmed to 2 sections; new "Pullback Re-Entry Setups"
 
 Owner ask, after live `DATA_SOURCE=yahoo` runs were 429-throttled so hard most

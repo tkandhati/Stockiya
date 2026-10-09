@@ -58,6 +58,17 @@ Env knobs (safe defaults; unset == default)
                             the #1 429 source on a full-universe
                             run. Set =0 to restore .info labels
                             (longName/sector/industry).
+  STOCKYA_YF_SKIP_DELISTED  negative-cache symbols Yahoo        (default ON)
+                            reports as delisted/no-data so they
+                            are probed at most once per TTL
+                            instead of burning 5 retries + a
+                            re-sweep every run. Set =0 to retry
+                            dead symbols every time (old noisy
+                            behaviour).
+  STOCKYA_YF_DELISTED_TTL_DAYS  re-probe a negative-cached      (default 30)
+                            symbol once this many days pass (so
+                            a re-listing / fixed rename recovers
+                            on its own).
 
 Nothing here raises: a fully offline / dependency-less environment still works
 — it just falls back to plain yfinance with the throttle + retry applied. The
@@ -227,6 +238,15 @@ class _Empty(Exception):
     """Internal: yfinance returned an empty frame — treated as retryable."""
 
 
+class _Delisted(Exception):
+    """Internal: Yahoo reported the symbol delisted/renamed — PERMANENT.
+
+    Distinct from ``_Empty`` (transient, retryable). Raising this short-circuits
+    the retry loop in ``call`` and feeds the on-disk negative cache, so a dead
+    symbol is never retried within a run and skipped entirely on future runs.
+    """
+
+
 def _is_rate_limited(err: BaseException) -> bool:
     s = f"{type(err).__name__}: {err}".lower()
     return any(k in s for k in ("429", "too many requests", "rate limit", "ratelimit"))
@@ -244,11 +264,154 @@ def _retry_after(err: BaseException) -> Optional[float]:
         return None
 
 
+# --------------------------------------------------------------------------- #
+# Delisted / no-data detection + persistent negative cache
+# --------------------------------------------------------------------------- #
+# Why: a renamed/delisted symbol (e.g. L&TFH->LTF, AMARAJABAT->ARE&M, UJJIVAN
+# merged) returns an EMPTY frame forever. Without this it is indistinguishable
+# from a transient 429-empty, so it burns the full 5-retry backoff on every
+# fetch window AND gets re-fetched by the orchestrator re-sweep on every pass —
+# the "keeps looping for hours on a delisted symbol" report. Yahoo always logs
+# the word "delisted" for these (both error forms: "possibly delisted; no
+# timezone found" and "...no price data found ... No data found, symbol may be
+# delisted"), so we can tell a PERMANENT miss apart from a transient empty and
+# (a) never retry it, (b) remember it on disk so later runs skip it outright.
+# A plain under-load empty carries NO "delisted" marker, so a rate-limited but
+# VALID symbol is never blacklisted — it stays on the retryable `_Empty` path.
+_DELISTED_MARKER = "delisted"
+
+_DELISTED_PATH = _CACHE_DIR / "_delisted.json"
+_delisted_lock = threading.Lock()
+_delisted_cache: Optional[dict] = None  # symbol -> first-seen epoch; None=unloaded
+
+# Per-thread flag set by the yfinance-logger watcher below. The 10-wide fan-out
+# means each worker must read only its OWN call's signal, hence thread-local.
+_delist_signal = threading.local()
+
+
+def _delisted_enabled() -> bool:
+    return _envb("STOCKYA_YF_SKIP_DELISTED", True)
+
+
+def _delisted_ttl_s() -> float:
+    days = _envf("STOCKYA_YF_DELISTED_TTL_DAYS", 30.0)
+    return max(0.0, days) * 86400.0
+
+
+def _load_delisted() -> dict:
+    global _delisted_cache
+    if _delisted_cache is not None:
+        return _delisted_cache
+    with _delisted_lock:
+        if _delisted_cache is not None:
+            return _delisted_cache
+        data: dict = {}
+        try:
+            import json
+            if _DELISTED_PATH.exists():
+                raw = json.loads(_DELISTED_PATH.read_text(encoding="utf-8"))
+                if isinstance(raw, dict):
+                    data = {str(k): float(v) for k, v in raw.items()}
+        except Exception:  # noqa: BLE001 — a bad file must never break a fetch
+            data = {}
+        _delisted_cache = data
+        return _delisted_cache
+
+
+def _is_delisted(symbol: str) -> bool:
+    """True if ``symbol`` was recently flagged delisted and is still within TTL."""
+    cache = _load_delisted()
+    with _delisted_lock:
+        seen = cache.get(symbol)
+    if seen is None:
+        return False
+    ttl = _delisted_ttl_s()
+    if ttl > 0 and (time.time() - seen) > ttl:
+        return False  # TTL lapsed -> re-probe once (handles re-listings)
+    return True
+
+
+def _mark_delisted(symbol: str) -> None:
+    """Record ``symbol`` as delisted (first-seen=now) and persist to disk."""
+    cache = _load_delisted()
+    with _delisted_lock:
+        cache[symbol] = time.time()
+        _persist_delisted_locked(cache)
+
+
+def _clear_delisted(symbol: str) -> None:
+    """Drop ``symbol`` from the negative cache — it returned real data again."""
+    if _delisted_cache is None:
+        return  # nothing loaded -> symbol can't be cached
+    with _delisted_lock:
+        if symbol in _delisted_cache:
+            _delisted_cache.pop(symbol, None)
+            _persist_delisted_locked(_delisted_cache)
+
+
+def _persist_delisted_locked(cache: dict) -> None:
+    """Write the negative cache to disk (caller holds ``_delisted_lock``).
+
+    Expired entries are pruned on write so the file can't grow without bound.
+    """
+    try:
+        import json
+        ttl = _delisted_ttl_s()
+        now = time.time()
+        if ttl > 0:
+            for sym in [s for s, t in cache.items() if (now - t) > ttl]:
+                cache.pop(sym, None)
+        _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        _DELISTED_PATH.write_text(json.dumps(cache, indent=0), encoding="utf-8")
+    except Exception:  # noqa: BLE001 — persistence is best-effort
+        pass
+
+
+class _YFDelistWatcher(logging.Handler):
+    """Records, per thread, whether yfinance just logged a 'delisted' error.
+
+    Keys off yfinance's own user-facing log text (stable across versions and
+    exactly what the operator sees), so no dependency on yfinance internals.
+    Emits nothing and never raises — pure read-only signal capture.
+    """
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            if _DELISTED_MARKER in record.getMessage().lower():
+                _delist_signal.hit = True
+        except Exception:  # noqa: BLE001
+            pass
+
+
+_watcher_installed = False
+
+
+def _ensure_delist_watcher() -> None:
+    global _watcher_installed
+    if _watcher_installed:
+        return
+    _watcher_installed = True
+    try:
+        logging.getLogger("yfinance").addHandler(_YFDelistWatcher())
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def clear_delisted_cache() -> None:
+    """Forget every negative-cached symbol (force a re-probe). For ops/tests."""
+    global _delisted_cache
+    with _delisted_lock:
+        _delisted_cache = {}
+        _persist_delisted_locked(_delisted_cache)
+
+
 def call(fn: Callable[..., Any], *args: Any, _label: str = "yf", **kwargs: Any) -> Any:
     """Run a yfinance callable through the throttle with 429-aware retry.
 
     Returns ``fn(*args, **kwargs)``. Re-raises the last error once retries are
     exhausted, so callers keep their existing empty/None fallback behaviour.
+    A ``_Delisted`` sentinel is PERMANENT and re-raised immediately (no retry,
+    no backoff) — the caller negative-caches it.
     """
     attempts = max(1, _envi("STOCKYA_YF_MAX_RETRIES", 5))
     base = max(0.0, _envf("STOCKYA_YF_BACKOFF_BASE", 1.0))
@@ -261,6 +424,8 @@ def call(fn: Callable[..., Any], *args: Any, _label: str = "yf", **kwargs: Any) 
             result = fn(*args, **kwargs)
             _note_success()  # adaptive: a clean call nudges the interval back down
             return result
+        except _Delisted:
+            raise  # permanent miss: never retry, never backoff
         except Exception as e:  # noqa: BLE001
             last = e
             if i >= attempts - 1:
@@ -427,20 +592,52 @@ def history(ticker: Any, symbol: str, sig: str, **kwargs: Any) -> pd.DataFrame:
         if cached is not None:
             return cached
 
+    # Negative cache: a symbol Yahoo recently reported delisted is skipped
+    # entirely — no network, no retry, no log spam — until its TTL lapses and it
+    # is re-probed once. THE fix for "keeps looping for hours on a dead symbol".
+    neg_on = _delisted_enabled()
+    if neg_on and _is_delisted(symbol):
+        return pd.DataFrame()
+
+    if neg_on:
+        _ensure_delist_watcher()
+
     def _once() -> pd.DataFrame:
+        if neg_on:
+            _delist_signal.hit = False  # reset this thread's signal per attempt
         h = ticker.history(**kwargs)
         if h is None or getattr(h, "empty", True):
-            raise _Empty()  # retryable: Yahoo returns empty under load
+            # Yahoo logs "delisted" for renamed/dead symbols -> PERMANENT; a plain
+            # under-load empty does not -> retryable.
+            if neg_on and getattr(_delist_signal, "hit", False):
+                raise _Delisted()
+            raise _Empty()
         return h
 
     try:
         df = call(_once, _label=f"history[{symbol}]")
+    except _Delisted:
+        if neg_on:
+            _mark_delisted(symbol)
+            log.info(
+                "history[%s]: Yahoo reports delisted/no-data — negative-cached "
+                "for %.0f day(s); skipping future fetches until re-probe.",
+                symbol, _delisted_ttl_s() / 86400.0,
+            )
+        return pd.DataFrame()
     except _Empty:
         return pd.DataFrame()
     except Exception as e:  # noqa: BLE001
+        # Some yfinance builds raise the delisted message instead of logging it.
+        if neg_on and _DELISTED_MARKER in f"{e}".lower():
+            _mark_delisted(symbol)
+            log.info("history[%s]: delisted (raised) — negative-cached.", symbol)
+            return pd.DataFrame()
         log.warning("history(%s, %s) failed after retries: %s", symbol, sig, e)
         return pd.DataFrame()
 
+    if neg_on:
+        _clear_delisted(symbol)  # real data -> drop any stale blacklist entry
     if path is not None:
         _write_cache(path, df)
         _maybe_prune()
@@ -519,8 +716,11 @@ def selftest(symbol: str = "AAPL", with_info: bool = False) -> dict:
         "STOCKYA_YF_CACHE": _envb("STOCKYA_YF_CACHE", True),
         "STOCKYA_YF_IMPERSONATE": _envb("STOCKYA_YF_IMPERSONATE", True),
         "STOCKYA_YF_SKIP_INFO": _envb("STOCKYA_YF_SKIP_INFO", True),
+        "STOCKYA_YF_SKIP_DELISTED": _envb("STOCKYA_YF_SKIP_DELISTED", True),
+        "STOCKYA_YF_DELISTED_TTL_DAYS": _envf("STOCKYA_YF_DELISTED_TTL_DAYS", 30.0),
     }
     report["adaptive_interval_penalty_now"] = round(_interval_penalty, 2)
+    report["delisted_cached_count"] = len(_load_delisted())
 
     # One real fetch (cache bypassed so it's a true network probe).
     prev_cache = os.environ.get("STOCKYA_YF_CACHE")

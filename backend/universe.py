@@ -1,11 +1,16 @@
 """Stock universes — Nifty Total Market (volume strategy) + Nifty 50 / 100 /
 200 / 300 / 500 and a `custom` file loader (discovery tools).
 
-The volume strategy is scoped to ``VOLUME_UNIVERSE`` = the ``NIFTY_300`` list
-defined in-code below (~300 NSE names). The CSV loader that previously read
-``config/nifty_total_market.csv`` was removed on 2026-09-06 at the owner's
-request — the universe is now a plain in-code list, no file reading. To change
-membership, edit the curated lists below.
+The volume strategy's ``VOLUME_UNIVERSE`` is sourced, in priority order:
+  1. The owner-supplied file ``config/universe_custom.txt`` (the "top 500 by
+     market cap" list — owner ask 2026-10-08). One symbol per line, ``.NS``
+     optional, ``#`` comments / blank lines ignored. Override the path with
+     ``STOCKYA_VOLUME_UNIVERSE_FILE``.
+  2. If that file is absent/empty, the cleaned in-code ``NIFTY_300`` list below
+     (~300 NSE names) — so the app is never left blank.
+Dead / renamed / wrong-form tickers are stripped from every list via
+``_DEAD_OR_RENAMED`` + ``_clean``. To change the live universe, edit the file;
+to change the fallback, edit the curated lists below.
 
 ``STOCKYA_UNIVERSE`` selects the configurable universe used by independent
 discovery tools such as the price-trend scanner (it is independent of the volume
@@ -56,6 +61,67 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _CUSTOM_UNIVERSE_PATH = _PROJECT_ROOT / "config" / "universe_custom.txt"
 
 # --------------------------------------------------------------------------- #
+# Known dead / renamed / wrong-form tickers — stripped from every curated list.
+#
+# These were confirmed delisted or renamed on Yahoo (the "possibly delisted"
+# fetch loop, 2026-10-08) or are a wrong ticker form whose correct symbol is
+# already present in the lists. The curated in-code lists below are now only the
+# FALLBACK (the live universe is the owner-supplied config/universe_custom.txt),
+# but keeping the fallback clean means a missing file never resurrects a corpse.
+# Reversible: drop a symbol from this set to let it back in.
+# --------------------------------------------------------------------------- #
+_DEAD_OR_RENAMED = frozenset({
+    "AMARAJABAT.NS",   # renamed -> ARE&M.NS (present)
+    "L&TFH.NS",        # renamed -> LTF.NS
+    "GET&D.NS",        # renamed -> GETD.NS
+    "CENTURYTEX.NS",   # no data on Yahoo (corporate action)
+    "IBREALEST.NS",    # Indiabulls Real Estate — no data on Yahoo
+    "IIFCL.NS",        # not an EQ listing on Yahoo
+    "IIFLWAM.NS",      # renamed -> 360ONE.NS
+    "IBULHSGFIN.NS",   # renamed -> SAMMAANCAP.NS
+    "ISEC.NS",         # ICICI Securities delisted (merged into ICICIBANK)
+    "CITYUNIONBK.NS",  # wrong form -> CUB.NS (present)
+    "UJJIVAN.NS",      # merged -> UJJIVANSFB.NS (present)
+    "KOTAK.NS",        # wrong form -> KOTAKBANK.NS (present)
+    "RIL.NS",          # wrong form -> RELIANCE.NS (present)
+    "PVR.NS",          # merged -> PVRINOX.NS (present)
+    "LTIM.NS",         # Yahoo 404s after the L&T-Mindtree merger
+    "MAHINDCIE.NS",    # renamed -> CIEINDIA.NS (present)
+    "COMPUTERAGE.NS",  # old name -> CAMS.NS (present)
+})
+
+
+def _clean(xs):
+    """De-dupe (order-preserving) AND drop known dead/renamed tickers."""
+    seen = set()
+    out = []
+    for x in xs:
+        if x in seen or x in _DEAD_OR_RENAMED:
+            continue
+        seen.add(x)
+        out.append(x)
+    return out
+
+
+def _read_symbol_file(path: Path) -> list[str]:
+    """Read a one-symbol-per-line universe file. ``[]`` if missing/empty.
+
+    Rules (shared by the volume universe and the discovery ``custom`` universe):
+      - blank lines ignored; ``#`` starts a comment (text after it is stripped)
+      - a symbol without a ``.NS`` suffix gets one appended automatically
+      - order preserved, duplicates dropped, known dead/renamed names stripped
+    """
+    if not path.exists():
+        return []
+    out = []
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        out.append(line if line.upper().endswith(".NS") else f"{line}.NS")
+    return _clean(out)
+
+# --------------------------------------------------------------------------- #
 # Nifty 50 (large-caps)
 # --------------------------------------------------------------------------- #
 NIFTY_50 = [
@@ -92,7 +158,7 @@ NIFTY_NEXT_50 = [
     "TATAPOWER.NS", "TVSMOTOR.NS", "UNITDSPR.NS", "VBL.NS", "VEDL.NS",
 ]
 
-NIFTY_100 = NIFTY_50 + NIFTY_NEXT_50
+NIFTY_100 = _clean(NIFTY_50 + NIFTY_NEXT_50)
 
 # --------------------------------------------------------------------------- #
 # Nifty Midcap 100
@@ -117,7 +183,7 @@ NIFTY_MIDCAP_100 = [
     "ZYDUSLIFE.NS",
 ]
 
-NIFTY_200 = NIFTY_100 + [t for t in NIFTY_MIDCAP_100 if t not in NIFTY_100]
+NIFTY_200 = _clean(NIFTY_100 + NIFTY_MIDCAP_100)
 
 # --------------------------------------------------------------------------- #
 # Nifty Smallcap 100 (subset) — 300 more names below N200 to reach ~500
@@ -204,20 +270,9 @@ NIFTY_SMALLCAP_300 = [
     "NUVAMA.NS", "NUVOCO.NS", "OLECTRA.NS", "ORIENTCEM.NS", "ORIENTELEC.NS",
 ]
 
-# De-dupe while preserving order (there are known dupes above from curation).
-def _dedupe(xs):
-    seen = set()
-    out = []
-    for x in xs:
-        if x not in seen:
-            seen.add(x)
-            out.append(x)
-    return out
+NIFTY_SMALLCAP_300 = _clean(NIFTY_SMALLCAP_300)
 
-
-NIFTY_SMALLCAP_300 = _dedupe(NIFTY_SMALLCAP_300)
-
-NIFTY_500 = _dedupe(NIFTY_200 + [t for t in NIFTY_SMALLCAP_300 if t not in NIFTY_200])
+NIFTY_500 = _clean(NIFTY_200 + NIFTY_SMALLCAP_300)
 
 # --------------------------------------------------------------------------- #
 # Nifty 300 — pragmatic broad universe (NOT an official index).
@@ -233,29 +288,59 @@ NIFTY_300 = NIFTY_500[:300]
 # --------------------------------------------------------------------------- #
 # Nifty Total Market — the volume strategy's universe.
 #
-# Now defined purely in-code as the Nifty 300 list above (the CSV loader was
-# removed on 2026-09-06 at the owner's request — the universe is a plain list,
-# no file reading). To change membership, edit the curated lists above.
+# PRIMARY SOURCE (owner ask, 2026-10-08: "I just need top 500 with market cap"):
+# an owner-supplied file — the top-500-by-market-cap list — at
+# ``config/universe_custom.txt`` (override path with STOCKYA_VOLUME_UNIVERSE_FILE).
+# One symbol per line, ``.NS`` optional, ``#`` comments / blank lines ignored.
+# When that file is present and non-empty it IS the volume universe; otherwise
+# the strategy falls back to the cleaned in-code NIFTY_300 below so a missing
+# file never leaves the app blank. (This re-enables file-sourcing that was
+# dropped on 2026-09-06 — now at the owner's explicit request, and reversible:
+# delete/empty the file to go back to the in-code list.)
 # --------------------------------------------------------------------------- #
 
 NIFTY_TOTAL_MARKET = list(NIFTY_300)
 
+
+def _volume_universe_file() -> Path:
+    raw = os.environ.get("STOCKYA_VOLUME_UNIVERSE_FILE")
+    return Path(raw).expanduser() if raw else _CUSTOM_UNIVERSE_PATH
+
+
+def _load_volume_universe() -> tuple[list[str], str, str]:
+    """(symbols, name, label) — owner file if present, else the in-code fallback."""
+    path = _volume_universe_file()
+    names = _read_symbol_file(path)
+    if names:
+        if len(names) < 100:
+            # Respect the file, but make a suspiciously short "top 500" loud.
+            log.warning(
+                "Volume universe from %s has only %d symbol(s) — expected ~500. "
+                "Using it as-is; check the file if that's unintended.",
+                path.name, len(names),
+            )
+        log.info("Volume universe: %d symbols from %s.", len(names), path.name)
+        return names, "custom-file", f"Custom ({path.name})"
+    log.info("Volume universe: %s file absent/empty — using in-code NIFTY_300 "
+             "fallback (%d names).", _volume_universe_file().name, len(NIFTY_TOTAL_MARKET))
+    return list(NIFTY_TOTAL_MARKET), "niftytotal", "Nifty Total Market"
+
+
 # The volume strategy's eligibility boundary. Keep this separate from the
 # configurable discovery ``UNIVERSE`` below: changing STOCKYA_UNIVERSE may widen
 # or narrow independent scanners, but the volume strategy always scans exactly
-# the Nifty Total Market membership loaded above.
-VOLUME_UNIVERSE_NAME = "niftytotal"
-VOLUME_UNIVERSE_LABEL = "Nifty Total Market"
-VOLUME_UNIVERSE = tuple(NIFTY_TOTAL_MARKET)
+# the membership loaded above.
+_VOL_NAMES, VOLUME_UNIVERSE_NAME, VOLUME_UNIVERSE_LABEL = _load_volume_universe()
+VOLUME_UNIVERSE = tuple(_VOL_NAMES)
 VOLUME_UNIVERSE_SET = frozenset(VOLUME_UNIVERSE)
-# Sanity guards: reject duplicates and a suspiciously small list so the strategy
-# fails loudly at import rather than silently scanning a partial universe.
+# Sanity guard: _read_symbol_file / _clean already de-dupe, so a duplicate here
+# would be a real bug — fail loudly rather than silently scan a partial universe.
 if len(VOLUME_UNIVERSE) != len(VOLUME_UNIVERSE_SET):
     raise RuntimeError("VOLUME_UNIVERSE contains duplicate symbols")
-if len(VOLUME_UNIVERSE) < 100:
+if not VOLUME_UNIVERSE:
     raise RuntimeError(
-        f"VOLUME_UNIVERSE has only {len(VOLUME_UNIVERSE)} symbols — expected the "
-        "Nifty 300 list (~300). Check the NIFTY_300 definition in backend/universe.py."
+        "VOLUME_UNIVERSE is empty — both the owner file "
+        f"({_volume_universe_file()}) and the in-code NIFTY_300 fallback are empty."
     )
 
 
@@ -264,29 +349,12 @@ if len(VOLUME_UNIVERSE) < 100:
 # --------------------------------------------------------------------------- #
 
 def _load_custom_universe() -> list[str]:
-    """Read config/universe_custom.txt. One symbol per line.
+    """Read config/universe_custom.txt for the discovery ``custom`` universe.
 
-    Rules:
-      - blank lines ignored
-      - `#` starts a comment; text after `#` is stripped
-      - symbols without `.NS` suffix get one appended automatically
-      - order is preserved; duplicates dropped
-      - if the file is missing or empty, returns [] (caller must handle)
+    Same file + rules as the volume universe (see ``_read_symbol_file``);
+    returns ``[]`` if the file is missing or has no active symbols.
     """
-    if not _CUSTOM_UNIVERSE_PATH.exists():
-        return []
-    out = []
-    seen = set()
-    for raw in _CUSTOM_UNIVERSE_PATH.read_text(encoding="utf-8").splitlines():
-        line = raw.split("#", 1)[0].strip()
-        if not line:
-            continue
-        sym = line if line.endswith(".NS") else f"{line}.NS"
-        if sym in seen:
-            continue
-        seen.add(sym)
-        out.append(sym)
-    return out
+    return _read_symbol_file(_CUSTOM_UNIVERSE_PATH)
 
 
 # --------------------------------------------------------------------------- #
