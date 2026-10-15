@@ -17,7 +17,7 @@
 
 ## 0. One-sentence summary — current spine
 
-Stockiya fetches 180 daily bars of OHLCV for every stock in the scan universe (the Nifty Total Market list — ~750 NSE names), detects a
+Stockiya fetches 180 daily bars of OHLCV for every stock in the scan universe (the owner-supplied top-by-market-cap list in `config/universe_custom.txt` — ~450 NSE names; falls back to the in-code NIFTY_300 when that file is empty), detects a
 Wyckoff-Phase-C-or-D accumulation base using pure volume math, waits for a
 Volume-Spread-Analysis trigger bar (Sign-of-Strength, pocket pivot, or no-supply
 test), verifies price is holding its anchored VWAP from the base low, and
@@ -313,7 +313,7 @@ file you can open.**
 
 ```
 Input:  ticker symbol (e.g. "HDFCBANK.NS")
-Check:  symbol in backend/universe.py:VOLUME_UNIVERSE  (~750 tickers, from config/nifty_total_market.csv)
+Check:  symbol in backend/universe.py:VOLUME_UNIVERSE  (~450 tickers, from config/universe_custom.txt; NIFTY_300 fallback if empty)
 Output: passed=True → continue | passed=False → skip forever
 ```
 

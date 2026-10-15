@@ -675,6 +675,46 @@ def run_universe(
             data_health["coverage_pct"] or 0.0,
         )
 
+    # ---- Explicit "NOT ANALYZED" roll-up (owner ask, 2026-10-15) ----
+    # "Try once; if it errors, log it and continue — and write in the log which
+    # stocks were not analyzed." The data-health line above is a one-liner; this
+    # names EVERY stock that was not scored today and WHY, bucketed, so a dropped
+    # name is never invisible. Pure logging: reads the same `data_health` dict,
+    # touches nothing in selection/scoring. Answers "how many, what kind of error,
+    # summarized" at a glance.
+    _REASON_DESC = {
+        "network":        "fetch error (data source raised)",
+        "empty":          "data source returned no rows",
+        "missing_source": "not in the data-source file / no cached OHLCV",
+        "no_price":       "no current price in snapshot",
+        "no_bars_asof":   "no bars at/before the as-of date",
+        "short_history":  "too new — fewer bars than the min lookback (benign)",
+        "crashed":        "pipeline error (exception during analysis)",
+        "other":          "other / unclassified",
+    }
+    _failed_by_reason = data_health.get("failed_by_reason") or {}
+    _failed_symbols = data_health.get("failed_symbols") or {}
+    _not_analyzed_total = data_health.get("failed_total") or 0
+    if _not_analyzed_total:
+        _benign = _failed_by_reason.get("short_history", 0)
+        log.warning(
+            "  [Phase 1/4] NOT ANALYZED: %d of %d stock(s) not scored today "
+            "(%d genuinely lost, %d benign short-history). Breakdown:",
+            _not_analyzed_total, len(VOLUME_UNIVERSE),
+            data_health.get("silent_failures") or 0, _benign,
+        )
+        for bucket, count in sorted(_failed_by_reason.items(), key=lambda kv: -kv[1]):
+            syms = _failed_symbols.get(bucket) or []
+            shown = ", ".join(syms) if syms else "(symbols not captured)"
+            more = count - len(syms)
+            if more > 0 and syms:
+                shown += f", +{more} more"
+            log.warning("      %-14s %3d  (%s)  ->  %s",
+                        bucket, count, _REASON_DESC.get(bucket, "?"), shown)
+    else:
+        log.info("  [Phase 1/4] NOT ANALYZED: none — all %d stocks scored.",
+                 len(VOLUME_UNIVERSE))
+
     # ---- Soft-gate composite selection (v3 spine) ----
     # A survivor must: (a) clear all hard gates that ran, and (b) score
     # composite S = Σ wᵢ·mᵢ  >=  τ. That's it. The old "all-AND-gates"

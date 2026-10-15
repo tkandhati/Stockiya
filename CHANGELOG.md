@@ -1,5 +1,57 @@
 # Changelog
 
+## 2026-10-15 — Explicit "NOT ANALYZED" roll-up log + owner-populated 450-name universe
+
+Owner asks: *"try one time; if the error is not found, log it and continue, and
+write in the log which stocks are not analyzed — how many, what kind of error,
+summarized,"* and *"always accurate, no emphasis on speed."* Also populated the
+volume universe file.
+
+### Universe: `config/universe_custom.txt` now filled (≈450 names)
+The owner-supplied file (the primary `VOLUME_UNIVERSE` source since 2026-10-08)
+was shipped as comments-only, so the picker had been falling back to the in-code
+`NIFTY_300`. It is now populated with **~450 NSE symbols** (top-by-market-cap,
+incl. recent IPOs). Validated with the loader's own rules: 450 parsed, 0
+duplicates, 0 dead/renamed stripped (owner used the correct ticker forms). This
+IS the volume universe now — the NIFTY_300 fallback is overridden. Nothing in
+code changed; the file just has content. To go live: the run machine must
+`git pull` (this file is tracked, unlike `.env`) + restart.
+
+### New: per-run "NOT ANALYZED" roll-up  (`backend/orchestrator.py`)
+`summarize_data_health` already computed which tickers failed `[I]` Ingest and
+why, but the orchestrator only logged a one-line coverage summary and never named
+the dropped symbols (in 2-section mode the response key is suppressed too), so a
+skipped stock was invisible. `run_universe` now emits, right after the data-health
+line:
+
+```
+[Phase 1/4] NOT ANALYZED: N of 450 stock(s) not scored today
+            (K genuinely lost, J benign short-history). Breakdown:
+    missing_source   8  (not in the data-source file / no cached OHLCV)  ->  GROWW.NS, ...
+    short_history    3  (too new — fewer bars than the min lookback)     ->  SWIGGY.NS, ...
+    network          1  (fetch error)                                    ->  ABC.NS
+```
+
+One warning line per reason bucket (network / empty / missing_source / no_price /
+no_bars_asof / short_history / crashed / other) with the count, a plain-English
+description, and the symbol list (capped at 40/bucket by `summarize_data_health`).
+`NOT ANALYZED: none` when all names scored. Pure logging — reads the same
+`data_health` dict, touches nothing in selection/scoring/ranking.
+
+### "Try once" clarified — NOT a retry/re-sweep change
+The "try once, log, continue" ask is already satisfied for **genuinely dead /
+not-found** names: Yahoo delisted symbols are negative-cached after one hit (no
+retry), and bhavcopy names missing from the NSE file fail `[I]` once with no retry
+loop. Because the owner also chose **accuracy over speed**, the retries + Phase-1.5
+re-sweep that recover **transient** failures on *valid* stocks were deliberately
+left ON (turning them off is faster but drops real stocks). The slow page is
+by-design: it re-analyses all names live on every pre-16:00 load and retries the
+flaky ones — that is what keeps the result complete. For the "analyse all 450"
+goal, `DATA_SOURCE=bhavcopy` is preferred (no Yahoo 429 drops → better coverage,
+and faster as a side effect).
+
+Reversible: nothing gated behind a new flag; the roll-up is additive logging.
+
 ## 2026-10-08 — Yahoo: stop looping forever on delisted/renamed symbols (persistent negative cache)
 
 Owner report: a live `DATA_SOURCE=yahoo` run "keeps looping for hours even when it
